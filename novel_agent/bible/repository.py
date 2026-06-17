@@ -1,9 +1,6 @@
 """圣经仓储：CRUD 封装。所有写操作经此层，便于后续加校验/事件。"""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
-
 from sqlalchemy.orm import Session
 
 from novel_agent.bible.models import (
