@@ -32,8 +32,10 @@ def _coerce(data, cls):
 class DeltaApplier:
     """把 Delta 应用到圣经。"""
 
-    def __init__(self, repo: BibleRepository):
+    def __init__(self, repo: BibleRepository, archival=None):
         self.repo = repo
+        self.archival = archival
+        self.archival = archival
 
     def apply(self, delta: Delta) -> ApplyResult:
         handler = {
@@ -158,6 +160,11 @@ class DeltaApplier:
             entity_id=str(delta.chapter),
             payload={"title": d.title, "word_count": d.word_count},
         )
+        if self.archival:
+            self.archival.index_chapter(
+                chapter=delta.chapter, title=d.title,
+                content=f"{d.core_events} {d.chapter_hook}".strip(),
+            )
         return ApplyResult(True)
 
     def _create_outline(self, delta: Delta) -> ApplyResult:

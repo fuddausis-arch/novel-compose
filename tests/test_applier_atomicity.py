@@ -49,3 +49,32 @@ def test_successful_apply_commits_atomically(applier):
     assert result.success
     assert applier.repo.get_foreshadow("S-001").status == "planted"
     assert len(applier.repo.list_events(chapter=3, entity_id="S-001")) == 1
+
+
+def test_create_summary_indexes_archival(applier, tmp_config):
+    """create_summary 应同步索引到 archival 向量库。"""
+    from novel_agent.memory.archival import ArchivalMemory
+    from novel_agent.protocol.schemas import SummaryDelta
+    archival = ArchivalMemory(tmp_config)
+    applier.archival = archival
+    delta = Delta(
+        target="chapter_summary", action="create", chapter=1,
+        data=SummaryDelta(title="第一章", core_events="征召事件", word_count=2000),
+    )
+    result = applier.apply(delta)
+    assert result.success
+    # 章节摘要应被索引到 archival
+    hits = archival.retrieve(query="征召", top_k=5)
+    assert len(hits) >= 1
+    archival.reset()
+
+
+def test_applier_without_archival_still_works(applier):
+    """未注入 archival 时，create_summary 仍正常（不同步向量库）。"""
+    from novel_agent.protocol.schemas import SummaryDelta
+    delta = Delta(
+        target="chapter_summary", action="create", chapter=1,
+        data=SummaryDelta(title="第一章", core_events="事件"),
+    )
+    result = applier.apply(delta)
+    assert result.success
