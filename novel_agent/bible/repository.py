@@ -84,7 +84,7 @@ class BibleRepository:
         ).all()
 
     def get_foreshadows_to_plant(self, chapter: int) -> list[Foreshadow]:
-        """取本章应埋设的伏笔（plant_chapter 匹配且未埋）。"""
+        """取本章相关的伏笔（plant_chapter 匹配，pending 待埋或 planted 待复检）。"""
         return self.db.query(Foreshadow).filter(
             Foreshadow.project_id == self.project_id,
             Foreshadow.plant_chapter == chapter,
