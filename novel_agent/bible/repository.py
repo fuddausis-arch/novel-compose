@@ -1,6 +1,8 @@
 """圣经仓储：CRUD 封装。所有写操作经此层，便于后续加校验/事件。"""
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from sqlalchemy.orm import Session
 
 from novel_agent.bible.models import (
@@ -16,6 +18,30 @@ class BibleRepository:
     def __init__(self, db: Session, project_id: int):
         self.db = db
         self.project_id = project_id
+        self._in_tx = False
+
+    def _commit_or_flush(self):
+        """事务上下文内只 flush，否则 commit。"""
+        if self._in_tx:
+            self.db.flush()
+        else:
+            self.db.commit()
+
+    @contextmanager
+    def unit_of_work(self):
+        """事务上下文：内部写操作只 flush 不 commit，退出统一 commit/rollback。
+
+        用于 applier 保证「apply 快照 + 追加事件流」原子性。
+        """
+        self._in_tx = True
+        try:
+            yield
+            self._commit_or_flush()
+        except Exception:
+            self.db.rollback()
+            raise
+        finally:
+            self._in_tx = False
 
     # ---- 项目 ----
     def get_project(self) -> Project | None:
@@ -25,7 +51,7 @@ class BibleRepository:
     def create_character(self, **kwargs) -> Character:
         c = Character(project_id=self.project_id, **kwargs)
         self.db.add(c)
-        self.db.commit()
+        self._commit_or_flush()
         self.db.refresh(c)
         return c
 
@@ -47,7 +73,7 @@ class BibleRepository:
         for k, v in kwargs.items():
             if hasattr(c, k):
                 setattr(c, k, v)
-        self.db.commit()
+        self._commit_or_flush()
         self.db.refresh(c)
         return c
 
@@ -55,7 +81,7 @@ class BibleRepository:
     def create_foreshadow(self, **kwargs) -> Foreshadow:
         f = Foreshadow(project_id=self.project_id, **kwargs)
         self.db.add(f)
-        self.db.commit()
+        self._commit_or_flush()
         self.db.refresh(f)
         return f
 
@@ -70,7 +96,7 @@ class BibleRepository:
         if not f:
             return None
         f.status = status
-        self.db.commit()
+        self._commit_or_flush()
         self.db.refresh(f)
         return f
 
@@ -104,7 +130,7 @@ class BibleRepository:
             entity_id=entity_id, payload=payload or {},
         )
         self.db.add(ev)
-        self.db.commit()
+        self._commit_or_flush()
         self.db.refresh(ev)
         return ev
 
@@ -120,7 +146,7 @@ class BibleRepository:
     def create_chapter_summary(self, **kwargs) -> ChapterSummary:
         s = ChapterSummary(project_id=self.project_id, **kwargs)
         self.db.add(s)
-        self.db.commit()
+        self._commit_or_flush()
         self.db.refresh(s)
         return s
 
@@ -139,7 +165,7 @@ class BibleRepository:
     def create_outline(self, **kwargs) -> Outline:
         o = Outline(project_id=self.project_id, **kwargs)
         self.db.add(o)
-        self.db.commit()
+        self._commit_or_flush()
         self.db.refresh(o)
         return o
 

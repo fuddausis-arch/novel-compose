@@ -50,7 +50,14 @@ class DeltaApplier:
             raise ApplyError(
                 f"不支持的 delta: target={delta.target} action={delta.action}"
             )
-        return handler(delta)
+        # 事务原子性：handler 内多步写要么全成要么全回滚（spec 2.4）
+        try:
+            with self.repo.unit_of_work():
+                return handler(delta)
+        except ApplyError:
+            raise
+        except Exception as e:
+            raise ApplyError(f"apply 失败已回滚: {e}") from e
 
     def _plant_foreshadow(self, delta: Delta) -> ApplyResult:
         d = _coerce(delta.data, ForeshadowDelta)
