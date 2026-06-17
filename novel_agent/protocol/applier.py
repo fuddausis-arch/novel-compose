@@ -146,15 +146,23 @@ class DeltaApplier:
 
     def _create_summary(self, delta: Delta) -> ApplyResult:
         d = _coerce(delta.data, SummaryDelta)
-        if self.repo.get_chapter_summary(delta.chapter):
-            return ApplyResult(False, f"第 {delta.chapter} 章摘要已存在")
-        self.repo.create_chapter_summary(
-            chapter=delta.chapter, title=d.title, word_count=d.word_count,
-            time_location=d.time_location, core_events=d.core_events,
-            characters_present=d.characters_present, emotion_changes=d.emotion_changes,
-            foreshadow_dynamics=d.foreshadow_dynamics,
-            subplot_progress=d.subplot_progress, chapter_hook=d.chapter_hook,
-        )
+        existing = self.repo.get_chapter_summary(delta.chapter)
+        if existing:
+            # 已存在则更新（支持重新生成）
+            self.repo.update_chapter_summary(
+                delta.chapter, title=d.title, word_count=d.word_count,
+                core_events=d.core_events, characters_present=d.characters_present,
+                emotion_changes=d.emotion_changes, foreshadow_dynamics=d.foreshadow_dynamics,
+                subplot_progress=d.subplot_progress, chapter_hook=d.chapter_hook,
+            )
+        else:
+            self.repo.create_chapter_summary(
+                chapter=delta.chapter, title=d.title, word_count=d.word_count,
+                time_location=d.time_location, core_events=d.core_events,
+                characters_present=d.characters_present, emotion_changes=d.emotion_changes,
+                foreshadow_dynamics=d.foreshadow_dynamics,
+                subplot_progress=d.subplot_progress, chapter_hook=d.chapter_hook,
+            )
         self.repo.append_event(
             chapter=delta.chapter, type="chapter_summary_created",
             entity_id=str(delta.chapter),

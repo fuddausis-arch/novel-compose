@@ -161,6 +161,18 @@ class BibleRepository:
             ChapterSummary.project_id == self.project_id,
         ).order_by(ChapterSummary.chapter.desc()).limit(limit).all()
 
+    def update_chapter_summary(self, chapter: int, **kwargs) -> ChapterSummary | None:
+        """更新已存在的章节摘要（支持重新生成）。"""
+        s = self.get_chapter_summary(chapter)
+        if not s:
+            return None
+        for k, v in kwargs.items():
+            if hasattr(s, k):
+                setattr(s, k, v)
+        self._commit_or_flush()
+        self.db.refresh(s)
+        return s
+
     # ---- 大纲 ----
     def create_outline(self, **kwargs) -> Outline:
         o = Outline(project_id=self.project_id, **kwargs)
