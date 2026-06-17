@@ -326,3 +326,38 @@ project_data/
 3. **模型分层具体配置**：哪个 agent 用哪个模型/温度，需实验调参。
 4. **AGPL 注意**：InkOS/knowrite/AI_NovelGenerator 均 AGPL-3.0，借鉴思路不抄代码，商用需评估。
 5. **审计维度权重**：15 维 + Fitness + Acid Test 融合后，各维度权重和阈值需跑数据标定。
+
+---
+
+## 附录 B：M1 审查遗留的 M2 入口待办
+
+M1 完成后经最终代码审查，登记以下 Important 问题为 M2 首要待办：
+
+1. **Applier 事务原子性**：当前每个 repo 方法各自 commit，一个 handler 内多次提交，部分失败会留半成品状态。M2 给 handler 包事务，结尾统一 commit，保证「apply 快照 + 追加事件流」原子性（spec 2.4 精神）。
+2. **Applier 接入 archival/summary_tree 同步**：spec 2.4 要求写后同步更新向量库 + 摘要树，M1 未接入。M2 在 applier 写完后触发 archival.index + summary_tree 更新。
+3. **Archival 中文 embedding**：M1 用默认 all-MiniLM-L6-v2（中文支持弱），召回质量测试已降级为「机制可用」。M2 换 bge-small-zh 等中文模型并恢复召回准确性断言。
+4. **CLI init 已补测试**（M1 收尾时完成）：剩余 Minor 项——`datetime.utcnow()` 迁 `datetime.now(timezone.utc)`、schema/applier target-action 错位澄清、`get_foreshadows_to_plant` 的 planted 态语义——可在 M2 顺手清理。
+
+## 附录 B：M1 审查遗留的 M2 入口待办
+
+M1 完成后最终审查发现的 4 个 Important 问题，不阻断 M1 验收，但须在 M2 首先处理：
+
+1. **Applier 事务原子性**：`applier.py` 每个 handler 内多次 `db.commit()`（repo 方法各自提交），若写快照后追加事件流抛错，会留半成品状态无法回滚。违反 spec 2.4「apply 快照 + 追加事件流」绑为一步的精神。需把 handler 包一层事务，结尾统一 commit。
+2. **Applier 接入 archival/summary_tree 同步**：spec 2.4 明文要求 apply 后「同步更新向量库 + 摘要树」，当前 applier 只写快照+事件流，未触发 archival.index / summary_tree 更新。M2 须接入。
+3. **Archival 换中文 embedding**：M1 用 chromadb 默认 all-MiniLM-L6-v2（中文支持弱），召回质量测试被放宽到「返回非空」。须换 bge-small-zh-v1.5 等中文模型，并恢复「召回正确章节」的断言。
+4. **Minor 遗留**（非阻塞，可在 M2 顺手清理）：
+   - `datetime.utcnow()` 全局使用（3.12+ deprecated，换 `datetime.now(timezone.utc)`）
+   - schema 与 applier 错位（Delta 允许 emotion_arc/subplot/character_matrix/world_setting 等 target，applier 无对应 handler 会抛 ApplyError）
+   - `get_foreshadows_to_plant` 把 planted 态也列入「本章应埋」段，对写手误导（建议 planted 态单独走「已埋回声」段或排除）
+   - 全局可变 engine/SessionLocal（单进程多项目并发冲突，M2 若引入编排需重构）
+
+## 附录 B：M1 审查遗留待办（M2 入口）
+
+M1 里程碑（地基与记忆层）已完成并通过最终审查（39 测试全绿，无 Critical 问题）。以下 4 项 Important 问题不阻断 M1，但须在 M2 计划首条登记：
+
+1. **Applier 事务原子性**：当前每个 repo 方法各自 commit，handler 内多次提交。若「写快照」成功但「追加事件」失败，会留半成品且无法回滚。spec 2.4 把「apply + 追加事件流」绑成一步，需在 handler 层包事务，结尾统一 commit。
+2. **接入 archival/summary_tree 同步**：spec 2.4 要求 apply 后同步更新向量库 + 摘要树，当前 applier 未触发。M1 可接受（plan 未要求），M2 必须补。
+3. **换中文 embedding 模型**：M1 用 chromadb 默认 all-MiniLM-L6-v2（中文支持弱），archival 召回质量测试因此被削弱为「只验证机制工作」。M2 换 bge-small-zh 等中文模型，并恢复「召回正确章节」的断言。
+4. ~~CLI init 缺自动化测试~~ ✅ 已在 M1 收尾阶段补齐（test_cli_init.py）。
+
+另有若干 Minor 项（schema/applier 的 target/action 错位、foreshadow to_plant 语义、datetime.utcnow 迁移）建议 M2 顺手清理。
