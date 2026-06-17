@@ -146,6 +146,11 @@ class DeltaApplier:
             foreshadow_dynamics=d.foreshadow_dynamics,
             subplot_progress=d.subplot_progress, chapter_hook=d.chapter_hook,
         )
+        self.repo.append_event(
+            chapter=delta.chapter, type="chapter_summary_created",
+            entity_id=str(delta.chapter),
+            payload={"title": d.title, "word_count": d.word_count},
+        )
         return ApplyResult(True)
 
     def _create_outline(self, delta: Delta) -> ApplyResult:
@@ -153,5 +158,10 @@ class DeltaApplier:
         self.repo.create_outline(
             level=d.level, order=d.order, act=d.act,
             title=d.title, summary=d.summary,
+        )
+        self.repo.append_event(
+            chapter=delta.chapter, type="outline_created",
+            entity_id=f"{d.level}:{d.order}",
+            payload={"level": d.level, "act": d.act, "title": d.title},
         )
         return ApplyResult(True)
