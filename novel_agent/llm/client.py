@@ -36,7 +36,7 @@ class LLMClient:
 
     async def generate(self, user_content: str, system: str | None = None,
                        max_retries: int = 3) -> str:
-        """生成文本，超时/网络错误指数退避重试。"""
+        """生成文本。超时/网络错误/429/503 指数退避重试；401/403 等直接报错。"""
         url = f"{self.config.base_url.rstrip('/')}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
@@ -55,10 +55,36 @@ class LLMClient:
             except (httpx.TimeoutException, httpx.NetworkError) as e:
                 last_err = e
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)  # 指数退避
+                    await asyncio.sleep(2 ** attempt)
             except httpx.HTTPStatusError as e:
-                raise LLMError(f"AI 接口 HTTP 错误: {e.response.text}") from e
+                code = e.response.status_code
+                body = e.response.text
+                # 429 限流 / 503 服务不可用：可重试（退避更久）
+                if code in (429, 503) and attempt < max_retries - 1:
+                    # 配额超限通常需等很久，重试意义不大，直接友好报错
+                    if "quota" in body.lower() or "AccountQuotaExceeded" in body:
+                        raise LLMError(self._quota_msg(body)) from e
+                    last_err = e
+                    await asyncio.sleep(2 ** (attempt + 2))  # 4/8/16 秒
+                    continue
+                # 401/403 鉴权错误：不重试
+                if code in (401, 403):
+                    raise LLMError(f"鉴权失败({code})：请检查 config.yaml 的 api_key") from e
+                # 其他 HTTP 错误：不重试
+                raise LLMError(f"AI 接口 HTTP {code}: {body[:300]}") from e
             except Exception as e:
                 raise LLMError(f"AI 生成出错: {e}") from e
 
         raise LLMError(f"重试 {max_retries} 次后仍失败: {last_err}")
+
+    @staticmethod
+    def _quota_msg(body: str) -> str:
+        """从 429 响应体提取配额重置时间，给友好提示。"""
+        import re
+        msg = "LLM 配额超限"
+        # 尝试提取重置时间
+        m = re.search(r"reset at ([\d\-: +]+)", body)
+        if m:
+            msg += f"，将于 {m.group(1)} 重置"
+        msg += "。请等待重置或更换 LLM 配置。"
+        return msg
