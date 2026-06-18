@@ -9,10 +9,11 @@ def _mock_deps():
         "llm_client": MagicMock(),
         "recall": MagicMock(),
         "applier": MagicMock(),
+        "auditor": MagicMock(),
     }
 
 
-def test_graph_has_four_nodes():
+def test_graph_has_seven_nodes():
     graph = build_graph(_mock_deps())
     node_ids = set(graph.nodes.keys())
     for name in NODE_NAMES:
@@ -20,4 +21,4 @@ def test_graph_has_four_nodes():
 
 
 def test_node_names_complete():
-    assert NODE_NAMES == ["assemble", "write", "save_text", "save_summary"]
+    assert NODE_NAMES == ["assemble", "write", "audit", "rewrite", "polish", "save_text", "summarize"]
