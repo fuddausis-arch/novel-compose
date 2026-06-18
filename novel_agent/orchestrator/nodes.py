@@ -19,7 +19,7 @@ from novel_agent.memory.core import CoreMemoryAssembler
 from novel_agent.memory.recall import RecallMemory
 from novel_agent.orchestrator.state import ChapterGenState
 from novel_agent.protocol.applier import DeltaApplier
-from novel_agent.protocol.schemas import Delta, SummaryDelta
+from novel_agent.protocol.schemas import Delta, SummaryDelta, ForeshadowDelta
 
 WRITER_SYSTEM_PROMPT = (
     "你是一位资深网络小说写手。根据给定的设定和上下文，"
@@ -128,13 +128,29 @@ def save_text_polished(state: ChapterGenState, recall: RecallMemory) -> dict:
 
 
 async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
-                            applier: DeltaApplier) -> dict:
-    """节点：调 LLM 抽取结构化摘要并存入圣经（升级 M2 的简化版）。"""
+                            applier: DeltaApplier,
+                            repo: BibleRepository | None = None) -> dict:
+    """节点：调 LLM 抽取摘要 + 检测伏笔回收，存入圣经。
+
+    repo 提供时，查本章应回收伏笔让 LLM 判断是否已回收，
+    回收的产出 resolve delta 更新伏笔状态。
+    """
     content = state.get("polished") or state.get("draft", "")
+    chapter = state["chapter"]
+
+    to_resolve = repo.get_foreshadows_to_resolve(chapter) if repo else []
+    fs_text = ""
+    fs_instruction = ""
+    if to_resolve:
+        fs_text = "\n\n[本章应回收的伏笔]\n" + "\n".join(
+            f"- {f.foreshadow_id}: {f.description}" for f in to_resolve)
+        fs_instruction = ',"resolved_foreshadows":["S-001"]'
+
     prompt = (
         f"为以下章节抽取摘要，输出 JSON：\n"
         f'{{"core_events":"","characters_present":"","emotion_changes":"",'
-        f'"foreshadow_dynamics":"","chapter_hook":""}}\n\n{content}\n\n只输出 JSON。'
+        f'"foreshadow_dynamics":"","chapter_hook":""{fs_instruction}}}\n\n'
+        f"{content}{fs_text}\n\n只输出 JSON。"
     )
     SUM_SYSTEM = "你是网文摘要助手。精炼抽取章节核心信息。只输出 JSON。"
     data = {}
@@ -146,7 +162,7 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
         data = {}
 
     delta = Delta(
-        target="chapter_summary", action="create", chapter=state["chapter"],
+        target="chapter_summary", action="create", chapter=chapter,
         data=SummaryDelta(
             title=state.get("title", ""),
             word_count=state.get("word_count", len(content)),
@@ -161,6 +177,17 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
     result = applier.apply(delta)
     if not result.success:
         return {"status": "failed", "error": result.message}
+
+    resolved_ids = data.get("resolved_foreshadows", []) or []
+    for fid in resolved_ids:
+        try:
+            applier.apply(Delta(
+                target="foreshadow", action="resolve", chapter=chapter,
+                data=ForeshadowDelta(foreshadow_id=fid),
+            ))
+        except Exception:
+            pass
+
     return {"status": "completed"}
 
 

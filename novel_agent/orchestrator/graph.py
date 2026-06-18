@@ -35,7 +35,7 @@ def build_graph(deps: dict[str, Any] | None = None):
     rewrite_fn = partial(rewrite_chapter, llm_client=deps["llm_client"])
     polish_fn = partial(polish_chapter, llm_client=deps["llm_client"])
     save_fn = partial(save_text_polished, recall=deps["recall"])
-    summarize_fn = partial(summarize_chapter, llm_client=deps["llm_client"], applier=deps["applier"])
+    summarize_fn = partial(summarize_chapter, llm_client=deps["llm_client"], applier=deps["applier"], repo=deps.get("repo"))
 
     graph.add_node("assemble", assemble_fn)
     graph.add_node("write", write_fn)
