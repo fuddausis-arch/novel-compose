@@ -55,7 +55,10 @@ class DeltaApplier:
         # 事务原子性：handler 内多步写要么全成要么全回滚（spec 2.4）
         try:
             with self.repo.unit_of_work():
-                return handler(delta)
+                result = handler(delta)
+            # 兜底：async 上下文里同步 session 的 commit 可能不立即落盘
+            self.repo.db.commit()
+            return result
         except ApplyError:
             raise
         except Exception as e:
