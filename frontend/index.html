@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>多 Agent 小说生成控制台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <h2>项目</h2>
+    <div id="project-list"></div>
+    <button id="new-project-btn">+ 新建项目</button>
+    <hr>
+    <h2>操作</h2>
+    <button id="plan-btn">卷级规划</button>
+    <button id="generate-btn">生成章节</button>
+  </aside>
+  <main class="main">
+    <nav class="tabs">
+      <button class="tab active" data-tab="cockpit">驾驶舱</button>
+      <button class="tab" data-tab="review">人审</button>
+      <button class="tab" data-tab="bible">圣经</button>
+      <button class="tab" data-tab="reader">阅读</button>
+    </nav>
+    <section id="cockpit" class="panel active">
+      <h3>生成进度</h3>
+      <div id="status-log"></div>
+    </section>
+    <section id="review" class="panel">
+      <h3>人审工作台</h3>
+      <div id="review-content"></div>
+      <button id="approve-btn">通过</button>
+      <button id="reject-btn">打回</button>
+    </section>
+    <section id="bible" class="panel">
+      <h3>圣经浏览</h3>
+      <div id="bible-content"></div>
+    </section>
+    <section id="reader" class="panel">
+      <h3>章节阅读</h3>
+      <div id="reader-content"></div>
+    </section>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
