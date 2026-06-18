@@ -12,6 +12,9 @@ dependencies = [
     "python-dotenv>=1.0",
     "langgraph>=1.2",
     "langgraph-checkpoint-sqlite>=3.0",
+    "fastapi>=0.111",
+    "sse-starlette>=2.0",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
