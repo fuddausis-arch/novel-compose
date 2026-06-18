@@ -94,3 +94,66 @@ def get_chapter_text(chapter: int):
     if not text:
         raise HTTPException(404, "章节不存在")
     return {"chapter": chapter, "text": text}
+
+
+class ChapterTextEdit(BaseModel):
+    title: str = ""
+    content: str = ""
+
+
+@router.put("/{chapter}/text")
+def save_chapter_text(chapter: int, data: ChapterTextEdit):
+    """编辑后保存章节正文到文件。"""
+    from novel_agent.memory.recall import RecallMemory
+    cfg = load_config()
+    recall = RecallMemory(cfg)
+    path = recall.save_chapter_text(chapter=chapter, title=data.title,
+                                    content=data.content)
+    return {"chapter": chapter, "saved": True, "path": str(path)}
+
+
+@router.delete("/{chapter}")
+def delete_chapter(chapter: int):
+    """删除章节正文文件 + 圣经摘要。"""
+    from novel_agent.memory.recall import RecallMemory
+    import re
+    cfg = load_config()
+    recall = RecallMemory(cfg)
+    # 删正文文件
+    pattern = f"第{chapter:03d}章_*.md"
+    deleted_files = []
+    for p in recall.chapters_dir.glob(pattern):
+        p.unlink()
+        deleted_files.append(str(p))
+    # 删圣经摘要
+    db_deleted = False
+    db = SessionLocal()
+    try:
+        set_config(load_config())
+        from novel_agent.bible import database as db_mod
+        Base.metadata.create_all(bind=db_mod.engine)
+        from novel_agent.bible.models import Project
+        proj = db.query(Project).order_by(Project.id.desc()).first()
+        if proj:
+            repo = BibleRepository(db, project_id=proj.id)
+            db_deleted = repo.delete_chapter_summary(chapter)
+    finally:
+        db.close()
+    return {"deleted": True, "files": deleted_files, "summary_removed": db_deleted}
+
+
+@router.get("/export/txt")
+def export_txt(project_id: int):
+    """导出全部章节为单个 TXT。"""
+    from novel_agent.memory.recall import RecallMemory
+    from fastapi.responses import PlainTextResponse
+    cfg = load_config()
+    recall = RecallMemory(cfg)
+    chapters = recall.list_chapters()
+    parts = []
+    for ch in chapters:
+        text = recall.read_chapter_text(ch)
+        if text:
+            parts.append(text)
+    return PlainTextResponse("\n\n".join(parts), media_type="text/plain",
+                             headers={"Content-Disposition": "attachment; filename=novel.txt"})

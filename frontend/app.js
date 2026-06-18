@@ -22,11 +22,12 @@ async function loadProjects() {
   const ps = await api('/api/projects');
   const sel = $('project-select');
   sel.innerHTML = '<option value="">选择项目</option>' + ps.map(p=>`<option value="${p.id}">${esc(p.title)}</option>`).join('');
+  if (currentProject) sel.value = currentProject;
   sel.onchange = ()=>{ if(sel.value){ currentProject=parseInt(sel.value); loadAssets(); } };
 }
 $('new-project-btn').onclick = async ()=>{
   const title = prompt('项目标题'); if(!title) return;
-  await api('/api/projects',{method:'POST',body:JSON.stringify({title,genre:prompt('类型','科幻')||''})});
+  await api('/api/projects',{method:'POST',body:JSON.stringify({title,genre:prompt('类型','科幻')||'',summary:prompt('一句话简介')||''})});
   loadProjects();
 };
 
@@ -45,55 +46,83 @@ async function loadAssets() {
     <div class="asset-group">
       <div class="asset-group-title">设定</div>
       <div class="asset-item" data-asset="overview">📋 项目概览</div>
+      <div class="asset-item" data-asset="import">📥 导入设定</div>
+      <div class="asset-item" data-asset="export">📤 导出TXT</div>
     </div>
     <div class="asset-group">
-      <div class="asset-group-title">角色 (${chars.length})</div>
-      ${chars.map(c=>`<div class="asset-item" data-asset="char" data-id="${esc(c.name)}">👤 ${esc(c.name)} <span class="asset-badge">${esc(c.role||'')}</span></div>`).join('') || '<div class="empty-state" style="padding:10px">无</div>'}
+      <div class="asset-group-title">角色 (${chars.length}) <span class="add-btn" data-add="char">+</span></div>
+      ${chars.map(c=>`<div class="asset-item" data-asset="char" data-id="${esc(c.name)}">👤 ${esc(c.name)} <span class="asset-badge">${esc(c.role||'')}</span></div>`).join('') || ''}
     </div>
     <div class="asset-group">
-      <div class="asset-group-title">伏笔 (${fs.length})</div>
-      ${fs.map(f=>`<div class="asset-item" data-asset="fs" data-id="${esc(f.id)}">🔖 ${esc(f.id)} <span class="asset-badge ${f.status}">${f.status}</span></div>`).join('') || '<div class="empty-state" style="padding:10px">无</div>'}
+      <div class="asset-group-title">伏笔 (${fs.length}) <span class="add-btn" data-add="fs">+</span></div>
+      ${fs.map(f=>`<div class="asset-item" data-asset="fs" data-id="${esc(f.id)}">🔖 ${esc(f.id)} <span class="asset-badge ${f.status}">${f.status}</span></div>`).join('') || ''}
     </div>
     <div class="asset-group">
-      <div class="asset-group-title">大纲 (${outs.length})</div>
-      ${outs.map(o=>`<div class="asset-item" data-asset="outline" data-id="${o.order}">📖 第${o.order}章 ${esc(o.title||'')}</div>`).join('') || '<div class="empty-state" style="padding:10px">无</div>'}
+      <div class="asset-group-title">大纲 (${outs.length}) <span class="add-btn" data-add="outline">+</span></div>
+      ${outs.map(o=>`<div class="asset-item" data-asset="outline" data-id="${o.order}">📖 第${o.order}章 ${esc(o.title||'')}</div>`).join('') || ''}
     </div>
     <div class="asset-group">
       <div class="asset-group-title">章节 (${chs.length})</div>
-      ${chs.map(c=>`<div class="asset-item" data-asset="chapter" data-id="${c.chapter}">📄 第${c.chapter}章</div>`).join('') || '<div class="empty-state" style="padding:10px">无</div>'}
+      ${chs.map(c=>`<div class="asset-item" data-asset="chapter" data-id="${c.chapter}">📄 第${c.chapter}章</div>`).join('') || ''}
     </div>`;
   tree.querySelectorAll('.asset-item').forEach(el=>{
-    el.onclick = ()=>{ tree.querySelectorAll('.asset-item').forEach(x=>x.classList.remove('active'));
+    el.onclick = (e)=>{ if(e.target.classList.contains('add-btn'))return;
+      tree.querySelectorAll('.asset-item').forEach(x=>x.classList.remove('active'));
       el.classList.add('active'); renderAsset(el.dataset.asset, el.dataset.id); };
+  });
+  tree.querySelectorAll('.add-btn').forEach(el=>{
+    el.onclick = (e)=>{ e.stopPropagation(); renderEditForm(el.dataset.add, null); };
   });
 }
 
-// ---- 工作区渲染 ----
+// ---- 工作区渲染（只读）----
 async function renderAsset(type, id) {
   const body = $('workspace-body'); const title = $('workspace-title');
   try {
     if (type==='overview') {
       const p = await api(`/api/projects/${currentProject}`);
       title.textContent = p.title;
-      body.innerHTML = `<div class="detail-card"><h4>${esc(p.title)}</h4>
+      body.innerHTML = `<div class="detail-card">
+        <div class="card-actions"><button class="btn btn-primary btn-sm" onclick="renderEditForm('project',${currentProject})">✎ 编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteProject(${currentProject})">🗑 删除项目</button></div>
+        <h4>${esc(p.title)}</h4>
         <div class="detail-row"><span class="detail-label">类型</span>${esc(p.genre||'')}</div>
         <div class="detail-row"><span class="detail-label">简介</span>${esc(p.summary||'')}</div>
         <div class="detail-row"><span class="detail-label">风格</span>${esc(p.style||'')}</div></div>`;
+    } else if (type==='import') {
+      title.textContent = '导入设定';
+      body.innerHTML = `<div class="detail-card"><h4>批量导入世界观/设定</h4>
+        <p style="color:var(--text-dim);font-size:12px;margin-bottom:8px">粘贴 JSON，含 characters/foreshadows/outlines 数组</p>
+        <textarea id="import-text" class="edit-textarea" placeholder='{"characters":[{"name":"主角","role":"主角"}],"foreshadows":[],"outlines":[]}'></textarea>
+        <button class="btn btn-primary" onclick="doImport(${currentProject})">导入</button></div>`;
+    } else if (type==='export') {
+      title.textContent = '导出';
+      body.innerHTML = `<div class="detail-card"><h4>导出全部章节为 TXT</h4>
+        <button class="btn btn-primary" onclick="window.open('/api/chapters/export/txt?project_id=${currentProject}','_blank')">下载 TXT</button></div>`;
     } else if (type==='char') {
       const chars = await api(`/api/bible/${currentProject}/characters`);
       const c = chars.find(x=>x.name===id) || {};
       title.textContent = `角色：${id}`;
-      body.innerHTML = `<div class="detail-card"><h4>${esc(c.name)} <span class="asset-badge">${esc(c.role||'')}</span></h4>
-        ${Object.entries(c).filter(([k])=>k!=='name'&&k!=='role').map(([k,v])=>`<div class="detail-row"><span class="detail-label">${k}</span>${esc(v||'—')}</div>`).join('')}</div>`;
+      body.innerHTML = `<div class="detail-card">
+        <div class="card-actions"><button class="btn btn-primary btn-sm" onclick="renderEditForm('char','${esc(id)}')">✎ 编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteAsset('char','${esc(id)}')">🗑 删除</button></div>
+        <h4>${esc(c.name)} <span class="asset-badge">${esc(c.role||'')}</span></h4>
+        ${Object.entries(c).filter(([k])=>k!=='name'&&k!=='role'&&k!=='id').map(([k,v])=>`<div class="detail-row"><span class="detail-label">${k}</span>${esc(v||'—')}</div>`).join('')}</div>`;
     } else if (type==='chapter') {
       const r = await api(`/api/chapters/${id}/text`);
       title.textContent = `第${id}章`;
-      body.innerHTML = `<div class="chapter-text">${esc(r.text)}</div>`;
+      body.innerHTML = `<div class="detail-card">
+        <div class="card-actions"><button class="btn btn-primary btn-sm" onclick="editChapter(${id})">✎ 编辑正文</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteChapter(${id})">🗑 删除章节</button></div>
+        <div class="chapter-text">${esc(r.text)}</div></div>`;
     } else if (type==='fs') {
       const fs = await api(`/api/bible/${currentProject}/foreshadows`);
       const f = fs.find(x=>x.id===id)||{};
       title.textContent = `伏笔 ${id}`;
-      body.innerHTML = `<div class="detail-card"><h4>${esc(f.id)} <span class="asset-badge ${f.status}">${f.status}</span></h4>
+      body.innerHTML = `<div class="detail-card">
+        <div class="card-actions"><button class="btn btn-primary btn-sm" onclick="renderEditForm('fs','${esc(id)}')">✎ 编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteAsset('fs','${esc(id)}')">🗑 删除</button></div>
+        <h4>${esc(f.id)} <span class="asset-badge ${f.status}">${f.status}</span></h4>
         <div class="detail-row"><span class="detail-label">描述</span>${esc(f.description||'')}</div>
         <div class="detail-row"><span class="detail-label">埋设章</span>${f.plant_chapter||'—'}</div>
         <div class="detail-row"><span class="detail-label">回收章</span>${f.resolve_chapter||'—'}</div></div>`;
@@ -101,11 +130,146 @@ async function renderAsset(type, id) {
       const outs = await api(`/api/bible/${currentProject}/outlines`);
       const o = outs.find(x=>String(x.order)===String(id))||{};
       title.textContent = `第${id}章 大纲`;
-      body.innerHTML = `<div class="detail-card"><h4>第${o.order}章 ${esc(o.title||'')}</h4>
+      body.innerHTML = `<div class="detail-card">
+        <div class="card-actions"><button class="btn btn-primary btn-sm" onclick="renderEditForm('outline','${id}')">✎ 编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteAsset('outline','${id}')">🗑 删除</button></div>
+        <h4>第${o.order}章 ${esc(o.title||'')}</h4>
         <div class="detail-row"><span class="detail-label">摘要</span>${esc(o.summary||'')}</div></div>`;
     }
   } catch(e) { body.innerHTML = `<div class="empty-state">加载失败：${esc(e.message)}</div>`; }
 }
+
+// ---- 编辑表单 ----
+window.renderEditForm = async function(type, id) {
+  const body = $('workspace-body'); const title = $('workspace-title');
+  let existing = {};
+  if (id !== null && id !== undefined && type !== 'project') {
+    if (type==='char') existing = (await api(`/api/bible/${currentProject}/characters`)).find(x=>x.name===id)||{};
+    else if (type==='fs') existing = (await api(`/api/bible/${currentProject}/foreshadows`)).find(x=>x.id===id)||{};
+    else if (type==='outline') existing = (await api(`/api/bible/${currentProject}/outlines`)).find(x=>String(x.order)===String(id))||{};
+  } else if (type==='project' && id) {
+    existing = await api(`/api/projects/${id}`);
+  }
+  title.textContent = id ? `编辑${labelOf(type)}` : `新建${labelOf(type)}`;
+  if (type==='char') body.innerHTML = charForm(existing);
+  else if (type==='fs') body.innerHTML = fsForm(existing);
+  else if (type==='outline') body.innerHTML = outlineForm(existing);
+  else if (type==='project') body.innerHTML = projectForm(existing);
+};
+
+function labelOf(t){return {char:'角色',fs:'伏笔',outline:'大纲',project:'项目'}[t]||t;}
+
+function field(label, key, val, type='text') {
+  return `<div class="form-row"><label>${label}</label><input type="${type}" id="fld-${key}" value="${esc(val||'')}"></div>`;
+}
+function area(label, key, val) {
+  return `<div class="form-row"><label>${label}</label><textarea id="fld-${key}" class="edit-textarea">${esc(val||'')}</textarea></div>`;
+}
+
+function charForm(c) {
+  return `<div class="detail-card edit-form">
+    ${field('姓名','name',c.name)}${field('身份','role',c.role)}${area('性格','personality',c.personality)}
+    ${area('动机','motivation',c.motivation)}${field('当前位置','current_location',c.current_location)}
+    ${field('当前情绪','current_emotion',c.current_emotion)}${area('已知信息','known_info',c.known_info)}
+    ${area('背景','background',c.background)}${area('角色弧线','arc',c.arc)}
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveAsset('char','${esc(c.name||'')}')">保存</button>
+    <button class="btn btn-ghost" onclick="renderAsset('char','${esc(c.name||'')}')">取消</button></div></div>`;
+}
+function fsForm(f) {
+  return `<div class="detail-card edit-form">
+    ${field('ID','foreshadow_id',f.id||f.foreshadow_id)}${field('层级','tier',f.tier)}
+    ${area('描述','description',f.description)}${field('埋设章','plant_chapter',f.plant_chapter,'number')}
+    ${field('回收章','planned_resolve_chapter',f.resolve_chapter||f.planned_resolve_chapter,'number')}
+    ${field('状态','status',f.status||'pending')}
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveAsset('fs','${esc(f.id||'')}')">保存</button>
+    <button class="btn btn-ghost" onclick="renderAsset('fs','${esc(f.id||'')}')">取消</button></div></div>`;
+}
+function outlineForm(o) {
+  return `<div class="detail-card edit-form">
+    ${field('章节号','order',o.order,'number')}${field('标题','title',o.title)}
+    ${area('摘要','summary',o.summary)}${field('层级','level',o.level||'chapter')}
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveAsset('outline','${o.order||'')}')">保存</button>
+    <button class="btn btn-ghost" onclick="renderAsset('outline','${o.order||'')}')">取消</button></div></div>`;
+}
+function projectForm(p) {
+  return `<div class="detail-card edit-form">
+    ${field('标题','title',p.title)}${field('类型','genre',p.genre)}
+    ${area('简介','summary',p.summary)}${area('风格','style',p.style)}
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveAsset('project','${p.id||''}')">保存</button>
+    <button class="btn btn-ghost" onclick="renderAsset('overview')">取消</button></div></div>`;
+}
+
+window.saveAsset = async function(type, id) {
+  const v = k => ($('fld-'+k)?.value)||'';
+  try {
+    if (type==='char') {
+      const data = {name:v('name'),role:v('role'),personality:v('personality'),motivation:v('motivation'),
+        current_location:v('current_location'),current_emotion:v('current_emotion'),
+        known_info:v('known_info'),background:v('background'),arc:v('arc')};
+      if (id) await api(`/api/bible/${currentProject}/characters/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify(data)});
+      else await api(`/api/bible/${currentProject}/characters`,{method:'POST',body:JSON.stringify(data)});
+    } else if (type==='fs') {
+      const data = {foreshadow_id:v('foreshadow_id'),tier:v('tier'),description:v('description'),
+        plant_chapter:parseInt(v('plant_chapter')||0),planned_resolve_chapter:parseInt(v('planned_resolve_chapter')||0),status:v('status')};
+      if (id) await api(`/api/bible/${currentProject}/foreshadows/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify(data)});
+      else await api(`/api/bible/${currentProject}/foreshadows`,{method:'POST',body:JSON.stringify(data)});
+    } else if (type==='outline') {
+      const data = {order:parseInt(v('order')||0),title:v('title'),summary:v('summary'),level:v('level')};
+      if (id) await api(`/api/bible/${currentProject}/outlines/${id}`,{method:'PUT',body:JSON.stringify(data)});
+      else await api(`/api/bible/${currentProject}/outlines`,{method:'POST',body:JSON.stringify(data)});
+    } else if (type==='project') {
+      const data = {title:v('title'),genre:v('genre'),summary:v('summary'),style:v('style')};
+      await api(`/api/projects/${id}`,{method:'PUT',body:JSON.stringify(data)});
+      loadProjects();
+    }
+    log(`✓ ${type} 已保存`); loadAssets();
+  } catch(e) { alert('保存失败：'+e.message); }
+};
+
+window.deleteAsset = async function(type, id) {
+  if (!confirm(`确定删除${labelOf(type)} ${id}？`)) return;
+  try {
+    if (type==='char') await api(`/api/bible/${currentProject}/characters/${encodeURIComponent(id)}`,{method:'DELETE'});
+    else if (type==='fs') await api(`/api/bible/${currentProject}/foreshadows/${encodeURIComponent(id)}`,{method:'DELETE'});
+    else if (type==='outline') await api(`/api/bible/${currentProject}/outlines/${id}`,{method:'DELETE'});
+    log(`✓ 已删除 ${type} ${id}`); loadAssets();
+    $('workspace-body').innerHTML = '<div class="empty-state">已删除</div>';
+  } catch(e) { alert('删除失败：'+e.message); }
+};
+window.deleteProject = async function(id) {
+  if (!confirm('确定删除整个项目及其所有数据？此操作不可恢复！')) return;
+  await api(`/api/projects/${id}`,{method:'DELETE'});
+  currentProject = null; loadProjects(); loadAssets();
+  $('workspace-body').innerHTML = '<div class="empty-state">项目已删除</div>';
+};
+
+// ---- 章节编辑 ----
+window.editChapter = async function(ch) {
+  const r = await api(`/api/chapters/${ch}/text`);
+  $('workspace-title').textContent = `编辑第${ch}章`;
+  $('workspace-body').innerHTML = `<div class="detail-card">
+    <div class="card-actions"><button class="btn btn-primary btn-sm" onclick="saveChapter(${ch})">💾 保存</button></div>
+    <textarea id="chapter-edit" class="chapter-edit-area">${esc(r.text)}</textarea></div>`;
+};
+window.saveChapter = async function(ch) {
+  const content = $('chapter-edit').value;
+  await api(`/api/chapters/${ch}/text`,{method:'PUT',body:JSON.stringify({title:`第${ch}章`,content})});
+  log(`✓ 第${ch}章已保存`); renderAsset('chapter', ch);
+};
+window.deleteChapter = async function(ch) {
+  if (!confirm(`确定删除第${ch}章（正文+摘要）？`)) return;
+  await api(`/api/chapters/${ch}`,{method:'DELETE'});
+  log(`✓ 第${ch}章已删除`); loadAssets();
+  $('workspace-body').innerHTML = '<div class="empty-state">章节已删除</div>';
+};
+window.doImport = async function(pid) {
+  const txt = $('import-text').value;
+  try {
+    const data = JSON.parse(txt);
+    const r = await api(`/api/bible/${pid}/import`,{method:'POST',body:JSON.stringify(data)});
+    log(`✓ 导入完成：${JSON.stringify(r.imported)}`); loadAssets();
+  } catch(e) { alert('导入失败，请检查 JSON 格式：'+e.message); }
+};
 
 // ---- 流水线节点 ----
 function renderPipeline() {

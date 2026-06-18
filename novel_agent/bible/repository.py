@@ -199,3 +199,59 @@ class BibleRepository:
         return self.db.query(WorldSetting).filter(
             WorldSetting.project_id == self.project_id
         ).order_by(WorldSetting.order).all()
+
+    # ---- 删除操作 ----
+    def delete_character(self, name: str) -> bool:
+        c = self.get_character(name)
+        if not c: return False
+        self.db.delete(c); self._commit_or_flush()
+        return True
+
+    def delete_foreshadow(self, foreshadow_id: str) -> bool:
+        f = self.get_foreshadow(foreshadow_id)
+        if not f: return False
+        self.db.delete(f); self._commit_or_flush()
+        return True
+
+    def delete_outline(self, order: int) -> bool:
+        o = self.db.query(Outline).filter(
+            Outline.project_id == self.project_id, Outline.order == order).first()
+        if not o: return False
+        self.db.delete(o); self._commit_or_flush()
+        return True
+
+    def delete_chapter_summary(self, chapter: int) -> bool:
+        s = self.get_chapter_summary(chapter)
+        if not s: return False
+        self.db.delete(s); self._commit_or_flush()
+        return True
+
+    def delete_all_project_data(self) -> int:
+        """删除项目的所有圣经数据（不删项目本身），返回删除条数。"""
+        count = 0
+        for model in [Character, Foreshadow, ForeshadowImplant, ChapterSummary,
+                      EmotionArc, SubplotBoard, CharacterMatrix, WorldSetting,
+                      Outline, TruthEvent]:
+            items = self.db.query(model).filter(model.project_id == self.project_id).all()
+            for it in items:
+                self.db.delete(it); count += 1
+        self._commit_or_flush()
+        return count
+
+    # ---- 更新操作（全字段） ----
+    def update_foreshadow(self, foreshadow_id: str, **kwargs) -> Foreshadow | None:
+        f = self.get_foreshadow(foreshadow_id)
+        if not f: return None
+        for k, v in kwargs.items():
+            if hasattr(f, k): setattr(f, k, v)
+        self._commit_or_flush(); self.db.refresh(f)
+        return f
+
+    def update_outline(self, order: int, **kwargs) -> Outline | None:
+        o = self.db.query(Outline).filter(
+            Outline.project_id == self.project_id, Outline.order == order).first()
+        if not o: return None
+        for k, v in kwargs.items():
+            if hasattr(o, k): setattr(o, k, v)
+        self._commit_or_flush(); self.db.refresh(o)
+        return o
