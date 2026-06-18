@@ -107,6 +107,13 @@ async def cmd_resume(args):
         db.close()
 
 
+def cmd_serve(args):
+    """启动 API 服务 + 前端控制台。"""
+    import uvicorn
+    uvicorn.run("novel_agent.api.app:create_app", factory=True,
+                host="127.0.0.1", port=args.port, reload=False)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="novel-agent", description="多 Agent 小说生成")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -138,6 +145,10 @@ def main():
     p_resume.add_argument("--edits", default="")
     p_resume.add_argument("--config", default=None)
     p_resume.set_defaults(func=cmd_resume)
+
+    p_serve = sub.add_parser("serve", help="启动 API 服务 + 前端控制台")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args()
     if asyncio.iscoroutinefunction(args.func):
