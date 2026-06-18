@@ -78,7 +78,7 @@ async def cmd_plan(args):
         print(f"卷规划：{result.get('volume_plan', {})}")
         print(f"用 novel-agent resume --thread-id {args.thread_id} --approve 恢复")
     finally:
-        runner.close()
+        await runner.aclose()
         db.close()
 
 
@@ -103,7 +103,7 @@ async def cmd_resume(args):
         result = await runner.resume(decision, thread_id=args.thread_id)
         print(f"恢复完成：{result.get('status')}")
     finally:
-        runner.close()
+        await runner.aclose()
         db.close()
 
 

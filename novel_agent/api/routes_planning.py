@@ -39,12 +39,15 @@ def run_planning(req: PlanRequest):
     db, repo = _get_repo(req.project_id)
     runner = VolumeRunner(load_config(), repo=repo)
     try:
-        result = asyncio.run(runner.run(
-            volume=req.volume, chapter_count=req.chapter_count, thread_id=req.thread_id))
+        async def _go():
+            result = await runner.run(
+                volume=req.volume, chapter_count=req.chapter_count, thread_id=req.thread_id)
+            await runner.aclose()
+            return result
+        result = asyncio.run(_go())
         result["thread_id"] = req.thread_id
         return result
     finally:
-        runner.close()
         db.close()
 
 
@@ -61,9 +64,12 @@ def resume_planning(req: ResumeRequest):
     repo = BibleRepository(db, project_id=project.id)
     runner = VolumeRunner(cfg, repo=repo)
     try:
-        result = asyncio.run(runner.resume(
-            {"approved": req.approved, "edits": req.edits}, thread_id=req.thread_id))
+        async def _go():
+            result = await runner.resume(
+                {"approved": req.approved, "edits": req.edits}, thread_id=req.thread_id)
+            await runner.aclose()
+            return result
+        result = asyncio.run(_go())
         return result
     finally:
-        runner.close()
         db.close()

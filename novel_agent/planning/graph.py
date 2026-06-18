@@ -78,6 +78,7 @@ def apply_to_bible(state, repo, applier):
         except Exception:
             pass
     # 写大纲
+    errors = []
     for ch in state.get("outline", {}).get("chapters", []):
         try:
             applier.apply(Delta(
@@ -85,8 +86,8 @@ def apply_to_bible(state, repo, applier):
                 data=OutlineDelta(level="chapter", order=ch.get("chapter", 0),
                                   title=ch.get("title", ""), summary=ch.get("summary", "")),
             ))
-        except Exception:
-            pass
+        except Exception as e:
+            errors.append(f"outline ch{ch.get('chapter')}: {e}")
         # 写伏笔
         for f in ch.get("foreshadows", []):
             try:
@@ -97,8 +98,12 @@ def apply_to_bible(state, repo, applier):
                         plant_chapter=f.get("plant_chapter", 0),
                         planned_resolve_chapter=f.get("resolve_chapter", 0)),
                 ))
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"foreshadow {f.get('id')}: {e}")
+    if errors:
+        return {"status": "approved", "errors": errors}
+    # 显式 commit 确保所有 flush 的数据落盘（async 上下文里同步 session 可能不自动提交）
+    repo.db.commit()
     return {"status": "approved"}
 
 

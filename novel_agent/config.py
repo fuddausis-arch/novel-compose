@@ -37,8 +37,16 @@ class Config:
 
 
 def load_config(yaml_path: Path | None = None) -> Config:
-    """加载配置。yaml 文件可选，env 变量覆盖。"""
+    """加载配置。yaml 文件可选，env 变量覆盖。
+
+    yaml_path 为 None 时，自动检测当前目录下的 config.yaml。
+    """
     cfg = Config()
+    if yaml_path is None:
+        # 自动找当前目录的 config.yaml
+        default_path = Path("config.yaml")
+        if default_path.exists():
+            yaml_path = default_path
     if yaml_path and yaml_path.exists():
         with open(yaml_path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}

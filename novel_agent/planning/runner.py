@@ -68,6 +68,12 @@ class VolumeRunner:
             Command(resume=decision),
             config={"configurable": {"thread_id": thread_id}})
 
+    async def aclose(self):
+        """关闭 async 资源（aiosqlite 连接）。必须在事件循环内调用。"""
+        if self._aio_conn is not None:
+            await self._aio_conn.close()
+            self._aio_conn = None
+
     def close(self):
-        # async 连接在事件循环外无法 await close，留给 GC
+        """同步关闭（async 连接需在循环内关，此处仅占位，建议用 aclose）。"""
         pass
