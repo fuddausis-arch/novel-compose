@@ -55,6 +55,58 @@ async def cmd_generate(args):
         db.close()
 
 
+async def cmd_plan(args):
+    """卷级规划（M3b）：plan → 人审① → 写入圣经。"""
+    from novel_agent.bible import database as db_mod
+    from novel_agent.planning.runner import VolumeRunner
+
+    cfg = load_config(args.config)
+    set_config(cfg)
+    Base.metadata.create_all(bind=db_mod.engine)
+    db = SessionLocal()
+    project = db.query(Project).order_by(Project.id.desc()).first()
+    if not project:
+        print("错误：没有项目，请先 novel-agent init")
+        db.close()
+        return
+    repo = BibleRepository(db, project_id=project.id)
+    runner = VolumeRunner(cfg, repo=repo)
+    try:
+        result = await runner.run(volume=args.volume, chapter_count=args.chapters,
+                                  thread_id=args.thread_id)
+        print(f"规划已生成，等待人审①。thread_id={args.thread_id}")
+        print(f"卷规划：{result.get('volume_plan', {})}")
+        print(f"用 novel-agent resume --thread-id {args.thread_id} --approve 恢复")
+    finally:
+        runner.close()
+        db.close()
+
+
+async def cmd_resume(args):
+    """人审①后恢复规划。"""
+    from novel_agent.bible import database as db_mod
+    from novel_agent.planning.runner import VolumeRunner
+
+    cfg = load_config(args.config)
+    set_config(cfg)
+    Base.metadata.create_all(bind=db_mod.engine)
+    db = SessionLocal()
+    project = db.query(Project).order_by(Project.id.desc()).first()
+    if not project:
+        print("错误：没有项目")
+        db.close()
+        return
+    repo = BibleRepository(db, project_id=project.id)
+    runner = VolumeRunner(cfg, repo=repo)
+    try:
+        decision = {"approved": args.approve, "edits": args.edits or ""}
+        result = await runner.resume(decision, thread_id=args.thread_id)
+        print(f"恢复完成：{result.get('status')}")
+    finally:
+        runner.close()
+        db.close()
+
+
 def main():
     parser = argparse.ArgumentParser(prog="novel-agent", description="多 Agent 小说生成")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -72,6 +124,20 @@ def main():
     p_gen.add_argument("--title", required=True)
     p_gen.add_argument("--config", default=None)
     p_gen.set_defaults(func=cmd_generate)
+
+    p_plan = sub.add_parser("plan", help="卷级规划（M3b）")
+    p_plan.add_argument("--volume", required=True)
+    p_plan.add_argument("--chapters", type=int, default=30)
+    p_plan.add_argument("--thread-id", required=True)
+    p_plan.add_argument("--config", default=None)
+    p_plan.set_defaults(func=cmd_plan)
+
+    p_resume = sub.add_parser("resume", help="人审①后恢复规划")
+    p_resume.add_argument("--thread-id", required=True)
+    p_resume.add_argument("--approve", action="store_true")
+    p_resume.add_argument("--edits", default="")
+    p_resume.add_argument("--config", default=None)
+    p_resume.set_defaults(func=cmd_resume)
 
     args = parser.parse_args()
     if asyncio.iscoroutinefunction(args.func):

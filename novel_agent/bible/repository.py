@@ -186,3 +186,16 @@ class BibleRepository:
         if level:
             q = q.filter(Outline.level == level)
         return q.order_by(Outline.order).all()
+
+    # ---- 世界设定 ----
+    def create_world_setting(self, **kwargs) -> WorldSetting:
+        ws = WorldSetting(project_id=self.project_id, **kwargs)
+        self.db.add(ws)
+        self._commit_or_flush()
+        self.db.refresh(ws)
+        return ws
+
+    def list_world_settings(self) -> list[WorldSetting]:
+        return self.db.query(WorldSetting).filter(
+            WorldSetting.project_id == self.project_id
+        ).order_by(WorldSetting.order).all()
