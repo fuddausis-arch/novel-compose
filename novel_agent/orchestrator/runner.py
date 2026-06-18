@@ -11,6 +11,7 @@ from typing import Any
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from novel_agent.audit.auditor import Auditor
 from novel_agent.bible.repository import BibleRepository
 from novel_agent.config import Config
 from novel_agent.llm.client import LLMClient
@@ -24,13 +25,17 @@ class ChapterRunner:
     """单章生成运行器。"""
 
     def __init__(self, config: Config, repo: BibleRepository,
-                 llm_client: LLMClient | None = None):
+                 llm_client: LLMClient | None = None,
+                 auditor: Auditor | None = None):
         self.config = config
         self.repo = repo
         self.llm_client = llm_client or LLMClient(config.llm)
         self.recall = RecallMemory(config)
         self.archival = ArchivalMemory(config)
         self.applier = DeltaApplier(repo, archival=self.archival)
+        # Auditor 用独立 client（写审分离；M3 默认复用同配置，M4 可配不同模型/温度）
+        auditor_client = LLMClient(config.llm)
+        self.auditor = auditor or Auditor(auditor_client)
         # checkpoint 存储：持久化到文件，崩溃可恢复
         config.project_data_dir.mkdir(parents=True, exist_ok=True)
         self._saver_conn = sqlite3.connect(
@@ -46,6 +51,7 @@ class ChapterRunner:
             "recall": self.recall,
             "applier": self.applier,
             "archival": self.archival,
+            "auditor": self.auditor,
         }).with_config({"checkpointer": self.checkpointer})
 
     async def run(self, chapter: int, title: str,
