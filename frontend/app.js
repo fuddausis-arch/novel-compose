@@ -9,9 +9,23 @@ const PIPELINE_NODES = [
 ];
 let currentProject = null, currentThread = null, evtSource = null;
 
+// 全局错误捕获：任何未处理异常显示在事件日志，便于诊断
+window.addEventListener('error', e => {
+  const el = document.getElementById('event-log');
+  if (el) el.textContent += `❌ JS错误: ${e.message} @ ${e.filename}:${e.lineno}\n`;
+});
+window.addEventListener('unhandledrejection', e => {
+  const el = document.getElementById('event-log');
+  if (el) el.textContent += `❌ Promise错误: ${e.reason}\n`;
+});
+
 async function api(path, opts={}) {
   const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
-  if (!r.ok) throw new Error((await r.json().catch(()=>({detail:r.statusText}))).detail);
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { const j = await r.json(); msg = j.detail || JSON.stringify(j); } catch(_) {}
+    throw new Error(`${r.status} ${msg} [${path}]`);
+  }
   return r.json();
 }
 const $ = id => document.getElementById(id);
@@ -24,14 +38,15 @@ document.addEventListener('click', async (e)=>{
   const act = btn.dataset.act;
   const type = btn.dataset.type || '';
   const id = btn.dataset.id || '';
+  console.log('[click]', act, type, id, 'currentProject=', currentProject);
   if (act==='edit') renderEditForm(type, id || null);
-  else if (act==='delete') { if(confirm(`确定删除${labelOf(type)} ${id}？`)) deleteAsset(type, id); }
+  else if (act==='delete') { if(confirm('确定删除'+labelOf(type)+' '+id+'？')) deleteAsset(type, id); }
   else if (act==='delete-project') { if(confirm('确定删除整个项目及其所有数据？不可恢复！')) deleteProject(id); }
   else if (act==='save') saveAsset(type, id || null);
   else if (act==='cancel') renderAsset(type, id || null);
   else if (act==='edit-chapter') editChapter(id);
   else if (act==='save-chapter') saveChapter(id);
-  else if (act==='delete-chapter') { if(confirm(`确定删除第${id}章？`)) deleteChapter(id); }
+  else if (act==='delete-chapter') { if(confirm('确定删除第'+id+'章？')) deleteChapter(id); }
   else if (act==='do-import') doImport(btn.dataset.pid);
 });
 
@@ -250,7 +265,7 @@ async function saveAsset(type, id) {
       loadProjects();
     }
     log(`✓ ${type} 已保存`); loadAssets();
-  } catch(e) { alert('保存失败：'+e.message); }
+  } catch(e) { alert('保存失败：'+e.message); console.error('saveAsset error', e); }
 }
 
 async function deleteAsset(type, id) {
