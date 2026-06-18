@@ -37,7 +37,46 @@ def generate_chapter(req: GenerateRequest):
         db.close()
 
 
-@router.get("/list")
+@router.get("/generate/stream")
+async def generate_chapter_stream(project_id: int, chapter: int, title: str,
+                                  thread_id: str | None = None):
+    """SSE 流式生成章节，实时推送节点状态（assemble/write/audit/polish/...）。"""
+    import json
+    import uuid
+    from sse_starlette.sse import EventSourceResponse
+
+    cfg = load_config()
+    set_config(cfg)
+    from novel_agent.bible import database as db_mod
+    Base.metadata.create_all(bind=db_mod.engine)
+    db = SessionLocal()
+    repo = BibleRepository(db, project_id=project_id)
+    runner = ChapterRunner(cfg, repo=repo)
+    tid = thread_id or str(uuid.uuid4())
+
+    async def event_generator():
+        initial = {"project_id": project_id, "chapter": chapter, "title": title,
+                   "context": "", "draft": "", "status": "pending", "error": "",
+                   "word_count": 0, "draft_version": 0, "review_iterations": 0}
+        try:
+            async for mode, chunk in runner.graph.astream(
+                initial,
+                config={"configurable": {"thread_id": tid}},
+                stream_mode=["updates"],
+            ):
+                if mode == "updates":
+                    for node_name, node_output in chunk.items():
+                        yield {"event": "node", "data": json.dumps({
+                            "node": node_name, "output": node_output,
+                        }, ensure_ascii=False, default=str)}
+            yield {"event": "done", "data": json.dumps({"status": "completed", "thread_id": tid})}
+        except Exception as e:
+            yield {"event": "error", "data": json.dumps({"message": str(e)})}
+        finally:
+            runner.close()
+            db.close()
+
+    return EventSourceResponse(event_generator())
 def list_chapters(project_id: int):
     from novel_agent.memory.recall import RecallMemory
     cfg = load_config()

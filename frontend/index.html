@@ -3,86 +3,48 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>小说生成控制台</title>
+<title>小说工作台</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="app">
-  <aside class="sidebar">
-    <div class="brand">
-      <span class="logo">✦</span>
-      <span class="brand-name">Novel Agent</span>
+<div class="workspace">
+  <aside class="left-pane">
+    <div class="pane-header">
+      <select id="project-select" class="select"></select>
+      <button class="btn-icon" id="new-project-btn" title="新建项目">+</button>
     </div>
-    <div class="side-section">
-      <div class="side-label">项目</div>
-      <div id="project-list" class="project-list"></div>
-      <button class="btn btn-ghost btn-block" id="new-project-btn">+ 新建项目</button>
+    <div class="asset-tree" id="asset-tree">
+      <div class="empty-state">请选择项目</div>
     </div>
-    <div class="side-section">
-      <div class="side-label">创作流程</div>
-      <button class="btn btn-primary btn-block" id="plan-btn">① 卷级规划</button>
-      <button class="btn btn-primary btn-block" id="generate-btn">② 生成章节</button>
-    </div>
-    <div class="side-footer">
-      <span id="current-project-tag" class="tag tag-muted">未选择项目</span>
+    <div class="left-actions">
+      <button class="btn btn-primary btn-block" id="plan-btn">卷级规划</button>
     </div>
   </aside>
 
-  <main class="main">
-    <nav class="tabs">
-      <button class="tab active" data-tab="cockpit">驾驶舱</button>
-      <button class="tab" data-tab="review">人审</button>
-      <button class="tab" data-tab="bible">圣经</button>
-      <button class="tab" data-tab="reader">阅读</button>
-    </nav>
-
-    <section id="cockpit" class="panel active">
-      <div class="panel-header">
-        <h3>生成进度</h3>
-        <span id="pipeline-status" class="tag tag-idle">空闲</span>
-      </div>
-      <div id="status-log" class="log-box"></div>
-    </section>
-
-    <section id="review" class="panel">
-      <div class="panel-header"><h3>人审工作台</h3></div>
-      <div id="review-content" class="review-box">等待规划完成后在此审核</div>
-      <div class="action-row">
-        <button class="btn btn-success" id="approve-btn">✓ 通过</button>
-        <button class="btn btn-danger" id="reject-btn">✕ 打回</button>
-      </div>
-    </section>
-
-    <section id="bible" class="panel">
-      <div class="panel-header"><h3>圣经浏览</h3></div>
-      <div class="bible-grid">
-        <div class="bible-card">
-          <div class="bible-card-title">角色 <span id="char-count" class="count">0</span></div>
-          <div id="bible-chars" class="bible-card-body"></div>
-        </div>
-        <div class="bible-card">
-          <div class="bible-card-title">伏笔 <span id="fs-count" class="count">0</span></div>
-          <div id="bible-fs" class="bible-card-body"></div>
-        </div>
-        <div class="bible-card">
-          <div class="bible-card-title">大纲 <span id="ol-count" class="count">0</span></div>
-          <div id="bible-ol" class="bible-card-body"></div>
-        </div>
-        <div class="bible-card">
-          <div class="bible-card-title">章节摘要 <span id="sum-count" class="count">0</span></div>
-          <div id="bible-sum" class="bible-card-body"></div>
-        </div>
-      </div>
-    </section>
-
-    <section id="reader" class="panel">
-      <div class="panel-header">
-        <h3>章节阅读</h3>
-        <select id="chapter-select" class="select"></select>
-      </div>
-      <div id="reader-content" class="reader-box">选择章节查看正文</div>
-    </section>
+  <main class="center-pane">
+    <div class="pane-header">
+      <h2 id="workspace-title">选择左侧资产或章节</h2>
+    </div>
+    <div class="workspace-body" id="workspace-body">
+      <div class="empty-state">从左侧选择项目资产，或点击章节开始阅读</div>
+    </div>
   </main>
+
+  <aside class="right-pane">
+    <div class="pane-header">
+      <h3>AI 流水线</h3>
+      <span id="pipeline-tag" class="tag tag-idle">空闲</span>
+    </div>
+    <div class="pipeline-nodes" id="pipeline-nodes"></div>
+    <div class="event-log" id="event-log"></div>
+    <div class="right-actions">
+      <button class="btn btn-primary btn-block" id="generate-btn">生成下一章</button>
+      <div class="human-review" id="human-review" style="display:none">
+        <button class="btn btn-success btn-block" id="approve-btn">✓ 通过大纲</button>
+        <button class="btn btn-danger btn-block" id="reject-btn">✕ 打回</button>
+      </div>
+    </div>
+  </aside>
 </div>
 <script src="app.js"></script>
 </body>
