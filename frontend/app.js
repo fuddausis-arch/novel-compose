@@ -254,13 +254,20 @@ async function saveAsset(type, id) {
 }
 
 async function deleteAsset(type, id) {
+  const url = type==='char' ? `/api/bible/${currentProject}/characters/${encodeURIComponent(id)}`
+    : type==='fs' ? `/api/bible/${currentProject}/foreshadows/${encodeURIComponent(id)}`
+    : type==='outline' ? `/api/bible/${currentProject}/outlines/${id}` : '';
+  if (!url) { alert('未知类型：'+type); return; }
   try {
-    if (type==='char') await api(`/api/bible/${currentProject}/characters/${encodeURIComponent(id)}`,{method:'DELETE'});
-    else if (type==='fs') await api(`/api/bible/${currentProject}/foreshadows/${encodeURIComponent(id)}`,{method:'DELETE'});
-    else if (type==='outline') await api(`/api/bible/${currentProject}/outlines/${id}`,{method:'DELETE'});
-    log(`✓ 已删除 ${type} ${id}`); loadAssets();
-    $('workspace-body').innerHTML = '<div class="empty-state">已删除</div>';
-  } catch(e) { alert('删除失败：'+e.message); }
+    const r = await api(url, {method:'DELETE'});
+    log(`✓ 已删除 ${type} ${id}`);
+  } catch(e) {
+    alert('删除失败：'+e.message+'\nURL: '+url);
+    return;
+  }
+  // 刷新单独 try，避免刷新失败误报为删除失败
+  try { await loadAssets(); } catch(e) { log('刷新资产树失败：'+e.message); }
+  $('workspace-body').innerHTML = '<div class="empty-state">已删除</div>';
 }
 
 async function deleteProject(id) {
