@@ -31,6 +31,29 @@ async function api(path, opts={}) {
 const $ = id => document.getElementById(id);
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+// 页面内输入对话框（替代浏览器 prompt，因为某些环境 prompt 不可用）
+function inputDialog(label, defaultVal='') {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--bg-elev);border:1px solid var(--border);border-radius:8px;padding:20px;min-width:360px;max-width:90vw';
+    box.innerHTML = `<div style="font-size:13px;margin-bottom:10px;color:var(--text)">${esc(label)}</div>
+      <input id="dlg-input" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:9px;border-radius:6px;font-size:14px;font-family:inherit" value="${esc(defaultVal)}">
+      <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+        <button id="dlg-cancel" class="btn btn-ghost btn-sm">取消</button>
+        <button id="dlg-ok" class="btn btn-primary btn-sm">确定</button></div>`;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const input = box.querySelector('#dlg-input');
+    input.focus(); input.select();
+    const close = (val) => { document.body.removeChild(overlay); resolve(val); };
+    box.querySelector('#dlg-ok').onclick = () => close(input.value);
+    box.querySelector('#dlg-cancel').onclick = () => close(null);
+    input.onkeydown = (e) => { if(e.key==='Enter') close(input.value); if(e.key==='Escape') close(null); };
+  });
+}
+
 // ---- 事件委托：所有 data-act 按钮统一处理 ----
 document.addEventListener('click', async (e)=>{
   const btn = e.target.closest('[data-act]');
@@ -59,8 +82,10 @@ async function loadProjects() {
   sel.onchange = ()=>{ if(sel.value){ currentProject=parseInt(sel.value); loadAssets(); } };
 }
 $('new-project-btn').onclick = async ()=>{
-  const title = prompt('项目标题'); if(!title) return;
-  await api('/api/projects',{method:'POST',body:JSON.stringify({title,genre:prompt('类型','科幻')||'',summary:prompt('一句话简介')||''})});
+  const title = await inputDialog('项目标题'); if(!title) return;
+  const genre = await inputDialog('类型', '科幻') || '';
+  const summary = await inputDialog('一句话简介') || '';
+  await api('/api/projects',{method:'POST',body:JSON.stringify({title,genre,summary})});
   loadProjects();
 };
 
@@ -265,19 +290,19 @@ async function saveAsset(type, id) {
       loadProjects();
     }
     log(`✓ ${type} 已保存`); loadAssets();
-  } catch(e) { alert('保存失败：'+e.message); console.error('saveAsset error', e); }
+  } catch(e) { log('❌ 保存失败：'+e.message); alert('保存失败：'+e.message); console.error('saveAsset', e); }
 }
 
 async function deleteAsset(type, id) {
   const url = type==='char' ? `/api/bible/${currentProject}/characters/${encodeURIComponent(id)}`
     : type==='fs' ? `/api/bible/${currentProject}/foreshadows/${encodeURIComponent(id)}`
     : type==='outline' ? `/api/bible/${currentProject}/outlines/${id}` : '';
-  if (!url) { alert('未知类型：'+type); return; }
+  if (!url) { log('❌ 未知类型：'+type); return; }
   try {
     const r = await api(url, {method:'DELETE'});
     log(`✓ 已删除 ${type} ${id}`);
   } catch(e) {
-    alert('删除失败：'+e.message+'\nURL: '+url);
+    log('❌ 删除失败：'+e.message+' URL:'+url);
     return;
   }
   // 刷新单独 try，避免刷新失败误报为删除失败
@@ -335,10 +360,10 @@ function setNodeStatus(key, status, meta='') {
 }
 function log(msg){ const el=$('event-log'); el.textContent+=msg+'\n'; el.scrollTop=el.scrollHeight; }
 
-$('generate-btn').onclick = ()=>{
-  if (!currentProject) return alert('先在左侧选择项目');
-  const ch = prompt('章节号','1'); if(!ch) return;
-  const title = prompt('章节标题','第'+ch+'章'); if(!title) return;
+$('generate-btn').onclick = async ()=>{
+  if (!currentProject) { log('请先在左侧选择项目'); return; }
+  const ch = await inputDialog('章节号', '1'); if(!ch) return;
+  const title = await inputDialog('章节标题', '第'+ch+'章'); if(!title) return;
   startGenerate(currentProject, parseInt(ch), title);
 };
 function startGenerate(pid, ch, title) {
@@ -371,8 +396,8 @@ function startGenerate(pid, ch, title) {
 }
 
 $('plan-btn').onclick = async ()=>{
-  if(!currentProject) return alert('先选项目');
-  const vol = prompt('卷名','卷一'); if(!vol) return;
+  if(!currentProject) { log('请先选择项目'); return; }
+  const vol = await inputDialog('卷名', '卷一'); if(!vol) return;
   const tid = 'plan_'+Date.now(); currentThread = tid;
   $('pipeline-tag').textContent='规划中'; $('pipeline-tag').className='tag tag-running';
   $('event-log').textContent=''; log('启动卷级规划...');
