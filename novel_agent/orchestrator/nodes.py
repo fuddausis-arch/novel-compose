@@ -1,12 +1,18 @@
 """编排节点函数：每个节点接收 state + 依赖，返回 state 更新。
 
-节点设计为接受依赖注入（repo/llm_client/recall/applier），
+节点设计为接受依赖注入（repo/llm_client/recall/applier/auditor），
 便于测试 mock 和 runner 组装。
+
+M3 扩展：写审分离 + 反馈循环节点（audit/polish/rewrite/summarize）。
 """
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
+from novel_agent.audit.auditor import Auditor
+from novel_agent.audit.schemas import AuditReport
 from novel_agent.bible.repository import BibleRepository
 from novel_agent.llm.client import LLMClient
 from novel_agent.memory.core import CoreMemoryAssembler
@@ -41,13 +47,127 @@ async def write_chapter(state: ChapterGenState,
     try:
         draft = await llm_client.generate(prompt, system=WRITER_SYSTEM_PROMPT)
         return {"draft": draft, "status": "drafted",
+                "draft_version": state.get("draft_version", 0) + 1,
                 "word_count": len(draft)}
     except Exception as e:
         return {"status": "failed", "error": str(e)}
 
 
+async def audit_chapter(state: ChapterGenState, auditor: Auditor,
+                        repo: BibleRepository) -> dict:
+    """节点：独立审校草稿，返回审计报告。写审分离铁律。"""
+    report = await auditor.audit(
+        chapter=state["chapter"], title=state.get("title", ""),
+        draft=state["draft"], repo=repo,
+    )
+    iterations = state.get("review_iterations", 0) + 1
+    return {
+        "audit_report": report.model_dump(),
+        "review_iterations": iterations,
+        "status": "audited" if report.passed else "needs_rewrite",
+    }
+
+
+def route_after_audit(state: ChapterGenState) -> str:
+    """条件边：审计达标→polish；不达标且未超3次→write 回环；超3次→end_failed。"""
+    report = AuditReport(**state.get("audit_report", {}))
+    if report.passed:
+        return "polish"
+    if state.get("review_iterations", 0) >= 3:
+        return "end_failed"
+    return "rewrite"
+
+
+async def rewrite_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict:
+    """节点：基于审计建议重写（第2轮起注入历史审阅痕迹）。"""
+    report = AuditReport(**state.get("audit_report", {}))
+    suggestions = "\n".join(f"- {s}" for s in report.suggestions) or "无具体建议"
+    issues = "\n".join(f"- {i.dimension}({i.severity}): {i.message}" for i in report.issues) or "无"
+    prompt = (
+        f"重写第{state['chapter']}章《{state.get('title', '')}》。\n\n"
+        f"【上下文】\n{state.get('context', '')}\n\n"
+        f"【上一版草稿】\n{state.get('draft', '')}\n\n"
+        f"【审计问题】\n{issues}\n\n"
+        f"【修订建议】\n{suggestions}\n\n"
+        f"要求：针对问题重写，只输出正文。"
+    )
+    try:
+        draft = await llm_client.generate(prompt, system=WRITER_SYSTEM_PROMPT)
+        return {"draft": draft,
+                "draft_version": state.get("draft_version", 1) + 1,
+                "word_count": len(draft), "status": "drafted"}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+
+
+async def polish_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict:
+    """节点：润色优化（文风统一 + AI 痕迹清除）。"""
+    POLISH_SYSTEM = (
+        "你是网文润色编辑。优化语言表达，清除 AI 痕迹词（忽然/竟然/不禁等限频），"
+        "保持原意和情节，增强画面感。只输出润色后正文。"
+    )
+    prompt = f"润色以下章节正文：\n\n{state.get('draft', '')}"
+    try:
+        polished = await llm_client.generate(prompt, system=POLISH_SYSTEM)
+        return {"polished": polished, "status": "polished",
+                "word_count": len(polished)}
+    except Exception as e:
+        # 润色失败不影响主流程，用原草稿
+        return {"polished": state.get("draft", ""), "status": "polished",
+                "error": f"润色失败用原稿: {e}"}
+
+
+def save_text_polished(state: ChapterGenState, recall: RecallMemory) -> dict:
+    """节点：保存润色后正文到文件。"""
+    content = state.get("polished") or state.get("draft", "")
+    recall.save_chapter_text(
+        chapter=state["chapter"], title=state.get("title", ""),
+        content=content,
+    )
+    return {"status": "saved"}
+
+
+async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
+                            applier: DeltaApplier) -> dict:
+    """节点：调 LLM 抽取结构化摘要并存入圣经（升级 M2 的简化版）。"""
+    content = state.get("polished") or state.get("draft", "")
+    prompt = (
+        f"为以下章节抽取摘要，输出 JSON：\n"
+        f'{{"core_events":"","characters_present":"","emotion_changes":"",'
+        f'"foreshadow_dynamics":"","chapter_hook":""}}\n\n{content}\n\n只输出 JSON。'
+    )
+    SUM_SYSTEM = "你是网文摘要助手。精炼抽取章节核心信息。只输出 JSON。"
+    data = {}
+    try:
+        raw = await llm_client.generate(prompt, system=SUM_SYSTEM)
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        data = json.loads(m.group(0)) if m else {}
+    except Exception:
+        data = {}
+
+    delta = Delta(
+        target="chapter_summary", action="create", chapter=state["chapter"],
+        data=SummaryDelta(
+            title=state.get("title", ""),
+            word_count=state.get("word_count", len(content)),
+            core_events=data.get("core_events", content[:200]),
+            characters_present=data.get("characters_present", ""),
+            emotion_changes=data.get("emotion_changes", ""),
+            foreshadow_dynamics=data.get("foreshadow_dynamics", ""),
+            subplot_progress=data.get("subplot_progress", ""),
+            chapter_hook=data.get("chapter_hook", ""),
+        ),
+    )
+    result = applier.apply(delta)
+    if not result.success:
+        return {"status": "failed", "error": result.message}
+    return {"status": "completed"}
+
+
+# ---- M2 保留的兼容节点（旧 graph 测试仍用） ----
+
 def save_text(state: ChapterGenState, recall: RecallMemory) -> dict:
-    """节点 3：把正文存到文件。"""
+    """M2 兼容：把正文存到文件（不区分 polished）。"""
     recall.save_chapter_text(
         chapter=state["chapter"], title=state.get("title", ""),
         content=state["draft"],
@@ -56,7 +176,7 @@ def save_text(state: ChapterGenState, recall: RecallMemory) -> dict:
 
 
 def save_summary(state: ChapterGenState, applier: DeltaApplier) -> dict:
-    """节点 4：抽取摘要并存入圣经（M2 简化：用 draft 前 200 字作摘要）。"""
+    """M2 兼容：简化摘要（用 draft 前 200 字）。"""
     draft = state.get("draft", "")
     summary_text = draft[:200] if draft else ""
     delta = Delta(
