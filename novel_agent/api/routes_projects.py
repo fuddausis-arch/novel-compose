@@ -142,3 +142,34 @@ def delete_project(project_id: int, purge_data: bool = True):
                 "data_purged": deleted if purge_data else 0}
     finally:
         db.close()
+
+
+class BatchDeleteRequest(BaseModel):
+    project_ids: list[int]
+
+
+@router.post("/batch/delete")
+def batch_delete_projects(req: BatchDeleteRequest):
+    """批量删除项目。"""
+    cfg = load_config()
+    db = _setup_db()
+    deleted_ids = []
+    try:
+        for pid in req.project_ids:
+            p = db.query(Project).filter(Project.id == pid).first()
+            if not p:
+                continue
+            try:
+                repo = BibleRepository(db, project_id=pid)
+                repo.delete_all_project_data()
+            except Exception:
+                pass
+            db.delete(p)
+            project_dir = cfg.project_dir(pid)
+            if project_dir.exists():
+                shutil.rmtree(project_dir, ignore_errors=True)
+            deleted_ids.append(pid)
+        db.commit()
+        return {"deleted": True, "project_ids": deleted_ids, "count": len(deleted_ids)}
+    finally:
+        db.close()

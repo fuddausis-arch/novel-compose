@@ -104,6 +104,17 @@ class Auditor:
         if "overall_score" not in data:
             data["overall_score"] = 60
 
+        # issues 字段补全
+        raw_issues = data.get("issues", [])
+        if isinstance(raw_issues, list):
+            for i in raw_issues:
+                if not isinstance(i, dict):
+                    continue
+                i.setdefault("dimension", "未分类")
+                i.setdefault("severity", "minor")
+                i.setdefault("message", "无描述")
+                i.setdefault("location", "")
+
         try:
             return AuditReport.model_validate(data)
         except Exception as e:

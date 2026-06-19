@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Globe, LayoutDashboard, List, Route, ScrollText, Users, Download, FileText, Search, ChevronDown, Shield, Network, Skull, Settings } from "lucide-react";
+import { Globe, LayoutDashboard, List, Route, ScrollText, Users, Download, FileText, Search, ChevronDown, Shield, Network, Skull, Settings, Trash2 } from "lucide-react";
 import type { Project, Character, Foreshadow, Outline, WorldSetting, ChapterListItem, ChapterText, AssetType, Faction, FactionRelationship, CharacterRelationship, Monster } from "@/types";
 import { CreateProjectDialog } from "@/components/create-project-dialog";
 import { SidebarSection, SidebarGroup, SidebarItem, VirtualList } from "@/components/sidebar";
@@ -58,9 +58,33 @@ export function AppSidebar({
   characterRelationships,
   monsters,
 }: AppSidebarProps) {
-  const { showError } = useToast();
+  const { showError, showSuccess } = useToast();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [outlinesOpen, setOutlinesOpen] = useState(true);
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleBatchDelete = async () => {
+    try {
+      const ids = Array.from(selectedIds);
+      const r = await api.batchDeleteProjects(ids);
+      showSuccess(`已删除 ${r.count} 个项目`);
+      setBatchDeleteOpen(false);
+      setSelectedIds(new Set());
+      window.location.reload();
+    } catch (e: any) {
+      showError("批量删除失败：" + e.message);
+    }
+  };
 
   const selectChapter = async (chapter: number) => {
     try {
@@ -93,25 +117,78 @@ export function AppSidebar({
             />
           </div>
 
-          <div className="relative">
-            <select
-              value={currentProject ? String(currentProject.id) : ""}
-              onChange={(e) => onSelectProject(Number(e.target.value))}
-              className="w-full h-10 appearance-none rounded-xl border border-border-strong bg-surface px-3 pr-8 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 cursor-pointer hover:border-border transition-colors"
+          <div className="flex gap-1">
+            <div className="relative flex-1">
+              <select
+                value={currentProject ? String(currentProject.id) : ""}
+                onChange={(e) => onSelectProject(Number(e.target.value))}
+                className="w-full h-10 appearance-none rounded-xl border border-border-strong bg-surface px-3 pr-8 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 cursor-pointer hover:border-border transition-colors"
+              >
+                <option value="">选择项目</option>
+                {projects
+                  .filter((p) => p.title.toLowerCase().includes(projectSearch.toLowerCase()))
+                  .slice(0, 100)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>{p.title}</option>
+                  ))}
+                {projects.filter((p) => p.title.toLowerCase().includes(projectSearch.toLowerCase())).length > 100 && (
+                  <option value="" disabled>…还有更多项目，请使用搜索</option>
+                )}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted pointer-events-none" />
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-10 px-2 shrink-0"
+              title="批量管理项目"
+              onClick={() => setBatchDeleteOpen(!batchDeleteOpen)}
             >
-              <option value="">选择项目</option>
-              {projects
-                .filter((p) => p.title.toLowerCase().includes(projectSearch.toLowerCase()))
-                .slice(0, 100)
-                .map((p) => (
-                  <option key={p.id} value={p.id}>{p.title}</option>
-                ))}
-              {projects.filter((p) => p.title.toLowerCase().includes(projectSearch.toLowerCase())).length > 100 && (
-                <option value="" disabled>…还有更多项目，请使用搜索</option>
-              )}
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted pointer-events-none" />
+              <Trash2 className="h-4 w-4" />
+            </Button>
           </div>
+
+          {batchDeleteOpen && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted">
+                <span>勾选要删除的项目</span>
+                <button
+                  className="text-primary hover:underline"
+                  onClick={() => {
+                    const filtered = projects.filter((p) => p.title.toLowerCase().includes(projectSearch.toLowerCase()));
+                    if (selectedIds.size === filtered.length) {
+                      setSelectedIds(new Set());
+                    } else {
+                      setSelectedIds(new Set(filtered.map((p) => p.id)));
+                    }
+                  }}
+                >
+                  {selectedIds.size > 0 ? "取消全选" : "全选"}
+                </button>
+              </div>
+              <div className="max-h-48 overflow-y-auto space-y-1 rounded-xl border border-border p-1">
+                {projects
+                  .filter((p) => p.title.toLowerCase().includes(projectSearch.toLowerCase()))
+                  .slice(0, 200)
+                  .map((p) => (
+                    <label key={p.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-foreground/5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(p.id)}
+                        onChange={() => toggleSelect(p.id)}
+                        className="h-4 w-4 accent-primary"
+                      />
+                      <span className="text-sm truncate">{p.title}</span>
+                    </label>
+                  ))}
+              </div>
+              {selectedIds.size > 0 && (
+                <Button variant="danger" size="sm" className="w-full" onClick={handleBatchDelete}>
+                  删除选中 {selectedIds.size} 个项目
+                </Button>
+              )}
+            </div>
+          )}
 
           {currentProject && (
             <div className="mt-4 space-y-1">

@@ -51,10 +51,23 @@ def clean_chapter_text(text: str, chapter: int, title: str = "") -> str:
 def _looks_like_json_not_prose(text: str) -> bool:
     """检测 LLM 是否返回了 JSON 结构而非小说正文。"""
     s = text.strip()
+    # 以 { 开头 } 结尾，大概率是 JSON
     if s.startswith("{") and s.endswith("}"):
         return True
-    if '"suggestions"' in s or '"payload"' in s:
+    # 以 [ 开头 ] 结尾，可能是 JSON 数组
+    if s.startswith("[") and s.endswith("]"):
         return True
+    # 检测常见 JSON 结构关键词
+    json_markers = ['"suggestions"', '"payload"', '"chapters"', '"volumes"',
+                    '"arcs"', '"error"', '"message"', '"characters"',
+                    '"world_settings"', '"foreshadows"']
+    for marker in json_markers:
+        if marker in s:
+            # 但要排除正文中偶然出现的这些词（如对话中说 "error"）
+            # 只有当它以 JSON 格式出现时才判定
+            # 简单 heuristic：如果文本前 200 字符内出现这些 marker，判定为 JSON
+            if marker in s[:200]:
+                return True
     return False
 
 

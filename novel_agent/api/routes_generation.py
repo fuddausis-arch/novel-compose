@@ -198,10 +198,10 @@ async def generate_world(req: GenerateWorldRequest):
             raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
         if not result:
-            return GenerateWorldResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
         settings = result.get("world_settings") or result.get("worlds") or result.get("settings") or []
         if not settings:
-            return GenerateWorldResponse(created=0, items=[], warning=f"LLM 未返回有效设定项。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 未返回有效设定项。原始返回前200字: {raw[:200]}")
         items = []
         for i, s in enumerate(settings):
             data = {
@@ -246,10 +246,10 @@ async def generate_characters(req: GenerateCharactersRequest):
             raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
         if not result:
-            return GenerateCharactersResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
         characters = result.get("characters") or result.get("chars") or result.get("roles") or []
         if not characters:
-            return GenerateCharactersResponse(created=0, items=[], warning=f"LLM 未返回有效角色项。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 未返回有效角色项。原始返回前200字: {raw[:200]}")
         items = []
         for c in characters:
             data = {
@@ -348,10 +348,10 @@ async def generate_volumes(req: GenerateVolumesRequest):
             raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
         if not result:
-            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
         volumes = result.get("volumes") or result.get("outlines") or []
         if not volumes:
-            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 未返回有效卷级大纲。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 未返回有效卷级大纲。原始返回前200字: {raw[:200]}")
         items = []
         for idx, o in enumerate(volumes):
             order = int(o.get("order", idx + 1))
@@ -407,10 +407,10 @@ async def generate_arcs(req: GenerateArcsRequest):
             raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
         if not result:
-            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
         arcs = result.get("arcs") or result.get("sections") or []
         if not arcs:
-            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 未返回有效细纲小节。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 未返回有效细纲小节。原始返回前200字: {raw[:200]}")
         items = []
         for idx, o in enumerate(arcs):
             order = int(o.get("order", idx + 1))
@@ -471,10 +471,10 @@ async def generate_chapters(req: GenerateChaptersRequest):
             raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
         if not result:
-            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
         chapters = result.get("chapters") or result.get("chapter_outlines") or []
         if not chapters:
-            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 未返回有效章纲。原始返回前200字: {raw[:200]}")
+            raise HTTPException(422, f"LLM 未返回有效章纲。原始返回前200字: {raw[:200]}")
         items = []
         for idx, o in enumerate(chapters):
             order = int(o.get("order", max_chapter + 1 + idx))

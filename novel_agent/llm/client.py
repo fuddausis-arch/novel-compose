@@ -71,13 +71,17 @@ class LLMClient:
             except httpx.HTTPStatusError as e:
                 code = e.response.status_code
                 body = e.response.text
-                # 429 限流 / 503 服务不可用：可重试（退避更久）
+                body_lower = body.lower()
+                # 配额超限检测（适配多平台）
+                quota_keywords = ["quota", "accountquotaexceeded", "exceeded", "limit reached",
+                                  "insufficient", "余额不足", "配额", "rate limit", "ratelimit"]
+                is_quota = any(kw in body_lower or kw in body for kw in quota_keywords)
+                if is_quota:
+                    raise LLMError(self._quota_msg(body)) from e
+                # 429 限流 / 503 服务不可用：可重试
                 if code in (429, 503) and attempt < max_retries - 1:
-                    # 配额超限通常需等很久，重试意义不大，直接友好报错
-                    if "quota" in body.lower() or "AccountQuotaExceeded" in body:
-                        raise LLMError(self._quota_msg(body)) from e
                     last_err = e
-                    await asyncio.sleep(2 ** (attempt + 2))  # 4/8/16 秒
+                    await asyncio.sleep(2 ** (attempt + 2))
                     continue
                 # 401/403 鉴权错误：不重试
                 if code in (401, 403):

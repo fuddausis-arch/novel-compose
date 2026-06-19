@@ -35,6 +35,7 @@ export const api = {
   createProject: (data: Partial<Project> & { template_key?: string }) => request<Project>("/api/projects", { method: "POST", body: JSON.stringify(data) }),
   updateProject: (id: number, data: Partial<Project>) => request<Project>(`/api/projects/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteProject: (id: number) => request<void>(`/api/projects/${id}`, { method: "DELETE" }),
+  batchDeleteProjects: (ids: number[]) => request<{ deleted: boolean; project_ids: number[]; count: number }>(`/api/projects/batch/delete`, { method: "POST", body: JSON.stringify({ project_ids: ids }) }),
   listGenreTemplates: () => request<{ key: string; title: string; description: string }[]>("/api/projects/templates/genres"),
 
   // Bible: characters

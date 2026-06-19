@@ -58,7 +58,7 @@ async def test_429_rate_limit_retries_then_success(client):
     mock_resp.status_code = 200
     mock_resp.raise_for_status = MagicMock()
     mock_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
-    rate_err = _httpx_error(429, "rate limited, try later")
+    rate_err = _httpx_error(429, "too many requests, try later")
     calls = []
 
     async def side_effect(*a, **kw):

@@ -1316,3 +1316,18 @@ def _event_dict(e):
         "payload": e.payload,
         "timestamp": e.timestamp.isoformat() if e.timestamp else None,
     }
+
+
+def _foreshadow_dict(f):
+    return {
+        "id": f.foreshadow_id,
+        "foreshadow_id": f.foreshadow_id,
+        "tier": f.tier,
+        "status": f.status,
+        "description": f.description,
+        "plant_chapter": f.plant_chapter,
+        "planned_resolve_chapter": f.planned_resolve_chapter,
+        "depends_on": f.depends_on,
+        "created_at": f.created_at.isoformat() if f.created_at else None,
+        "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+    }
