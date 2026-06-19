@@ -8,9 +8,9 @@ def test_issue_valid():
 
 
 def test_issue_tolerant_severity():
-    # 宽容化：任意字符串 severity 都接受
+    # 宽容化：非标准 severity 降级为 minor 而非报错
     i = Issue(dimension="x", severity="unknown", message="y")
-    assert i.severity == "unknown"
+    assert i.severity == "minor"
 
 
 def test_audit_report_passed():

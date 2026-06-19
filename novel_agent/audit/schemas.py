@@ -5,15 +5,26 @@ Fitness 总分 = 字数/重复率/审阅通过率/读者分/大纲偏离 加权�
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 
 class Issue(BaseModel):
     """单个审计问题。"""
     dimension: str = ""
-    severity: str = "minor"
+    severity: Literal["critical", "important", "minor"] = "minor"
     message: str = ""
     location: str = ""       # 段落/行号引用
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _coerce_severity(cls, v):
+        if isinstance(v, str):
+            low = v.strip().lower()
+            if low in ("critical", "important", "minor"):
+                return low
+        return "minor"
 
 
 class AuditReport(BaseModel):

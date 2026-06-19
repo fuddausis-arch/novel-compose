@@ -79,8 +79,9 @@ class Outliner:
             f"为《{project.title}》的{volume}规划 {chapter_count} 章细纲。\n\n"
             f"类型：{project.genre}\n简介：{project.summary}\n\n"
             f"输出 JSON：{{\"chapters\":[{{\"chapter\":1,\"title\":\"\","
-            f"\"summary\":\"\",\"foreshadows\":[{{\"id\":\"S-001\","
+            f"\"summary\":\"\",\"foreshadows\":[{{\"id\":\"F-XXX\","
             f"\"description\":\"\",\"plant_chapter\":1,\"resolve_chapter\":3}}]}}]}}\n"
+            f"伏笔 ID 需项目内唯一（格式 F-001/F-002...），不要照抄示例值 F-XXX。\n"
             f"只输出 JSON。"
         )
         raw = await self.llm_client.generate(prompt, system=OUTLINER_SYSTEM)

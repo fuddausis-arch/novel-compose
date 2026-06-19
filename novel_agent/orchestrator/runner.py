@@ -33,8 +33,8 @@ class ChapterRunner:
         self.recall = RecallMemory(config, project_id=repo.project_id)
         self.archival = ArchivalMemory(config, project_id=repo.project_id)
         self.applier = DeltaApplier(repo, archival=self.archival)
-        # Auditor 用独立 client（写审分离；M3 默认复用同配置，M4 可配不同模型/温度）
-        auditor_client = LLMClient(config.llm)
+        # Auditor 用独立 client（写审分离；auditor_llm 为 None 时回退到 llm）
+        auditor_client = LLMClient(config.auditor_llm or config.llm)
         self.auditor = auditor or Auditor(auditor_client)
         # checkpoint 存储：持久化到文件，崩溃可恢复
         config.project_data_dir.mkdir(parents=True, exist_ok=True)

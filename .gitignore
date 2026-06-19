@@ -32,3 +32,11 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# 工具产物与临时文件
+.superpowers/
+frontend-old-native/
+theme-*.png
+design-mockups.png
+tmp-*.py
+tmp-*.html

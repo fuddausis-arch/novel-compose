@@ -18,6 +18,13 @@ from novel_agent.orchestrator.state import ChapterGenState
 NODE_NAMES = ["assemble", "write", "audit", "rewrite", "polish", "save_text", "summarize"]
 
 
+def _route_after_write(state: ChapterGenState) -> str:
+    """write/rewrite 后：失败直接 END，成功进 audit。"""
+    if state.get("status") == "failed" or not state.get("draft", "").strip():
+        return "end_failed"
+    return "audit"
+
+
 def build_graph(deps: dict[str, Any] | None = None):
     """构建写审循环流水线图。
 
@@ -47,13 +54,21 @@ def build_graph(deps: dict[str, Any] | None = None):
 
     graph.add_edge(START, "assemble")
     graph.add_edge("assemble", "write")
-    graph.add_edge("write", "audit")
+    # write 后条件路由：失败直接 END，成功进 audit
+    graph.add_conditional_edges(
+        "write", _route_after_write,
+        {"audit": "audit", "end_failed": END},
+    )
     # 审计后条件路由
     graph.add_conditional_edges(
         "audit", route_after_audit,
         {"polish": "polish", "rewrite": "rewrite", "end_failed": END},
     )
-    graph.add_edge("rewrite", "audit")     # 重写后回审计
+    # rewrite 后也条件路由：失败直接 END，成功回 audit
+    graph.add_conditional_edges(
+        "rewrite", _route_after_write,
+        {"audit": "audit", "end_failed": END},
+    )
     graph.add_edge("polish", "save_text")
     graph.add_edge("save_text", "summarize")
     graph.add_edge("summarize", END)

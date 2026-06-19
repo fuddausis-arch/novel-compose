@@ -13,7 +13,8 @@ import re
 from typing import Any
 
 from novel_agent.audit.auditor import Auditor
-from novel_agent.audit.schemas import AuditReport
+from novel_agent.audit.schemas import AuditReport, Issue
+from novel_agent.audit.validator import run_deterministic_checks
 from novel_agent.bible.repository import BibleRepository
 from novel_agent.llm.client import LLMClient
 from novel_agent.memory.core import CoreMemoryAssembler
@@ -91,9 +92,51 @@ async def write_chapter(state: ChapterGenState,
 async def audit_chapter(state: ChapterGenState, auditor: Auditor,
                         repo: BibleRepository) -> dict:
     """节点：独立审校草稿，返回审计报告。写审分离铁律。"""
+    # 草稿为空或生成失败时跳过 LLM 审计，直接返回失败报告
+    if state.get("status") == "failed" or not state.get("draft", "").strip():
+        logger.warning("audit_chapter 第%d章：草稿为空或生成失败，跳过审计", state["chapter"])
+        empty_report = AuditReport(
+            passed=False, overall_score=0,
+            summary="草稿为空或生成失败，无法审计",
+            issues=[Issue(dimension="draft", severity="critical",
+                          message="草稿为空或生成失败")],
+        )
+        return {
+            "audit_report": empty_report.model_dump(),
+            "review_iterations": state.get("review_iterations", 0) + 1,
+            "status": "failed",
+        }
+
+    # 确定性硬检查：字数/限频词/伏笔关键词命中，用代码查不交给 LLM
+    to_plant = repo.get_foreshadows_to_plant(state["chapter"])
+    plant_ids = [f.foreshadow_id for f in to_plant]
+    det_result = run_deterministic_checks(state["draft"], plant_ids)
+
+    # 有 critical 硬检查失败直接打回，不浪费 LLM 调用
+    det_issues = [Issue(**i) for i in det_result["issues"]]
+    has_critical = any(i.severity == "critical" for i in det_issues)
+    if has_critical:
+        return {
+            "audit_report": AuditReport(
+                passed=False, overall_score=30,
+                issues=det_issues,
+                summary="确定性检查发现 critical 问题",
+            ).model_dump(),
+            "review_iterations": state.get("review_iterations", 0) + 1,
+            "status": "needs_rewrite",
+        }
+
+    # 无 critical：继续调 LLM 审计，把确定性检查结果附在 draft 前作为额外上下文
+    audit_draft = state["draft"]
+    if det_issues:
+        det_note = "【确定性检查提示】\n" + "\n".join(
+            f"- {i.dimension}({i.severity}): {i.message}" for i in det_issues
+        ) + "\n\n"
+        audit_draft = det_note + state["draft"]
+
     report = await auditor.audit(
         chapter=state["chapter"], title=state.get("title", ""),
-        draft=state["draft"], repo=repo,
+        draft=audit_draft, repo=repo,
     )
     iterations = state.get("review_iterations", 0) + 1
     return {
@@ -233,6 +276,20 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
             ))
         except Exception:
             pass
+
+    # 更新角色状态（位置/情感），闭环角色动态状态
+    for cs in data.get("character_states", []) or []:
+        name = cs.get("name", "").strip()
+        if name and repo:
+            char = repo.get_character(name)
+            if char:
+                updates = {}
+                if cs.get("location"):
+                    updates["current_location"] = cs["location"]
+                if cs.get("emotion"):
+                    updates["current_emotion"] = cs["emotion"]
+                if updates:
+                    repo.update_character(name, **updates)
 
     return {"status": "completed"}
 

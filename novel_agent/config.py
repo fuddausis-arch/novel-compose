@@ -54,6 +54,7 @@ def get_model_context_length(model: str) -> int:
 class Config:
     project_data_dir: Path = Path("project_data")
     llm: LLMConfig = field(default_factory=LLMConfig)
+    auditor_llm: LLMConfig | None = None  # None 时回退到 llm
 
     @property
     def bible_db_path(self) -> Path:
@@ -106,12 +107,19 @@ def load_config(yaml_path: Path | None = None) -> Config:
         )
         if cfg.llm.context_length is None:
             cfg.llm.context_length = get_model_context_length(cfg.llm.model)
-    # env 覆盖
-    cfg.llm.api_key = os.getenv("NOVEL_LLM_API_KEY", cfg.llm.api_key)
-    cfg.llm.base_url = os.getenv("NOVEL_LLM_BASE_URL", cfg.llm.base_url)
-    cfg.llm.model = os.getenv("NOVEL_LLM_MODEL", cfg.llm.model)
-    if "NOVEL_LLM_VISION_ENABLED" in os.environ:
-        cfg.llm.vision_enabled = os.getenv("NOVEL_LLM_VISION_ENABLED", "").lower() in ("1", "true", "yes")
+    # env 覆盖（仅在 env 非空时生效，避免空字符串覆盖 yaml 已保存的配置）
+    _env_api_key = os.getenv("NOVEL_LLM_API_KEY", "")
+    _env_base_url = os.getenv("NOVEL_LLM_BASE_URL", "")
+    _env_model = os.getenv("NOVEL_LLM_MODEL", "")
+    if _env_api_key:
+        cfg.llm.api_key = _env_api_key
+    if _env_base_url:
+        cfg.llm.base_url = _env_base_url
+    if _env_model:
+        cfg.llm.model = _env_model
+    _env_vision = os.getenv("NOVEL_LLM_VISION_ENABLED", "")
+    if _env_vision:
+        cfg.llm.vision_enabled = _env_vision.lower() in ("1", "true", "yes")
     return cfg
 
 
@@ -136,6 +144,19 @@ def save_config(cfg: Config, yaml_path: Path | None = None) -> Path:
         "vision_enabled": cfg.llm.vision_enabled,
         "context_length": cfg.llm.context_length,
     }
+    if cfg.auditor_llm is not None:
+        if cfg.auditor_llm.context_length is None:
+            cfg.auditor_llm.context_length = get_model_context_length(cfg.auditor_llm.model)
+        data["auditor_llm"] = {
+            "base_url": cfg.auditor_llm.base_url,
+            "api_key": cfg.auditor_llm.api_key,
+            "model": cfg.auditor_llm.model,
+            "temperature": cfg.auditor_llm.temperature,
+            "max_tokens": cfg.auditor_llm.max_tokens,
+            "timeout": cfg.auditor_llm.timeout,
+            "vision_enabled": cfg.auditor_llm.vision_enabled,
+            "context_length": cfg.auditor_llm.context_length,
+        }
     with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
     return yaml_path
