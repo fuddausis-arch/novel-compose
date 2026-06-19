@@ -251,7 +251,9 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
     prompt = (
         f"为以下章节抽取摘要，输出 JSON：\n"
         f'{{"core_events":"","characters_present":"","emotion_changes":"",'
-        f'"foreshadow_dynamics":"","chapter_hook":""{fs_instruction}}}\n\n'
+        f'"foreshadow_dynamics":"","chapter_hook":"",'
+        f'"character_states":[{{"name":"","location":"","emotion":""}}]'
+        f'{fs_instruction}}}\n\n'
         f"{content}{fs_text}\n\n只输出 JSON。"
     )
     SUM_SYSTEM = "你是网文摘要助手。精炼抽取章节核心信息。只输出 JSON。"

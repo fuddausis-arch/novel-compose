@@ -26,7 +26,7 @@ ${fore_text}
       "summary": "100字以上的详细摘要：本章核心冲突、场景、信息位、角色动作、情绪转折、结尾钩子。",
       "act": "开端/发展/小高潮/转折/大高潮/结局",
       "strand": "quest/fire/constellation",
-      "new_foreshadows": [{"foreshadow_id":"S-001","tier":"short/medium/long","description":"","plant_chapter":1,"planned_resolve_chapter":3}]
+      "new_foreshadows": [{"foreshadow_id":"<自动生成F-001格式>","tier":"short/medium/long","description":"","plant_chapter":1,"planned_resolve_chapter":3}]
     }
   ]
 }

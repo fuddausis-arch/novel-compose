@@ -28,14 +28,49 @@ class SummaryTree:
         return "\n".join(parts)
 
     def get_volume_summary(self, volume: int) -> str:
-        """某卷摘要。M3 由 Summarizer 生成。M1 返回空串。"""
-        return ""
+        """获取某卷的压缩摘要。无 volume 字段时按章号范围分卷（每30章一卷）。"""
+        summaries = self.repo.list_chapter_summaries(limit=1000)
+        if not summaries:
+            return ""
+        # 按 volume 过滤：每30章一卷
+        start = (volume - 1) * 30 + 1
+        end = volume * 30
+        volume_summaries = [s for s in summaries if start <= s.chapter <= end]
+        if not volume_summaries:
+            return ""
+        volume_summaries.sort(key=lambda s: s.chapter)
+        # 最多20章，取该卷最后20章
+        lines = [
+            f"第{s.chapter}章《{s.title}》：{s.core_events[:100]}"
+            for s in volume_summaries[-20:]
+        ]
+        return "【卷摘要】\n" + "\n".join(lines)
 
     def get_full_summary(self) -> str:
-        """全书摘要：项目标题 + 所有章摘要拼接（M1 简化）。"""
+        """获取全量摘要：最近10章详细 + 更早的卷级压缩。"""
         project = self.repo.get_project()
         parts = [f"《{project.title}》"] if project else []
         summaries = self.repo.list_chapter_summaries(limit=1000)
-        for s in sorted(summaries, key=lambda x: x.chapter):
-            parts.append(f"第{s.chapter}章《{s.title}》：{s.core_events}")
+        if not summaries:
+            return "\n".join(parts)
+        summaries.sort(key=lambda s: s.chapter)
+        if len(summaries) <= 10:
+            parts.append(
+                "\n".join(
+                    f"第{s.chapter}章《{s.title}》：{s.core_events}" for s in summaries
+                )
+            )
+            return "\n".join(parts)
+        recent = summaries[-10:]
+        older = summaries[:-10]
+        # 更早的只取 core_events 前100字
+        older_text = "\n".join(
+            f"第{s.chapter}章《{s.title}》：{s.core_events[:100]}" for s in older
+        )
+        recent_text = "\n".join(
+            f"第{s.chapter}章《{s.title}》：{s.core_events}" for s in recent
+        )
+        parts.append(
+            f"【早期章节摘要】\n{older_text}\n\n【近期章节摘要】\n{recent_text}"
+        )
         return "\n".join(parts)

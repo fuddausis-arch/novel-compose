@@ -36,8 +36,9 @@ class CoreMemoryAssembler:
         project = self.repo.get_project()
         if project:
             sections.append(self._format_project(project))
-        # 当前活跃角色（M1 简化：全部角色；M3 优化为按本章出场筛选）
-        chars = self.repo.list_characters()
+        # 当前活跃角色：按本章相关性智能筛选，避免长篇上百角色撑爆 core memory
+        all_chars = self.repo.list_characters()
+        chars = self._filter_characters_for_chapter(chapter, all_chars)
         if chars:
             sections.append(self._format_characters(chars))
         # 本章应埋伏笔
@@ -58,6 +59,54 @@ class CoreMemoryAssembler:
         if len(ctx) > max_chars:
             ctx = ctx[:max_chars] + "\n[...截断...]"
         return ctx
+
+    def _filter_characters_for_chapter(self, chapter: int, all_chars: list,
+                                       max_chars: int = 20) -> list:
+        """筛选本章相关角色：本章大纲中提到的 + 最近出现的 + 主角/重要角色。
+
+        长篇小说角色可能上百，全量注入会撑爆 core memory 的 max_chars 上限，
+        故按相关性裁剪到 max_chars 个。
+        """
+        if len(all_chars) <= max_chars:
+            return all_chars
+
+        selected: list = []
+        # 1. 主角/反派优先（占一半配额）
+        role_quota = max_chars // 2
+        for c in all_chars:
+            if c.role in ("主角", "反派") and len(selected) < role_quota:
+                selected.append(c)
+
+        # 2. 本章大纲中提到的角色
+        outline = self._chapter_outline_summary(chapter)
+        if outline:
+            for c in all_chars:
+                if c not in selected and c.name and c.name in outline:
+                    selected.append(c)
+                    if len(selected) >= max_chars:
+                        break
+
+        # 3. 最近3章摘要中出现的角色
+        if len(selected) < max_chars:
+            try:
+                summaries = self.repo.list_chapter_summaries()
+                recent = [s for s in summaries
+                          if s.chapter >= chapter - 3 and s.chapter < chapter]
+                recent_text = " ".join(s.characters_present or "" for s in recent)
+                for c in all_chars:
+                    if c not in selected and c.name and c.name in recent_text:
+                        selected.append(c)
+                        if len(selected) >= max_chars:
+                            break
+            except Exception:
+                pass
+
+        # 4. 如果还不够，补满到 max_chars
+        for c in all_chars:
+            if c not in selected and len(selected) < max_chars:
+                selected.append(c)
+
+        return selected
 
     def _format_project(self, project) -> str:
         parts = [f"【小说标题】\n{project.title}"]
