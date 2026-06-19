@@ -31,6 +31,7 @@ class GenerateWorldRequest(BaseModel):
 class GenerateWorldResponse(BaseModel):
     created: int
     items: list[dict] = []
+    warning: str = ""
 
 
 class GenerateCharactersRequest(BaseModel):
@@ -44,6 +45,7 @@ class GenerateCharactersRequest(BaseModel):
 class GenerateCharactersResponse(BaseModel):
     created: int
     items: list[dict] = []
+    warning: str = ""
 
 
 class GenerateVolumesRequest(BaseModel):
@@ -69,6 +71,7 @@ class GenerateChaptersRequest(BaseModel):
 class GenerateOutlinesResponse(BaseModel):
     created: int
     items: list[dict] = []
+    warning: str = ""
 
 
 class SuggestRequest(BaseModel):
@@ -189,9 +192,16 @@ async def generate_world(req: GenerateWorldRequest):
             style_hint=req.style,
         )
 
-        raw = await client.generate(prompt, system="你是网文设定师，擅长设计多层世界观。只输出 JSON。")
+        try:
+            raw = await client.generate(prompt, system="你是网文设定师，擅长设计多层世界观。只输出 JSON。")
+        except Exception as e:
+            raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
-        settings = result.get("world_settings", [])
+        if not result:
+            return GenerateWorldResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+        settings = result.get("world_settings") or result.get("worlds") or result.get("settings") or []
+        if not settings:
+            return GenerateWorldResponse(created=0, items=[], warning=f"LLM 未返回有效设定项。原始返回前200字: {raw[:200]}")
         items = []
         for i, s in enumerate(settings):
             data = {
@@ -230,9 +240,16 @@ async def generate_characters(req: GenerateCharactersRequest):
             style_hint=req.style,
         )
 
-        raw = await client.generate(prompt, system="你是网文角色设计师，擅长设计立体角色。只输出 JSON。")
+        try:
+            raw = await client.generate(prompt, system="你是网文角色设计师，擅长设计立体角色。只输出 JSON。")
+        except Exception as e:
+            raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
-        characters = result.get("characters", [])
+        if not result:
+            return GenerateCharactersResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+        characters = result.get("characters") or result.get("chars") or result.get("roles") or []
+        if not characters:
+            return GenerateCharactersResponse(created=0, items=[], warning=f"LLM 未返回有效角色项。原始返回前200字: {raw[:200]}")
         items = []
         for c in characters:
             data = {
@@ -325,9 +342,16 @@ async def generate_volumes(req: GenerateVolumesRequest):
 每个卷包含：order（从1开始）、title（卷标题）、summary（卷概要，100-200字）、act（开端/发展/小高潮/转折/大高潮/结局）。
 请输出 JSON：{{"volumes": [{{"order": 1, "title": "", "summary": "", "act": ""}}]}}"""
 
-        raw = await client.generate(prompt, system=system)
+        try:
+            raw = await client.generate(prompt, system=system)
+        except Exception as e:
+            raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
-        volumes = result.get("volumes", [])
+        if not result:
+            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+        volumes = result.get("volumes") or result.get("outlines") or []
+        if not volumes:
+            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 未返回有效卷级大纲。原始返回前200字: {raw[:200]}")
         items = []
         for idx, o in enumerate(volumes):
             order = int(o.get("order", idx + 1))
@@ -377,9 +401,16 @@ async def generate_arcs(req: GenerateArcsRequest):
 每个小节包含：order（在该卷内从1开始）、title（小节标题）、summary（小节概要，50-150字）、act（开端/发展/小高潮/转折/大高潮/结局）、strand（主线quest/感情fire/世界观constellation）。
 请输出 JSON：{{"arcs": [{{"order": 1, "title": "", "summary": "", "act": "", "strand": "quest"}}]}}"""
 
-        raw = await client.generate(prompt, system=system)
+        try:
+            raw = await client.generate(prompt, system=system)
+        except Exception as e:
+            raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
-        arcs = result.get("arcs", [])
+        if not result:
+            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+        arcs = result.get("arcs") or result.get("sections") or []
+        if not arcs:
+            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 未返回有效细纲小节。原始返回前200字: {raw[:200]}")
         items = []
         for idx, o in enumerate(arcs):
             order = int(o.get("order", idx + 1))
@@ -434,9 +465,16 @@ async def generate_chapters(req: GenerateChaptersRequest):
 每个章纲包含：order（全局章节号，从{max_chapter + 1}开始递增）、title（章标题）、summary（章概要，30-100字）、act（开端/发展/小高潮/转折/大高潮/结局）、strand（主线quest/感情fire/世界观constellation）。
 请输出 JSON：{{"chapters": [{{"order": {max_chapter + 1}, "title": "", "summary": "", "act": "", "strand": "quest"}}]}}"""
 
-        raw = await client.generate(prompt, system=system)
+        try:
+            raw = await client.generate(prompt, system=system)
+        except Exception as e:
+            raise HTTPException(502, f"LLM 调用失败: {e}")
         result = _extract_json(raw)
-        chapters = result.get("chapters", [])
+        if not result:
+            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 返回内容无法解析为 JSON。原始返回前200字: {raw[:200]}")
+        chapters = result.get("chapters") or result.get("chapter_outlines") or []
+        if not chapters:
+            return GenerateOutlinesResponse(created=0, items=[], warning=f"LLM 未返回有效章纲。原始返回前200字: {raw[:200]}")
         items = []
         for idx, o in enumerate(chapters):
             order = int(o.get("order", max_chapter + 1 + idx))

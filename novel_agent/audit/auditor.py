@@ -92,8 +92,20 @@ class Auditor:
         if data is None:
             return AuditReport(passed=False, overall_score=0,
                                summary="审计报告解析失败：LLM 未返回有效 JSON")
+
+        # 字段补全
+        if "passed" not in data:
+            issues = data.get("issues", [])
+            has_critical = any(
+                str(i.get("severity", "")).lower() == "critical"
+                for i in issues if isinstance(i, dict)
+            )
+            data["passed"] = not has_critical
+        if "overall_score" not in data:
+            data["overall_score"] = 60
+
         try:
-            return AuditReport(**data)
+            return AuditReport.model_validate(data)
         except Exception as e:
             return AuditReport(passed=False, overall_score=0,
                                summary=f"审计报告字段校验失败: {e}")

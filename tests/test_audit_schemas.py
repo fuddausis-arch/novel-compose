@@ -1,7 +1,4 @@
 """测试审计报告 schema。"""
-import pytest
-from pydantic import ValidationError
-
 from novel_agent.audit.schemas import Issue, AuditReport
 
 
@@ -10,9 +7,10 @@ def test_issue_valid():
     assert i.severity == "critical"
 
 
-def test_issue_invalid_severity():
-    with pytest.raises(ValidationError):
-        Issue(dimension="x", severity="unknown", message="y")
+def test_issue_tolerant_severity():
+    # 宽容化：任意字符串 severity 都接受
+    i = Issue(dimension="x", severity="unknown", message="y")
+    assert i.severity == "unknown"
 
 
 def test_audit_report_passed():
@@ -34,6 +32,8 @@ def test_audit_report_with_issues():
     assert any(i.severity == "critical" for i in r.issues)
 
 
-def test_audit_report_requires_fields():
-    with pytest.raises(ValidationError):
-        AuditReport(passed=True)  # 缺 overall_score
+def test_audit_report_defaults():
+    # 宽容化：缺 overall_score 时默认 0，不抛错
+    r = AuditReport(passed=True)
+    assert r.passed is True
+    assert r.overall_score == 0

@@ -64,7 +64,8 @@ export function AppSidebar({
 
   const selectChapter = async (chapter: number) => {
     try {
-      const ct = await api.getChapterText(chapter);
+      if (!currentProject) return;
+      const ct = await api.getChapterText(currentProject.id, chapter);
       onSelectAsset("chapter", String(chapter), ct);
     } catch (e: any) {
       showError("加载章节失败：" + e.message);

@@ -25,6 +25,14 @@ class CoreMemoryAssembler:
     def assemble(self, chapter: int, max_chars: int = 8000,
                  query: str | None = None) -> str:
         sections: list[str] = []
+
+        # 本章细纲：生成层必须围绕的剧情约束
+        chapter_outline = self._chapter_outline_summary(chapter)
+        if chapter_outline:
+            sections.append(chapter_outline)
+        else:
+            sections.append("【本章细纲】\n当前暂无本章细纲，请基于项目整体规划自由发挥。")
+
         project = self.repo.get_project()
         if project:
             sections.append(self._format_project(project))
@@ -92,4 +100,19 @@ class CoreMemoryAssembler:
             chapter = s.get("chapter")
             tag = f"第{chapter}章" if chapter else "设定"
             lines.append(f"- [{tag}] {s['content']}")
+        return "\n".join(lines)
+
+    def _chapter_outline_summary(self, chapter: int) -> str:
+        """读取本章细纲，注入 writer 上下文。"""
+        outlines = self.repo.list_outlines(level="chapter")
+        match = next((o for o in outlines if o.order == chapter), None)
+        if not match:
+            return ""
+        lines = ["【本章细纲】"]
+        lines.append(f"标题：{match.title}")
+        lines.append(f"概要：{match.summary}")
+        if match.act:
+            lines.append(f"节奏：{match.act}")
+        if match.strand:
+            lines.append(f"故事线：{match.strand}")
         return "\n".join(lines)

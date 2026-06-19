@@ -39,7 +39,7 @@ export function useAssetActions({
         await api.createOutline(store.currentProject.id, { order, title: `第${order}章`, summary: "", level: "chapter" });
       } else if (type === "chapter") {
         const ch = store.chapters.length + 1;
-        await api.saveChapterText(ch, `第${ch}章`, "");
+        await api.saveChapterText(store.currentProject.id, ch, `第${ch}章`, "");
       } else if (type === "faction") {
         await api.createFaction(store.currentProject.id, { name: "新势力", type: "其他", alignment: "中立" });
       } else if (type === "factionRelationship") {
@@ -74,7 +74,7 @@ export function useAssetActions({
       } else if (selectedAsset.type === "outline") {
         await api.updateOutline(store.currentProject.id, Number(selectedAsset.id), outlineForm);
       } else if (selectedAsset.type === "chapter") {
-        await api.saveChapterText(Number(selectedAsset.id), chapterTitle, chapterContent);
+        await api.saveChapterText(store.currentProject.id, Number(selectedAsset.id), chapterTitle, chapterContent);
         setChapterDirty(false);
       } else if (selectedAsset.type === "faction" || selectedAsset.type === "factionRelationship" || selectedAsset.type === "characterRelationship" || selectedAsset.type === "monster") {
         return;
@@ -96,7 +96,7 @@ export function useAssetActions({
       } else if (selectedAsset.type === "outline") {
         await api.deleteOutline(store.currentProject.id, Number(selectedAsset.id));
       } else if (selectedAsset.type === "chapter") {
-        await api.deleteChapter(Number(selectedAsset.id));
+        await api.deleteChapter(store.currentProject.id, Number(selectedAsset.id));
       } else if (selectedAsset.type === "faction") {
         await api.deleteFaction(store.currentProject.id, Number(selectedAsset.id));
       } else if (selectedAsset.type === "factionRelationship") {

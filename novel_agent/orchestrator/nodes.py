@@ -8,6 +8,7 @@ M3 扩展：写审分离 + 反馈循环节点（audit/polish/rewrite/summarize�
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -20,6 +21,8 @@ from novel_agent.memory.recall import RecallMemory
 from novel_agent.orchestrator.state import ChapterGenState
 from novel_agent.protocol.applier import DeltaApplier
 from novel_agent.protocol.schemas import Delta, SummaryDelta, ForeshadowDelta
+
+logger = logging.getLogger(__name__)
 
 WRITER_SYSTEM_PROMPT = (
     "你是一位资深网络小说写手。根据给定的设定和上下文，"
@@ -44,6 +47,16 @@ def clean_chapter_text(text: str, chapter: int, title: str = "") -> str:
     return s.strip()
 
 
+def _looks_like_json_not_prose(text: str) -> bool:
+    """检测 LLM 是否返回了 JSON 结构而非小说正文。"""
+    s = text.strip()
+    if s.startswith("{") and s.endswith("}"):
+        return True
+    if '"suggestions"' in s or '"payload"' in s:
+        return True
+    return False
+
+
 def assemble_context(state: ChapterGenState, repo: BibleRepository,
                      archival: Any | None = None) -> dict:
     """节点 1：装配章节上下文（core memory + 可选 archival 检索）。"""
@@ -59,15 +72,19 @@ async def write_chapter(state: ChapterGenState,
     prompt = (
         f"请写第{state['chapter']}章《{state.get('title', '')}》。\n\n"
         f"【上下文】\n{state.get('context', '')}\n\n"
-        f"要求：只输出正文，目标 2000-3000 字。"
+        f"要求：只输出正文，目标 2000-3000 字。不要输出 JSON 或任何格式说明。"
     )
     try:
         draft = await llm_client.generate(prompt, system=WRITER_SYSTEM_PROMPT)
         draft = clean_chapter_text(draft, state["chapter"], state.get("title", ""))
+        if _looks_like_json_not_prose(draft):
+            logger.warning("write_chapter 第%d章：LLM 返回 JSON 而非正文", state["chapter"])
+            return {"status": "failed", "error": "LLM 返回了 JSON 而非正文，可能模型理解错误"}
         return {"draft": draft, "status": "drafted",
                 "draft_version": state.get("draft_version", 0) + 1,
                 "word_count": len(draft)}
     except Exception as e:
+        logger.warning("write_chapter 第%d章失败：%s", state["chapter"], e)
         return {"status": "failed", "error": str(e)}
 
 
@@ -88,10 +105,14 @@ async def audit_chapter(state: ChapterGenState, auditor: Auditor,
 
 def route_after_audit(state: ChapterGenState) -> str:
     """条件边：审计达标→polish；不达标且未超3次→write 回环；超3次→end_failed。"""
+    if state.get("status") == "failed":
+        logger.warning("route_after_audit 进入 end_failed：status=%s", state.get("status"))
+        return "end_failed"
     report = AuditReport(**state.get("audit_report", {}))
     if report.passed:
         return "polish"
     if state.get("review_iterations", 0) >= 3:
+        logger.warning("route_after_audit 进入 end_failed：重写超3次")
         return "end_failed"
     return "rewrite"
 
@@ -107,15 +128,19 @@ async def rewrite_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict
         f"【上一版草稿】\n{state.get('draft', '')}\n\n"
         f"【审计问题】\n{issues}\n\n"
         f"【修订建议】\n{suggestions}\n\n"
-        f"要求：针对问题重写，只输出正文。"
+        f"要求：针对问题重写，只输出正文，不要输出 JSON 或任何格式说明。"
     )
     try:
         draft = await llm_client.generate(prompt, system=WRITER_SYSTEM_PROMPT)
         draft = clean_chapter_text(draft, state["chapter"], state.get("title", ""))
+        if _looks_like_json_not_prose(draft):
+            logger.warning("rewrite_chapter 第%d章：LLM 返回 JSON 而非正文", state["chapter"])
+            return {"status": "failed", "error": "LLM 返回了 JSON 而非正文，可能模型理解错误"}
         return {"draft": draft,
                 "draft_version": state.get("draft_version", 1) + 1,
                 "word_count": len(draft), "status": "drafted"}
     except Exception as e:
+        logger.warning("rewrite_chapter 第%d章失败：%s", state["chapter"], e)
         return {"status": "failed", "error": str(e)}
 
 
@@ -165,7 +190,7 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
     if to_resolve:
         fs_text = "\n\n[本章应回收的伏笔]\n" + "\n".join(
             f"- {f.foreshadow_id}: {f.description}" for f in to_resolve)
-        fs_instruction = ',"resolved_foreshadows":["S-001"]'
+        fs_instruction = ',"resolved_foreshadows":[]'
 
     prompt = (
         f"为以下章节抽取摘要，输出 JSON：\n"

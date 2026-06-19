@@ -178,9 +178,9 @@ export const api = {
 
   // Chapters
   listChapters: (projectId: number) => request<ChapterListItem[]>(`/api/chapters/list?project_id=${projectId}`),
-  getChapterText: (chapter: number) => request<ChapterText>(`/api/chapters/${chapter}/text`),
-  saveChapterText: (chapter: number, title: string, content: string) => request<void>(`/api/chapters/${chapter}/text`, { method: "PUT", body: JSON.stringify({ title, content }) }),
-  deleteChapter: (chapter: number) => request<void>(`/api/chapters/${chapter}`, { method: "DELETE" }),
+  getChapterText: (projectId: number, chapter: number) => request<ChapterText>(`/api/chapters/${chapter}/text?project_id=${projectId}`),
+  saveChapterText: (projectId: number, chapter: number, title: string, content: string) => request<void>(`/api/chapters/${chapter}/text?project_id=${projectId}`, { method: "PUT", body: JSON.stringify({ title, content }) }),
+  deleteChapter: (projectId: number, chapter: number) => request<void>(`/api/chapters/${chapter}?project_id=${projectId}`, { method: "DELETE" }),
   exportTxt: (projectId: number) => `/api/chapters/export/txt?project_id=${projectId}`,
   generateStream: (projectId: number, chapter: number, title: string, threadId?: string) => {
     const params = new URLSearchParams({ project_id: String(projectId), chapter: String(chapter), title });

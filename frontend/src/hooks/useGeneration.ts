@@ -43,7 +43,7 @@ export function useGeneration({
       setLoading(false);
       es.close();
       store.refreshAssets().then(() => {
-        api.getChapterText(chapter).then((ct) => {
+        api.getChapterText(store.currentProject?.id ?? 0, chapter).then((ct) => {
           onDone(ct);
         }).catch((e: any) => {
           showError("加载生成结果失败：" + e.message);

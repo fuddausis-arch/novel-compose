@@ -154,7 +154,7 @@ export default function App() {
     autoSaveTimer.current = setTimeout(async () => {
       setAutoSaveState("saving");
       try {
-        await api.saveChapterText(Number(selectedAsset.id), chapterTitle, chapterContent);
+        await api.saveChapterText(store.currentProject?.id ?? 0, Number(selectedAsset.id), chapterTitle, chapterContent);
         setChapterDirty(false);
         setAutoSaveState("saved");
       } catch (e: any) {
