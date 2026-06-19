@@ -95,3 +95,27 @@ async def test_rewrite_node():
     assert result["draft"] == "重写草稿"
     assert result["draft_version"] == 2
     assert result["status"] == "drafted"
+
+
+def test_human_review_node_returns_pending():
+    """人审节点应返回 pending_review 状态，不阻塞、不调 LLM。"""
+    from novel_agent.orchestrator.nodes import human_review
+    state = ChapterGenState(chapter=1, title="x", draft="正文", status="audited")
+    result = human_review(state)
+    assert result["status"] == "pending_review"
+
+
+def test_route_after_review_approve():
+    """人审通过（默认/approve）→polish。"""
+    from novel_agent.orchestrator.graph import route_after_review
+    state = ChapterGenState(review_decision="approve")
+    assert route_after_review(state) == "polish"
+    # 未设置决策时默认通过
+    assert route_after_review(ChapterGenState()) == "polish"
+
+
+def test_route_after_review_reject():
+    """人审驳回→rewrite。"""
+    from novel_agent.orchestrator.graph import route_after_review
+    state = ChapterGenState(review_decision="reject")
+    assert route_after_review(state) == "rewrite"

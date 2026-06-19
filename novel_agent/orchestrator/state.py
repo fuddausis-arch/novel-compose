@@ -19,6 +19,7 @@ class ChapterGenState(TypedDict, total=False):
     review_iterations: int     # 已审阅次数（≤3）
     audit_report: dict         # 最近一次审计报告（序列化）
     polished: str              # 润色后正文
+    review_decision: str = ""  # 人审决策："approve" / "reject"
     status: str                # pending/assembled/drafted/audited/polished/saved/completed/failed
     error: str
     word_count: int

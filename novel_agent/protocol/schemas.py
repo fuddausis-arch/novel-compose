@@ -58,8 +58,7 @@ DeltaData = Union[
 class Delta(BaseModel):
     """单个 delta 操作。"""
     target: Literal["foreshadow", "character", "chapter_summary",
-                    "outline", "emotion_arc", "subplot", "character_matrix",
-                    "world_setting"]
+                    "outline", "world_setting"]
     action: Literal["create", "update", "plant", "develop", "resolve",
                     "state_change", "delete"]
     chapter: int

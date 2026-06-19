@@ -309,6 +309,15 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
     return {"status": "completed"}
 
 
+def human_review(state: ChapterGenState) -> dict:
+    """人审节点：审计通过后、润色前的人工 checkpoint。
+
+    在 SSE 流式模式下，前端会暂停在此节点，等待用户确认。
+    用户可以：通过→继续 polish；驳回→回到 rewrite；直接修改 draft。
+    """
+    return {"status": "pending_review"}
+
+
 # ---- M2 保留的兼容节点（旧 graph 测试仍用） ----
 
 def save_text(state: ChapterGenState, recall: RecallMemory) -> dict:

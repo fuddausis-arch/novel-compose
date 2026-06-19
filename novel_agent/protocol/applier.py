@@ -46,6 +46,7 @@ class DeltaApplier:
             ("character", "create"): self._create_character,
             ("chapter_summary", "create"): self._create_summary,
             ("outline", "create"): self._create_outline,
+            ("world_setting", "create"): self._create_world_setting,
         }.get((delta.target, delta.action))
 
         if not handler:
@@ -188,5 +189,21 @@ class DeltaApplier:
             chapter=delta.chapter, type="outline_created",
             entity_id=f"{d.level}:{d.order}",
             payload={"level": d.level, "act": d.act, "title": d.title},
+        )
+        return ApplyResult(True)
+
+    def _create_world_setting(self, delta: Delta) -> ApplyResult:
+        """应用世界观设定 delta。"""
+        d = delta.data if isinstance(delta.data, dict) else delta.data
+        data = d if isinstance(d, dict) else {}
+        category = data.get("category", "其他")
+        title = data.get("title", "")
+        content = data.get("content", "")
+        self.repo.create_world_setting(
+            category=category, title=title, content=content,
+        )
+        self.repo.append_event(
+            chapter=delta.chapter, type="world_setting_created",
+            entity_id=title, payload={"category": category},
         )
         return ApplyResult(True)

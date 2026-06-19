@@ -13,7 +13,7 @@ def _mock_deps():
     }
 
 
-def test_graph_has_seven_nodes():
+def test_graph_has_all_nodes():
     graph = build_graph(_mock_deps())
     node_ids = set(graph.nodes.keys())
     for name in NODE_NAMES:
@@ -21,4 +21,4 @@ def test_graph_has_seven_nodes():
 
 
 def test_node_names_complete():
-    assert NODE_NAMES == ["assemble", "write", "audit", "rewrite", "polish", "save_text", "summarize"]
+    assert NODE_NAMES == ["assemble", "write", "audit", "rewrite", "human_review", "polish", "save_text", "summarize"]
