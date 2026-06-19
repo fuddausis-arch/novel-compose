@@ -11,6 +11,7 @@ import { Select } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AiPreviewDialog } from "@/components/ai-preview-dialog";
+import { AiSuggestionDialog } from "@/components/ai-suggestion-dialog";
 
 interface WorldViewProps {
   project: Project | null;
@@ -59,6 +60,7 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<Partial<WorldSetting>[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
 
   const grouped = useMemo(() => {
     const map = new Map<string, WorldSetting[]>();
@@ -176,6 +178,9 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
             <Button size="sm" onClick={() => setAdding(!adding)}>
               <Plus className="h-3.5 w-3.5 mr-1" /> 新增设定
             </Button>
+            <Button size="sm" variant="default" onClick={() => setSuggestOpen(true)}>
+              <Sparkles className="h-3.5 w-3.5 mr-1" /> AI 建议
+            </Button>
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -286,6 +291,16 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
         )}
         onClose={handlePreviewClose}
         onImport={handleImport}
+      />
+
+      <AiSuggestionDialog
+        open={suggestOpen}
+        project={project}
+        contextType="world"
+        contextId=""
+        defaultSuggestType="world"
+        onClose={() => setSuggestOpen(false)}
+        onAdopted={() => { refresh(); showSuccess("建议已采纳"); }}
       />
     </div>
   );

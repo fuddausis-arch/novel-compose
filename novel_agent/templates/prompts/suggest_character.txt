@@ -1,0 +1,19 @@
+请为小说《$title》基于以下上下文推荐 $count 个新角色设定。
+
+题材：$genre
+风格/要求：$style
+当前上下文：$context_text
+已有世界观：$world_text
+已有角色：$char_text
+已有大纲：$outline_text
+已有势力：$faction_text
+$custom_prompt
+
+要求：
+- 与现有角色不重复；
+- 能推动剧情或制造冲突；
+- 区分主角/配角/反派身份；
+- 有明确动机和性格特点。
+
+每条建议包含：title（姓名）、summary（一句话描述）、payload（JSON，含 name/role/age/gender/appearance/personality/motivation/background/arc/secrets 等字段）。
+输出 JSON：{"suggestions": [{"title": "", "summary": "", "payload": {}}]}

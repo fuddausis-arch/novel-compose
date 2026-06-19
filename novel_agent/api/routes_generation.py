@@ -113,7 +113,7 @@ class AdoptRequest(BaseModel):
 
 
 class AdoptResponse(BaseModel):
-    created: dict = {"outlines": [], "monsters": [], "factions": [], "relationships": []}
+    created: dict = {"outlines": [], "monsters": [], "factions": [], "relationships": [], "world_settings": [], "characters": []}
 
 
 def _get_repo(project_id: int):
@@ -134,11 +134,13 @@ def _clean_text(text: str | None) -> str:
 
 
 def _unique_name(repo, entity: str, name: str) -> str:
-    """为 monster/faction 生成项目内唯一的名称，避免唯一约束冲突。"""
+    """为 monster/faction/character 生成项目内唯一的名称，避免唯一约束冲突。"""
     if entity == "monster":
         existing = repo.get_monster_by_name(name)
     elif entity == "faction":
         existing = repo.get_faction_by_name(name)
+    elif entity == "character":
+        existing = repo.get_character(name)
     else:
         return name
     if not existing:
@@ -153,8 +155,10 @@ def _unique_name(repo, entity: str, name: str) -> str:
         candidate = f"{base}-AI{idx}"
         if entity == "monster":
             existing = repo.get_monster_by_name(candidate)
-        else:
+        elif entity == "faction":
             existing = repo.get_faction_by_name(candidate)
+        else:
+            existing = repo.get_character(candidate)
         if not existing:
             return candidate
         idx += 1
@@ -318,6 +322,12 @@ def _list_asset_text(repo, suggest_type: str) -> str:
     if suggest_type == "relationship":
         rels = repo.list_character_relationships()
         return "\n".join([f"{r.source_character} → {r.target_character}：{r.relation_type}" for r in rels]) or "暂无"
+    if suggest_type == "world":
+        items = repo.list_world_settings()
+        return "\n".join(f"- {s.category}/{s.title}: {s.content[:80]}" for s in items) if items else ""
+    if suggest_type == "character":
+        items = repo.list_characters()
+        return "\n".join(f"- {c.name}({c.role}): {c.personality or c.background or ''}"[:100] for c in items) if items else ""
     return ""
 
 
@@ -850,12 +860,12 @@ async def suggest(req: SuggestRequest):
             style=project.style,
             context_type=req.context_type,
             context_text=context_text,
-            world_text=world_text,
-            char_text=char_text,
+            world_text=asset_text if req.suggest_type == "world" else world_text,
+            char_text=asset_text if req.suggest_type == "character" else char_text,
             fore_text=fore_text,
             outline_text=outline_text,
             monster_text=asset_text if req.suggest_type == "monster" else "",
-            faction_text=asset_text if req.suggest_type == "faction" else "",
+            faction_text=asset_text if req.suggest_type in ("faction", "character") else "",
             relationship_text=asset_text if req.suggest_type == "relationship" else "",
             count=req.count,
             custom_prompt=req.custom_prompt,
@@ -882,7 +892,7 @@ async def suggest(req: SuggestRequest):
 async def adopt_suggestions(req: AdoptRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
     try:
-        created = {"outlines": [], "monsters": [], "factions": [], "relationships": []}
+        created = {"outlines": [], "monsters": [], "factions": [], "relationships": [], "world_settings": [], "characters": []}
 
         if req.status != "rejected":
             for s in req.suggestions:
@@ -949,6 +959,27 @@ async def adopt_suggestions(req: AdoptRequest):
                             description=s.summary,
                         )
                         created["relationships"].append({"id": created_obj.id})
+                elif s.type == "world":
+                    created_obj = repo.create_world_setting(
+                        category=p.get("category", "其他"),
+                        title=s.title,
+                        content=p.get("content", s.summary),
+                    )
+                    created["world_settings"].append({"id": created_obj.id, "title": created_obj.title})
+                elif s.type == "character":
+                    created_obj = repo.create_character(
+                        name=_unique_name(repo, "character", s.title),
+                        role=p.get("role", "配角"),
+                        age=p.get("age", ""),
+                        gender=p.get("gender", ""),
+                        appearance=p.get("appearance", ""),
+                        personality=p.get("personality", ""),
+                        motivation=p.get("motivation", ""),
+                        background=p.get("background", ""),
+                        arc=p.get("arc", ""),
+                        secrets=p.get("secrets", ""),
+                    )
+                    created["characters"].append({"id": created_obj.id, "name": created_obj.name})
 
         # 记录采纳历史
         repo.create_ai_suggestion(

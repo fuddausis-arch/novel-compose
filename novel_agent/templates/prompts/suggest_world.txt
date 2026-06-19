@@ -1,0 +1,17 @@
+请为小说《$title》基于以下上下文推荐 $count 个世界观设定。
+
+题材：$genre
+风格/要求：$style
+当前上下文：$context_text
+已有世界观：$world_text
+已有角色：$char_text
+已有大纲：$outline_text
+$custom_prompt
+
+要求：
+- 与现有设定不冲突、不重复；
+- 能为故事提供新的冲突空间或探索方向；
+- 区分力量体系/地理/历史/规则/种族等类别。
+
+每条建议包含：title（标题）、summary（一句话描述）、payload（JSON，含 category/content/importance 等字段，category 可选：世界观/力量体系/势力/地点/规则/历史/现实层/异能层/神明层/其他）。
+输出 JSON：{"suggestions": [{"title": "", "summary": "", "payload": {}}]}

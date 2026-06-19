@@ -13,6 +13,8 @@ const TABS = [
   { key: "monster", label: "怪物" },
   { key: "faction", label: "势力" },
   { key: "relationship", label: "关系" },
+  { key: "world", label: "世界观" },
+  { key: "character", label: "角色" },
 ];
 
 interface Props {
@@ -149,15 +151,49 @@ export function AiSuggestionDialog({ open, project, contextType, contextId, defa
           {loading ? "生成中…" : "生成建议"}
         </Button>
 
+        {suggestions.length > 0 && (
+          <div className="flex items-center justify-between text-xs text-muted mb-2">
+            <span>已生成 {suggestions.length} 条建议，已选 {selectedKeys.size} 条</span>
+            <button
+              className="text-primary hover:underline"
+              onClick={() => {
+                if (selectedKeys.size === suggestions.length) {
+                  setSelectedKeys(new Set());
+                } else {
+                  setSelectedKeys(new Set(suggestions.map((s, i) => keyOf(s, i))));
+                }
+              }}
+            >
+              {selectedKeys.size === suggestions.length ? "取消全选" : "全选"}
+            </button>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+          {suggestions.length === 0 && !loading && (
+            <div className="text-center text-sm text-muted py-10">
+              点击上方"生成建议"按钮，AI 将基于当前项目上下文生成建议。
+            </div>
+          )}
           {suggestions.map((s, i) => {
             const key = keyOf(s, i);
             const selected = selectedKeys.has(key);
             if (editingKey === key) {
               return (
                 <div key={key} className="border rounded-xl p-3 space-y-2">
-                  <Input value={editForm.title ?? ""} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} />
-                  <Textarea value={editForm.summary ?? ""} onChange={(e) => setEditForm({ ...editForm, summary: e.target.value })} rows={3} />
+                  <Input value={editForm.title ?? ""} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} placeholder="标题" />
+                  <Textarea value={editForm.summary ?? ""} onChange={(e) => setEditForm({ ...editForm, summary: e.target.value })} rows={3} placeholder="描述" />
+                  <Textarea
+                    value={JSON.stringify(editForm.payload ?? {}, null, 2)}
+                    onChange={(e) => {
+                      try {
+                        setEditForm({ ...editForm, payload: JSON.parse(e.target.value) });
+                      } catch { /* 忽略 JSON 解析错误，用户还在输入 */ }
+                    }}
+                    rows={6}
+                    placeholder="payload (JSON)"
+                    className="font-mono text-xs"
+                  />
                   <div className="flex justify-end gap-2">
                     <Button size="sm" variant="ghost" onClick={() => setEditingKey(null)}>取消</Button>
                     <Button size="sm" variant="primary" onClick={saveEdit}>保存</Button>
@@ -173,6 +209,15 @@ export function AiSuggestionDialog({ open, project, contextType, contextId, defa
                 <div className="flex-1 min-w-0">
                   <div className="font-medium">{s.title}</div>
                   <div className="text-sm text-muted whitespace-pre-wrap">{s.summary}</div>
+                  {s.payload && Object.keys(s.payload).length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {Object.entries(s.payload).slice(0, 6).map(([k, v]) => (
+                        <span key={k} className="text-xs px-1.5 py-0.5 rounded bg-foreground/5 text-muted">
+                          {k}: {String(v).slice(0, 30)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <Button size="sm" variant="ghost" onClick={() => startEdit(s, key)}>编辑</Button>
               </div>

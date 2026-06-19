@@ -316,7 +316,7 @@ export type ImportPreviewEntity =
   | Partial<Outline>;
 
 export interface SuggestionItem {
-  type: "plot" | "monster" | "faction" | "relationship";
+  type: "plot" | "monster" | "faction" | "relationship" | "world" | "character";
   title: string;
   summary: string;
   payload: Record<string, unknown>;
