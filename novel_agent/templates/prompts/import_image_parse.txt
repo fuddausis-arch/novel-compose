@@ -1,0 +1,6 @@
+请识别这张图片中的小说设定信息，并只输出 JSON，不要任何解释。
+
+输出格式：
+{"characters":[{"name":"姓名","role":"身份","personality":"性格","motivation":"动机","current_location":"当前位置","current_emotion":"当前情绪","known_info":"已知信息","background":"背景","arc":"角色弧线"}],"foreshadows":[{"foreshadow_id":"ID","tier":"层级","description":"描述","plant_chapter":0,"planned_resolve_chapter":0,"status":"pending"}],"outlines":[{"order":1,"title":"标题","summary":"摘要","level":"chapter"}]}
+
+如果某类信息不存在，返回空数组。

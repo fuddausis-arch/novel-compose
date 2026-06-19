@@ -16,6 +16,38 @@ class LLMConfig:
     temperature: float = 0.7
     max_tokens: int = 4000
     timeout: float = 180.0
+    vision_enabled: bool = False
+    context_length: int | None = None
+
+
+MODEL_CONTEXT_LENGTHS: dict[str, int] = {
+    "gpt-4o": 128000,
+    "gpt-4o-mini": 128000,
+    "gpt-4-turbo": 128000,
+    "gpt-4": 8192,
+    "gpt-3.5-turbo": 16385,
+    "claude-3-opus": 200000,
+    "claude-3-sonnet": 200000,
+    "claude-3-haiku": 200000,
+    "deepseek-chat": 65536,
+    "deepseek-coder": 65536,
+    "qwen-turbo": 8000,
+    "qwen-plus": 32000,
+    "qwen-max": 32000,
+    "kimi": 200000,
+    "moonshot-v1": 128000,
+    "glm-4": 128000,
+    "glm-3-turbo": 128000,
+}
+
+
+def get_model_context_length(model: str) -> int:
+    """根据模型名识别最大上下文长度，未知模型返回 4096 作为保守默认值。"""
+    name = model.lower().strip()
+    for key, length in MODEL_CONTEXT_LENGTHS.items():
+        if key in name:
+            return length
+    return 4096
 
 
 @dataclass
@@ -34,6 +66,15 @@ class Config:
     @property
     def chapters_dir(self) -> Path:
         return self.project_data_dir / "chapters"
+
+    def project_dir(self, project_id: int) -> Path:
+        return self.project_data_dir / "projects" / str(project_id)
+
+    def project_chapters_dir(self, project_id: int) -> Path:
+        return self.project_dir(project_id) / "chapters"
+
+    def project_chroma_dir(self, project_id: int) -> Path:
+        return self.project_dir(project_id) / "chroma"
 
 
 def load_config(yaml_path: Path | None = None) -> Config:
@@ -60,9 +101,41 @@ def load_config(yaml_path: Path | None = None) -> Config:
             temperature=llm_data.get("temperature", cfg.llm.temperature),
             max_tokens=llm_data.get("max_tokens", cfg.llm.max_tokens),
             timeout=llm_data.get("timeout", cfg.llm.timeout),
+            vision_enabled=llm_data.get("vision_enabled", cfg.llm.vision_enabled),
+            context_length=llm_data.get("context_length", cfg.llm.context_length),
         )
+        if cfg.llm.context_length is None:
+            cfg.llm.context_length = get_model_context_length(cfg.llm.model)
     # env 覆盖
     cfg.llm.api_key = os.getenv("NOVEL_LLM_API_KEY", cfg.llm.api_key)
     cfg.llm.base_url = os.getenv("NOVEL_LLM_BASE_URL", cfg.llm.base_url)
     cfg.llm.model = os.getenv("NOVEL_LLM_MODEL", cfg.llm.model)
+    if "NOVEL_LLM_VISION_ENABLED" in os.environ:
+        cfg.llm.vision_enabled = os.getenv("NOVEL_LLM_VISION_ENABLED", "").lower() in ("1", "true", "yes")
     return cfg
+
+
+def save_config(cfg: Config, yaml_path: Path | None = None) -> Path:
+    """保存配置到 yaml 文件。yaml_path 为 None 时保存到当前目录的 config.yaml。"""
+    if yaml_path is None:
+        yaml_path = Path("config.yaml")
+    data: dict = {}
+    if yaml_path.exists():
+        with open(yaml_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    data["project_data_dir"] = str(cfg.project_data_dir)
+    if cfg.llm.context_length is None:
+        cfg.llm.context_length = get_model_context_length(cfg.llm.model)
+    data["llm"] = {
+        "base_url": cfg.llm.base_url,
+        "api_key": cfg.llm.api_key,
+        "model": cfg.llm.model,
+        "temperature": cfg.llm.temperature,
+        "max_tokens": cfg.llm.max_tokens,
+        "timeout": cfg.llm.timeout,
+        "vision_enabled": cfg.llm.vision_enabled,
+        "context_length": cfg.llm.context_length,
+    }
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+    return yaml_path

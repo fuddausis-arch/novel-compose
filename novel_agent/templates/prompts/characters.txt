@@ -1,0 +1,13 @@
+为以下小说设计角色卡。
+
+标题：${title}
+类型：${genre}
+简介：${summary}
+文风：${style}
+
+主角数量：${protagonist_count}，配角数量：${supporting_count}，反派数量：${antagonist_count}
+风格：${style_hint}
+
+请输出 JSON：{"characters":[{"name":"","role":"","age":"","gender":"","appearance":"","background":"","personality":"","motivation":"","arc":"","secrets":""}]}
+role 只能是：主角、配角、反派。
+只输出 JSON，不要 markdown 代码块。

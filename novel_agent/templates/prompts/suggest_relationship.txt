@@ -1,0 +1,18 @@
+请为小说《$title》基于以下上下文推荐 $count 条新的人物关系或势力关系。
+
+题材：$genre
+风格/要求：$style
+当前上下文：$context_text
+已有世界观：$world_text
+已有角色：$char_text
+已有大纲：$outline_text
+已有关系：$relationship_text
+$custom_prompt
+
+要求：
+- 关系发展有剧情依据，避免突兀；
+- 可为人物关系网或势力关系网；
+- 说明关系类型、强度与影响。
+
+每条建议包含：title（关系标题，如"A 与 B 的师徒关系"）、summary（关系描述）、payload（JSON，含 source_character/target_character/relation_type/relation_subtype/strength/description 或 source_faction_id/target_faction_id 等字段）。
+输出 JSON：{"suggestions": [{"title": "", "summary": "", "payload": {}}]}

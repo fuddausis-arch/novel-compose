@@ -22,27 +22,39 @@ class LLMClient:
     def __init__(self, config: LLMConfig):
         self.config = config
 
-    def _build_payload(self, user_content: str, system: str | None = None) -> dict[str, Any]:
+    def _build_payload(self, user_content: str, system: str | None = None,
+                       images: list[str] | None = None) -> dict[str, Any]:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": user_content})
-        return {
+
+        content: Any = user_content
+        if images:
+            content = [{"type": "text", "text": user_content}]
+            for img_url in images:
+                content.append({"type": "image_url", "image_url": {"url": img_url}})
+
+        messages.append({"role": "user", "content": content})
+        payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
         }
+        return payload
 
     async def generate(self, user_content: str, system: str | None = None,
-                       max_retries: int = 3) -> str:
-        """生成文本。超时/网络错误/429/503 指数退避重试；401/403 等直接报错。"""
+                       max_retries: int = 3, images: list[str] | None = None) -> str:
+        """生成文本。支持传入图片 URL/base64 data URL 列表进行多模态生成。
+
+        超时/网络错误/429/503 指数退避重试；401/403 等直接报错。
+        """
         url = f"{self.config.base_url.rstrip('/')}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        payload = self._build_payload(user_content, system)
+        payload = self._build_payload(user_content, system, images=images)
 
         last_err: Exception | None = None
         for attempt in range(max_retries):

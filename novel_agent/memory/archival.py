@@ -16,10 +16,16 @@ from novel_agent.config import Config
 class ArchivalMemory:
     """Chroma 向量检索。"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, project_id: int | None = None):
         self.config = config
-        config.chroma_dir.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(config.chroma_dir))
+        self.project_id = project_id
+        if project_id is not None:
+            chroma_dir = config.project_chroma_dir(project_id)
+        else:
+            # 兼容旧调用
+            chroma_dir = config.chroma_dir
+        chroma_dir.mkdir(parents=True, exist_ok=True)
+        self._client = chromadb.PersistentClient(path=str(chroma_dir))
         self._collection = self._client.get_or_create_collection(
             name="novel_archive",
             metadata={"hnsw:space": "cosine"},

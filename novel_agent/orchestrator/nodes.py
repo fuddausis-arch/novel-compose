@@ -27,6 +27,23 @@ WRITER_SYSTEM_PROMPT = (
 )
 
 
+def clean_chapter_text(text: str, chapter: int, title: str = "") -> str:
+    """清理 LLM 生成的常见格式垃圾，返回纯净正文。"""
+    if not text:
+        return ""
+    s = text
+    # 去掉 markdown 章节标题行（# 第X章 ...）
+    s = re.sub(r"^#+\s*第[\d一二三四五六七八九十百千万]+章[：:\s]*.*$", "", s, flags=re.MULTILINE)
+    # 去掉 --- 分隔线
+    s = re.sub(r"^\s*---+\s*$", "", s, flags=re.MULTILINE)
+    # 去掉 markdown 加粗/斜体但保留文字
+    s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)
+    s = re.sub(r"(?<![*])\*([^*]+)\*(?![*])", r"\1", s)
+    # 合并连续空行
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
 def assemble_context(state: ChapterGenState, repo: BibleRepository,
                      archival: Any | None = None) -> dict:
     """节点 1：装配章节上下文（core memory + 可选 archival 检索）。"""
@@ -46,6 +63,7 @@ async def write_chapter(state: ChapterGenState,
     )
     try:
         draft = await llm_client.generate(prompt, system=WRITER_SYSTEM_PROMPT)
+        draft = clean_chapter_text(draft, state["chapter"], state.get("title", ""))
         return {"draft": draft, "status": "drafted",
                 "draft_version": state.get("draft_version", 0) + 1,
                 "word_count": len(draft)}
@@ -93,6 +111,7 @@ async def rewrite_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict
     )
     try:
         draft = await llm_client.generate(prompt, system=WRITER_SYSTEM_PROMPT)
+        draft = clean_chapter_text(draft, state["chapter"], state.get("title", ""))
         return {"draft": draft,
                 "draft_version": state.get("draft_version", 1) + 1,
                 "word_count": len(draft), "status": "drafted"}
@@ -109,11 +128,13 @@ async def polish_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict:
     prompt = f"润色以下章节正文：\n\n{state.get('draft', '')}"
     try:
         polished = await llm_client.generate(prompt, system=POLISH_SYSTEM)
+        polished = clean_chapter_text(polished, state["chapter"], state.get("title", ""))
         return {"polished": polished, "status": "polished",
                 "word_count": len(polished)}
     except Exception as e:
         # 润色失败不影响主流程，用原草稿
-        return {"polished": state.get("draft", ""), "status": "polished",
+        draft = clean_chapter_text(state.get("draft", ""), state["chapter"], state.get("title", ""))
+        return {"polished": draft, "status": "polished",
                 "error": f"润色失败用原稿: {e}"}
 
 

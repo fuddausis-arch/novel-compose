@@ -1,0 +1,25 @@
+审查小说《${title}》（canonical genre: ${canonical_genre}）第${chapter}章。
+
+章纲：第${outline_order}章 ${outline_title}：${outline_summary}（strand=${outline_strand}）
+
+【工作记忆：本章必须知道的真源】
+${working_memory}
+
+【情节记忆：近期发生的事实】
+${episodic_memory}
+
+【语义记忆：长期知识与题材约束】
+${semantic_memory}
+
+本章正文：
+${chapter_text}
+
+五维审查定义：
+${dimension_text}
+
+【裁决规则】
+${adjudication_text}
+
+请从五个维度严格审查，只输出 JSON：
+{"issues":[{"severity":"critical|high|medium|low","category":"setting|timeline|continuity|character|logic","location":"","description":"","evidence":"原文引用或数据对比","fix_hint":"","blocking":true|false}],"dimension_results":[{"dimension":"setting","conclusion":"pass|issue|unknown"}],"issues_count":N,"blocking_count":M,"has_blocking":true|false,"summary":""}
+规则：每个 issue 必须带 evidence；critical/high 必须 blocking=true；不评分、不给文笔建议；遵循题材模板约束和裁决规则。

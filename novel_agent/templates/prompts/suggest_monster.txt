@@ -1,0 +1,19 @@
+请为小说《$title》基于以下上下文推荐 $count 个新怪物设定。
+
+题材：$genre
+风格/要求：$style
+当前上下文：$context_text
+已有世界观：$world_text
+已有角色：$char_text
+已有大纲：$outline_text
+已有怪物：$monster_text
+$custom_prompt
+
+要求：
+- 与现有力量体系、世界观不冲突；
+- 与已有怪物不重复；
+- 出场理由合理，能为剧情服务；
+- 区分小怪/精英/首领/Boss 等级别。
+
+每条建议包含：title（名称）、summary（一句话描述）、payload（JSON，含 species/rank/tier/habitats/behavior/weaknesses/lore 等可选字段）。
+输出 JSON：{"suggestions": [{"title": "", "summary": "", "payload": {}}]}

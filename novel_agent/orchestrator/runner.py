@@ -30,8 +30,8 @@ class ChapterRunner:
         self.config = config
         self.repo = repo
         self.llm_client = llm_client or LLMClient(config.llm)
-        self.recall = RecallMemory(config)
-        self.archival = ArchivalMemory(config)
+        self.recall = RecallMemory(config, project_id=repo.project_id)
+        self.archival = ArchivalMemory(config, project_id=repo.project_id)
         self.applier = DeltaApplier(repo, archival=self.archival)
         # Auditor 用独立 client（写审分离；M3 默认复用同配置，M4 可配不同模型/温度）
         auditor_client = LLMClient(config.llm)

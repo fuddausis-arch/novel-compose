@@ -10,9 +10,14 @@ from novel_agent.config import Config
 class RecallMemory:
     """章节正文文件读写 + 事件流查询入口。"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, project_id: int | None = None):
         self.config = config
-        self.chapters_dir = config.chapters_dir
+        self.project_id = project_id
+        if project_id is not None:
+            self.chapters_dir = config.project_chapters_dir(project_id)
+        else:
+            # 兼容旧调用：无 project_id 时退回到根目录（后续逐步移除）
+            self.chapters_dir = config.chapters_dir
         self.chapters_dir.mkdir(parents=True, exist_ok=True)
 
     def save_chapter_text(self, chapter: int, title: str, content: str) -> Path:

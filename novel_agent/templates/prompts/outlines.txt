@@ -1,0 +1,39 @@
+为以下小说设计${volume}的章节大纲。
+
+标题：${title}
+类型：${genre}
+简介：${summary}
+文风：${style}
+
+世界观设定：
+${world_text}
+
+主要角色：
+${char_text}
+
+已有伏笔（请尽量在本卷内埋设、呼应或回收）：
+${fore_text}
+
+共 ${chapter_count} 章，节奏要求：${rhythm}
+
+输出格式（只输出 JSON，不要 markdown 代码块）：
+{
+  "outlines": [
+    {
+      "order": 1,
+      "level": "chapter",
+      "title": "章标题",
+      "summary": "100字以上的详细摘要：本章核心冲突、场景、信息位、角色动作、情绪转折、结尾钩子。",
+      "act": "开端/发展/小高潮/转折/大高潮/结局",
+      "strand": "quest/fire/constellation",
+      "new_foreshadows": [{"foreshadow_id":"S-001","tier":"short/medium/long","description":"","plant_chapter":1,"planned_resolve_chapter":3}]
+    }
+  ]
+}
+
+规则：
+1. 每章 summary 必须具体，包含：核心冲突（谁vs谁/人与环境/人与自我）、关键场景、角色目标与动作、情绪转折、结尾钩子。
+2. 章节之间必须因果相连，禁止流水账。
+3. 伏笔必须标注埋下章节和预计回收章节，并与已有伏笔形成呼应。
+4. 每3-5章必须有一次小高潮或信息爆点。
+5. strand 分布应均衡：quest 60%-80%，fire 10%-30%，constellation 5%-20%。

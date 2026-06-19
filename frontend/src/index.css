@@ -1,0 +1,234 @@
+@import "tailwindcss";
+
+/* ========== Theme tokens ========== */
+
+html[data-theme="light-glass"],
+:root {
+  --background: #f5f5f7;
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-elevated: rgba(255, 255, 255, 0.92);
+  --surface-hover: rgba(255, 255, 255, 0.9);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --foreground: #1d1d1f;
+  --muted: #6e6e73;
+  --primary: #0071e3;
+  --primary-hover: #0077ed;
+  --primary-foreground: #ffffff;
+  --primary-muted: rgba(0, 113, 227, 0.1);
+  --secondary: #e5e5ea;
+  --secondary-hover: #d1d1d6;
+  --secondary-foreground: #1d1d1f;
+  --danger: #ff3b30;
+  --danger-hover: #ff5e52;
+  --success: #34c759;
+  --success-hover: #50d46d;
+  --warning: #ff9500;
+  --warning-hover: #ffb340;
+  --radius: 0.875rem;
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.12);
+}
+
+html[data-theme="warm-paper"] {
+  --background: #faf8f5;
+  --surface: rgba(255, 255, 255, 0.9);
+  --surface-elevated: #ffffff;
+  --surface-hover: rgba(255, 251, 245, 0.95);
+  --border: rgba(120, 110, 95, 0.12);
+  --border-strong: rgba(120, 110, 95, 0.2);
+  --foreground: #2c241b;
+  --muted: #7a6f63;
+  --primary: #b45309;
+  --primary-hover: #92400e;
+  --primary-foreground: #ffffff;
+  --primary-muted: rgba(180, 83, 9, 0.1);
+  --secondary: #ede8e0;
+  --secondary-hover: #e2dbd0;
+  --secondary-foreground: #2c241b;
+  --danger: #dc2626;
+  --danger-hover: #ef4444;
+  --success: #15803d;
+  --success-hover: #16a34a;
+  --warning: #d97706;
+  --warning-hover: #f59e0b;
+  --radius: 0.75rem;
+  --shadow-sm: 0 2px 6px rgba(60, 45, 30, 0.04);
+  --shadow: 0 6px 20px rgba(60, 45, 30, 0.08);
+  --shadow-lg: 0 14px 40px rgba(60, 45, 30, 0.12);
+}
+
+html[data-theme="dark-ai"] {
+  --background: #0f1117;
+  --surface: rgba(30, 33, 42, 0.72);
+  --surface-elevated: rgba(38, 42, 54, 0.9);
+  --surface-hover: rgba(46, 51, 66, 0.85);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --foreground: #f0f2f5;
+  --muted: #9aa3b2;
+  --primary: #8b5cf6;
+  --primary-hover: #7c3aed;
+  --primary-foreground: #ffffff;
+  --primary-muted: rgba(139, 92, 246, 0.15);
+  --secondary: #2a2e3b;
+  --secondary-hover: #353a4b;
+  --secondary-foreground: #f0f2f5;
+  --danger: #f87171;
+  --danger-hover: #fca5a5;
+  --success: #4ade80;
+  --success-hover: #86efac;
+  --warning: #fbbf24;
+  --warning-hover: #fde047;
+  --radius: 0.875rem;
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+@theme {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-muted: var(--primary-muted);
+  --color-secondary: var(--secondary);
+  --color-secondary-hover: var(--secondary-hover);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-danger: var(--danger);
+  --color-danger-hover: var(--danger-hover);
+  --color-success: var(--success);
+  --color-success-hover: var(--success-hover);
+  --color-warning: var(--warning);
+  --color-warning-hover: var(--warning-hover);
+  --radius-sm: calc(var(--radius) - 0.25rem);
+  --radius: var(--radius);
+  --radius-lg: calc(var(--radius) + 0.25rem);
+  --radius-xl: calc(var(--radius) + 0.5rem);
+}
+
+/* ========== Base styles ========== */
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    @apply h-full w-full overflow-hidden;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+
+  html {
+    transition: background-color 200ms ease, color 200ms ease;
+  }
+}
+
+/* ========== Utilities ========== */
+
+@layer utilities {
+  .glass {
+    background: var(--surface);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow);
+  }
+
+  .glass-elevated {
+    background: var(--surface-elevated);
+    backdrop-filter: blur(32px) saturate(200%);
+    -webkit-backdrop-filter: blur(32px) saturate(200%);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .glass-dark {
+    background: var(--surface);
+    backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid var(--border);
+  }
+
+  .editor-surface {
+    background: var(--surface-elevated);
+    color: var(--foreground);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* ========== Custom scrollbar ========== */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* ========== Animations ========== */
+
+@keyframes loading {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes themeDropdownIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ========== Smooth theme transitions ========== */
+
+*,
+*::before,
+*::after {
+  transition-property: background-color, border-color, color, fill, stroke, box-shadow;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
+input,
+textarea,
+button,
+select {
+  transition-property: background-color, border-color, color, box-shadow, transform;
+}

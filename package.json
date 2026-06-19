@@ -1,0 +1,16 @@
+{
+  "name": "novel-generator",
+  "private": true,
+  "version": "0.4.0",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:electron\"",
+    "dev:backend": ".venv\\Scripts\\activate && python -m novel_agent.cli serve --port 8000",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:electron": "cd frontend && npm run electron:dev",
+    "build": "cd frontend && npm run build",
+    "electron:build": "cd frontend && npm run electron:build"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}

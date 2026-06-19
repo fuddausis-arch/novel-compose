@@ -1,51 +1,13 @@
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>小说工作台</title>
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-<div class="workspace">
-  <aside class="left-pane">
-    <div class="pane-header">
-      <select id="project-select" class="select"></select>
-      <button class="btn-icon" id="new-project-btn" title="新建项目">+</button>
-    </div>
-    <div class="asset-tree" id="asset-tree">
-      <div class="empty-state">请选择项目</div>
-    </div>
-    <div class="left-actions">
-      <button class="btn btn-primary btn-block" id="plan-btn">卷级规划</button>
-    </div>
-  </aside>
-
-  <main class="center-pane">
-    <div class="pane-header">
-      <h2 id="workspace-title">选择左侧资产或章节</h2>
-    </div>
-    <div class="workspace-body" id="workspace-body">
-      <div class="empty-state">从左侧选择项目资产，或点击章节开始阅读</div>
-    </div>
-  </main>
-
-  <aside class="right-pane">
-    <div class="pane-header">
-      <h3>AI 流水线</h3>
-      <span id="pipeline-tag" class="tag tag-idle">空闲</span>
-    </div>
-    <div class="pipeline-nodes" id="pipeline-nodes"></div>
-    <div class="event-log" id="event-log"></div>
-    <div class="right-actions">
-      <button class="btn btn-primary btn-block" id="generate-btn">生成下一章</button>
-      <div class="human-review" id="human-review" style="display:none">
-        <button class="btn btn-success btn-block" id="approve-btn">✓ 通过大纲</button>
-        <button class="btn btn-danger btn-block" id="reject-btn">✕ 打回</button>
-      </div>
-    </div>
-  </aside>
-</div>
-<script src="app.js"></script>
-</body>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>小说生成器</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

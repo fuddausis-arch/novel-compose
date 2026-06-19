@@ -37,6 +37,16 @@ def generate_chapter(req: GenerateRequest):
         db.close()
 
 
+@router.get("/list")
+def list_chapters(project_id: int):
+    """列出项目下的所有章节。注意：此路由必须在 /{chapter}/text 之前注册，避免被当作 chapter 参数。"""
+    from novel_agent.memory.recall import RecallMemory
+    cfg = load_config()
+    recall = RecallMemory(cfg, project_id=project_id)
+    chapters = recall.list_chapters()
+    return [{"chapter": c, "text_preview": recall.read_chapter_text(c)[:200]} for c in chapters]
+
+
 @router.get("/generate/stream")
 async def generate_chapter_stream(project_id: int, chapter: int, title: str,
                                   thread_id: str | None = None):
@@ -77,22 +87,20 @@ async def generate_chapter_stream(project_id: int, chapter: int, title: str,
             db.close()
 
     return EventSourceResponse(event_generator())
-def list_chapters(project_id: int):
-    from novel_agent.memory.recall import RecallMemory
-    cfg = load_config()
-    recall = RecallMemory(cfg)
-    chapters = recall.list_chapters()
-    return [{"chapter": c, "text_preview": recall.read_chapter_text(c)[:200]} for c in chapters]
 
 
 @router.get("/{chapter}/text")
-def get_chapter_text(chapter: int):
+def get_chapter_text(chapter: int, project_id: int):
+    """获取章节正文（去除 markdown 标题行，只返回正文）。"""
     from novel_agent.memory.recall import RecallMemory
     cfg = load_config()
-    recall = RecallMemory(cfg)
-    text = recall.read_chapter_text(chapter)
-    if not text:
+    recall = RecallMemory(cfg, project_id=project_id)
+    raw = recall.read_chapter_text(chapter)
+    if not raw:
         raise HTTPException(404, "章节不存在")
+    lines = raw.splitlines()
+    # 跳过第一行 markdown 标题
+    text = "\n".join(lines[1:]).lstrip("\n")
     return {"chapter": chapter, "text": text}
 
 
@@ -102,23 +110,22 @@ class ChapterTextEdit(BaseModel):
 
 
 @router.put("/{chapter}/text")
-def save_chapter_text(chapter: int, data: ChapterTextEdit):
+def save_chapter_text(chapter: int, project_id: int, data: ChapterTextEdit):
     """编辑后保存章节正文到文件。"""
     from novel_agent.memory.recall import RecallMemory
     cfg = load_config()
-    recall = RecallMemory(cfg)
+    recall = RecallMemory(cfg, project_id=project_id)
     path = recall.save_chapter_text(chapter=chapter, title=data.title,
                                     content=data.content)
     return {"chapter": chapter, "saved": True, "path": str(path)}
 
 
 @router.delete("/{chapter}")
-def delete_chapter(chapter: int):
+def delete_chapter(chapter: int, project_id: int):
     """删除章节正文文件 + 圣经摘要。"""
     from novel_agent.memory.recall import RecallMemory
-    import re
     cfg = load_config()
-    recall = RecallMemory(cfg)
+    recall = RecallMemory(cfg, project_id=project_id)
     # 删正文文件
     pattern = f"第{chapter:03d}章_*.md"
     deleted_files = []
@@ -132,11 +139,8 @@ def delete_chapter(chapter: int):
         set_config(load_config())
         from novel_agent.bible import database as db_mod
         Base.metadata.create_all(bind=db_mod.engine)
-        from novel_agent.bible.models import Project
-        proj = db.query(Project).order_by(Project.id.desc()).first()
-        if proj:
-            repo = BibleRepository(db, project_id=proj.id)
-            db_deleted = repo.delete_chapter_summary(chapter)
+        repo = BibleRepository(db, project_id=project_id)
+        db_deleted = repo.delete_chapter_summary(chapter)
     finally:
         db.close()
     return {"deleted": True, "files": deleted_files, "summary_removed": db_deleted}
@@ -148,7 +152,7 @@ def export_txt(project_id: int):
     from novel_agent.memory.recall import RecallMemory
     from fastapi.responses import PlainTextResponse
     cfg = load_config()
-    recall = RecallMemory(cfg)
+    recall = RecallMemory(cfg, project_id=project_id)
     chapters = recall.list_chapters()
     parts = []
     for ch in chapters:

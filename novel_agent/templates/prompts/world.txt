@@ -1,0 +1,12 @@
+为以下小说设计完整世界观设定。
+
+标题：${title}
+类型：${genre}
+简介：${summary}
+文风：${style}
+要求：${requirements}
+风格：${style_hint}
+
+请输出 JSON：{"world_settings":[{"category":"","title":"","content":""}]}
+category 可选：世界观、力量体系、势力、地点、规则、历史、现实层、异能层、神明层、其他。
+只输出 JSON，不要 markdown 代码块。

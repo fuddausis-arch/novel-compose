@@ -1,0 +1,18 @@
+请为小说《$title》基于以下上下文推荐 $count 个新势力组织。
+
+题材：$genre
+风格/要求：$style
+当前上下文：$context_text
+已有世界观：$world_text
+已有角色：$char_text
+已有大纲：$outline_text
+已有势力：$faction_text
+$custom_prompt
+
+要求：
+- 与现有势力格局不重复、不冲突；
+- 有明确的立场（盟友/中立/敌对）、目标与层级；
+- 与主角当前剧情产生合理关联。
+
+每条建议包含：title（名称）、summary（一句话定位）、payload（JSON，含 type/alignment/tier/description/goals/hierarchy/territories/resources 等可选字段）。
+输出 JSON：{"suggestions": [{"title": "", "summary": "", "payload": {}}]}

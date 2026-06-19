@@ -10,6 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from novel_agent.config import Config, load_config
+from novel_agent.bible.models import migrate_db
 
 _config: Config | None = None
 
@@ -23,10 +24,10 @@ def get_config() -> Config:
 
 def set_config(cfg: Config) -> None:
     """测试/编排层注入配置用。"""
-    global _config, engine, SessionLocal
+    global _config, engine
     _config = cfg
     engine = create_engine(_get_db_url(), echo=False, future=True)
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, future=True)
+    migrate_db(engine)
 
 
 def _get_db_url() -> str:
@@ -39,4 +40,15 @@ def _get_db_url() -> str:
 
 
 engine = create_engine(_get_db_url(), echo=False, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, future=True)
+
+
+def SessionLocal():
+    """返回绑定到当前 engine 的会话。
+
+    使用函数而非模块级 sessionmaker，确保测试/编排层调用 set_config()
+    重新绑定 engine 后，所有代码都能拿到新会话。
+    """
+    return sessionmaker(bind=engine, autoflush=False, future=True)()
+
+
+migrate_db(engine)

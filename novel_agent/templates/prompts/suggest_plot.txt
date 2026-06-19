@@ -1,0 +1,23 @@
+请为小说《$title》基于以下上下文推荐 $count 条后续剧情。
+
+题材：$genre
+风格/要求：$style
+当前上下文类型：$context_type
+当前上下文内容：$context_text
+已有世界观：$world_text
+已有角色：$char_text
+已有伏笔：$fore_text
+已有大纲：$outline_text
+$custom_prompt
+
+请判断当前上下文是否已完整：
+- 若已完整，输出后续下一项（卷/小节/章）的剧情；
+- 若未完整，输出如何续写当前项。
+
+要求：
+- 与现有世界观、角色设定、伏笔回收进度保持一致；
+- 每条建议有明确的情节推进，避免空洞描述；
+- 不重复已有大纲内容。
+
+每条建议包含：title（标题）、summary（摘要，50-200字）、payload（JSON，含 level/order/act/strand 等）。
+输出 JSON：{"suggestions": [{"title": "", "summary": "", "payload": {}}]}
