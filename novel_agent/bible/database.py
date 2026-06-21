@@ -1,12 +1,13 @@
 """圣经数据库 engine + session。
 
 通过 Config 决定路径；测试用 NOVEL_TEST_DB=memory 切内存库。
+启用 WAL 模式解决并发写入 "database is locked" 问题。
 """
 from __future__ import annotations
 
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from novel_agent.config import Config, load_config
@@ -26,8 +27,26 @@ def set_config(cfg: Config) -> None:
     """测试/编排层注入配置用。"""
     global _config, engine
     _config = cfg
-    engine = create_engine(_get_db_url(), echo=False, future=True)
+    engine = _create_engine()
     migrate_db(engine)
+
+
+def _create_engine():
+    """创建 engine，启用 WAL 模式 + 跨线程访问。"""
+    url = _get_db_url()
+    eng = create_engine(
+        url, echo=False, future=True,
+        connect_args={"check_same_thread": False},
+    )
+    # 对 SQLite 文件库启用 WAL 模式（内存库不需要）
+    if not url.startswith("sqlite:///:memory:"):
+        @event.listens_for(eng, "connect")
+        def _set_wal(dbapi_conn, _):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+    return eng
 
 
 def _get_db_url() -> str:
@@ -39,7 +58,7 @@ def _get_db_url() -> str:
     return f"sqlite:///{db_path}"
 
 
-engine = create_engine(_get_db_url(), echo=False, future=True)
+engine = _create_engine()
 
 
 def SessionLocal():

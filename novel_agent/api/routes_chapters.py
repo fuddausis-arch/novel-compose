@@ -20,7 +20,8 @@ class GenerateRequest(BaseModel):
 
 
 @router.post("/generate")
-def generate_chapter(req: GenerateRequest):
+async def generate_chapter(req: GenerateRequest):
+    """异步生成章节，与 SSE 端点共用同一事件循环，避免 asyncio.run 嵌套。"""
     cfg = load_config()
     set_config(cfg)
     from novel_agent.bible import database as db_mod
@@ -29,8 +30,8 @@ def generate_chapter(req: GenerateRequest):
     repo = BibleRepository(db, project_id=req.project_id)
     runner = ChapterRunner(cfg, repo=repo)
     try:
-        result = asyncio.run(runner.run(
-            chapter=req.chapter, title=req.title, thread_id=req.thread_id))
+        result = await runner.run(
+            chapter=req.chapter, title=req.title, thread_id=req.thread_id)
         return result
     finally:
         runner.close()

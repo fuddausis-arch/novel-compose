@@ -165,19 +165,45 @@ def _unique_name(repo, entity: str, name: str) -> str:
 
 
 def _extract_json(text: str) -> dict:
+    """从 LLM 返回中提取 JSON 对象。
+
+    用平衡括号匹配代替 rfind("}")，避免长文本中多个 } 导致截取错误。
+    """
     import re
     m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     candidate = m.group(1) if m else text
     try:
         return json.loads(candidate)
     except json.JSONDecodeError:
+        # 平衡括号匹配：找到第一个 { 后，逐字符计数直到括号平衡
         start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                return json.loads(candidate[start:end + 1])
-            except json.JSONDecodeError:
-                return {}
+        if start < 0:
+            return {}
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(candidate)):
+            ch = candidate[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(candidate[start:i + 1])
+                    except json.JSONDecodeError:
+                        return {}
         return {}
 
 
