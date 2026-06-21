@@ -103,7 +103,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!project) return;
     set((state) => ({ loading: { ...state.loading, assets: true } }));
     try {
-      const [characters, foreshadows, outlines, worldSettings, chapters, factions, factionRelationships, characterRelationships, monsters, entityAppearances] = await Promise.all([
+      const results = await Promise.allSettled([
         api.listCharacters(project.id),
         api.listForeshadows(project.id),
         api.listOutlines(project.id),
@@ -115,7 +115,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         api.listMonsters(project.id),
         api.listEntityAppearances(project.id),
       ]);
-      set({ characters, foreshadows, outlines, worldSettings, chapters, factions, factionRelationships, characterRelationships, monsters, entityAppearances });
+      const keys = ["characters", "foreshadows", "outlines", "worldSettings", "chapters", "factions", "factionRelationships", "characterRelationships", "monsters", "entityAppearances"] as const;
+      const updates: Partial<AppState> = {};
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") {
+          (updates as any)[keys[i]] = r.value;
+        }
+      });
+      set(updates as any);
     } finally {
       set((state) => ({ loading: { ...state.loading, assets: false } }));
     }

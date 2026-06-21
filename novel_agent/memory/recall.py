@@ -21,10 +21,14 @@ class RecallMemory:
         self.chapters_dir.mkdir(parents=True, exist_ok=True)
 
     def save_chapter_text(self, chapter: int, title: str, content: str) -> Path:
-        """保存章节正文到 markdown 文件。"""
+        """保存章节正文到 markdown 文件。重生成时覆盖同章号旧文件。"""
         safe_title = re.sub(r'[\\/:*?"<>|]', "_", title)
         filename = f"第{chapter:03d}章_{safe_title}.md"
         path = self.chapters_dir / filename
+        # 删除同章号的旧文件（标题可能已改，文件名不同）
+        for old in self.chapters_dir.glob(f"第{chapter:03d}章_*.md"):
+            if old != path:
+                old.unlink()
         path.write_text(f"# 第{chapter}章 {title}\n\n{content}", encoding="utf-8")
         return path
 

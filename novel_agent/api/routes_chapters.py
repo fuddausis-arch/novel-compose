@@ -98,9 +98,12 @@ def get_chapter_text(chapter: int, project_id: int):
     raw = recall.read_chapter_text(chapter)
     if not raw:
         raise HTTPException(404, "章节不存在")
+    # 只跳过 # 开头的 markdown 标题行；纯正文不跳
     lines = raw.splitlines()
-    # 跳过第一行 markdown 标题
-    text = "\n".join(lines[1:]).lstrip("\n")
+    if lines and lines[0].lstrip().startswith("#"):
+        text = "\n".join(lines[1:]).lstrip("\n")
+    else:
+        text = raw
     return {"chapter": chapter, "text": text}
 
 
@@ -118,6 +121,23 @@ def save_chapter_text(chapter: int, project_id: int, data: ChapterTextEdit):
     path = recall.save_chapter_text(chapter=chapter, title=data.title,
                                     content=data.content)
     return {"chapter": chapter, "saved": True, "path": str(path)}
+
+
+@router.get("/export/txt")
+def export_txt(project_id: int):
+    """导出全部章节为单个 TXT。必须在 /{chapter} 路由之前注册，避免被遮蔽。"""
+    from novel_agent.memory.recall import RecallMemory
+    from fastapi.responses import PlainTextResponse
+    cfg = load_config()
+    recall = RecallMemory(cfg, project_id=project_id)
+    chapters = recall.list_chapters()
+    parts = []
+    for ch in chapters:
+        text = recall.read_chapter_text(ch)
+        if text:
+            parts.append(text)
+    return PlainTextResponse("\n\n".join(parts), media_type="text/plain",
+                             headers={"Content-Disposition": "attachment; filename=novel.txt"})
 
 
 @router.delete("/{chapter}")
@@ -144,20 +164,3 @@ def delete_chapter(chapter: int, project_id: int):
     finally:
         db.close()
     return {"deleted": True, "files": deleted_files, "summary_removed": db_deleted}
-
-
-@router.get("/export/txt")
-def export_txt(project_id: int):
-    """导出全部章节为单个 TXT。"""
-    from novel_agent.memory.recall import RecallMemory
-    from fastapi.responses import PlainTextResponse
-    cfg = load_config()
-    recall = RecallMemory(cfg, project_id=project_id)
-    chapters = recall.list_chapters()
-    parts = []
-    for ch in chapters:
-        text = recall.read_chapter_text(ch)
-        if text:
-            parts.append(text)
-    return PlainTextResponse("\n\n".join(parts), media_type="text/plain",
-                             headers={"Content-Disposition": "attachment; filename=novel.txt"})

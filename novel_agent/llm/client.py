@@ -63,6 +63,15 @@ class LLMClient:
                     resp = await client.post(url, headers=headers, json=payload)
                     resp.raise_for_status()
                     data = resp.json()
+                    # 检查响应体是否包含 choices（方舟可能返回 200 + 错误 JSON）
+                    if "choices" not in data or not data["choices"]:
+                        body = resp.text
+                        body_lower = body.lower()
+                        quota_keywords = ["quota", "exceeded", "limit reached",
+                                          "insufficient", "余额不足", "配额", "rate limit"]
+                        if any(kw in body_lower or kw in body for kw in quota_keywords):
+                            raise LLMError(self._quota_msg(body))
+                        raise LLMError(f"AI 接口返回异常（无 choices 字段）: {body[:300]}")
                     return data["choices"][0]["message"]["content"]
             except (httpx.TimeoutException, httpx.NetworkError) as e:
                 last_err = e
