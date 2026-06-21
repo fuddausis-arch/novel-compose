@@ -1,6 +1,7 @@
 """Core memory：每章注入的常驻上下文（~2-4k token）。
 
 包含：项目基础信息 + 当前活跃角色 + 当前卷大纲 + 未回收伏笔子集
+     + 前文章节摘要（卷级压缩，防止长篇上下文爆炸）
      + archival 检索回的相关历史切片（spec 2.1，视频启发增强）。
 """
 from __future__ import annotations
@@ -8,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from novel_agent.bible.repository import BibleRepository
+from novel_agent.memory.summary_tree import SummaryTree
 
 
 class CoreMemoryAssembler:
@@ -21,6 +23,7 @@ class CoreMemoryAssembler:
         """
         self.repo = repo
         self.archival = archival
+        self.summary_tree = SummaryTree(repo)
 
     def assemble(self, chapter: int, max_chars: int = 8000,
                  query: str | None = None) -> str:
@@ -32,6 +35,12 @@ class CoreMemoryAssembler:
             sections.append(chapter_outline)
         else:
             sections.append("【本章细纲】\n当前暂无本章细纲，请基于项目整体规划自由发挥。")
+
+        # 前文摘要：注入历史章节摘要，长篇时自动压缩（卷级摘要）
+        if chapter > 1:
+            prev_summary = self._format_previous_summaries(chapter)
+            if prev_summary:
+                sections.append(prev_summary)
 
         project = self.repo.get_project()
         if project:
@@ -149,6 +158,29 @@ class CoreMemoryAssembler:
             chapter = s.get("chapter")
             tag = f"第{chapter}章" if chapter else "设定"
             lines.append(f"- [{tag}] {s['content']}")
+        return "\n".join(lines)
+
+    def _format_previous_summaries(self, chapter: int) -> str:
+        """注入前文摘要：最近 5 章详细 + 更早的卷级压缩。"""
+        recent = self.summary_tree.get_recent_chapter_summaries(count=5)
+        if not recent:
+            return ""
+        lines = ["【前文摘要】"]
+        # 最近 5 章详细
+        for s in recent:
+            if s.chapter < chapter:
+                lines.append(f"第{s.chapter}章《{s.title}》：{s.core_events[:150]}")
+        # 如果超过 5 章历史，加卷级压缩
+        all_summaries = self.repo.list_chapter_summaries(limit=1000)
+        if len(all_summaries) > 5:
+            older_count = len([s for s in all_summaries if s.chapter < chapter - 5])
+            if older_count > 0:
+                current_volume = (chapter - 1) // 30 + 1
+                for vol in range(1, current_volume):
+                    vol_summary = self.summary_tree.get_volume_summary(vol)
+                    if vol_summary:
+                        lines.append(vol_summary)
+                        break  # 只注入上一卷摘要，控制上下文长度
         return "\n".join(lines)
 
     def _chapter_outline_summary(self, chapter: int) -> str:

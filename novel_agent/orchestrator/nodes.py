@@ -96,7 +96,7 @@ async def write_chapter(state: ChapterGenState,
             return {"status": "failed", "error": "LLM 返回了 JSON 而非正文，可能模型理解错误"}
         return {"draft": draft, "status": "drafted",
                 "draft_version": state.get("draft_version", 0) + 1,
-                "word_count": len(draft)}
+                "word_count": len(re.findall(r'[\u4e00-\u9fff]', draft))}
     except Exception as e:
         logger.warning("write_chapter 第%d章失败：%s", state["chapter"], e)
         return {"status": "failed", "error": str(e)}
@@ -120,38 +120,25 @@ async def audit_chapter(state: ChapterGenState, auditor: Auditor,
             "status": "failed",
         }
 
-    # 确定性硬检查：字数/限频词/伏笔关键词命中，用代码查不交给 LLM
+    # 确定性硬检查：字数/限频词/伏笔描述关键词命中
     to_plant = repo.get_foreshadows_to_plant(state["chapter"])
-    plant_ids = [f.foreshadow_id for f in to_plant]
-    det_result = run_deterministic_checks(state["draft"], plant_ids)
+    foreshadows_data = [{"id": f.foreshadow_id, "description": f.description} for f in to_plant]
+    det_result = run_deterministic_checks(state["draft"], foreshadows_data)
 
-    # 有 critical 硬检查失败直接打回，不浪费 LLM 调用
+    # 确定性检查结果作为 issues 保留给 rewrite 参考，但不污染 auditor 输入（写审分离铁律）
     det_issues = [Issue(**i) for i in det_result["issues"]]
-    has_critical = any(i.severity == "critical" for i in det_issues)
-    if has_critical:
-        return {
-            "audit_report": AuditReport(
-                passed=False, overall_score=30,
-                issues=det_issues,
-                summary="确定性检查发现 critical 问题",
-            ).model_dump(),
-            "review_iterations": state.get("review_iterations", 0) + 1,
-            "status": "needs_rewrite",
-        }
 
-    # 无 critical：继续调 LLM 审计，把确定性检查结果附在 draft 前作为额外上下文
-    audit_draft = state["draft"]
-    if det_issues:
-        det_note = "【确定性检查提示】\n" + "\n".join(
-            f"- {i.dimension}({i.severity}): {i.message}" for i in det_issues
-        ) + "\n\n"
-        audit_draft = det_note + state["draft"]
-
+    # 调 LLM 审计：只传纯草稿，不传确定性检查提示（审计隔离）
     report = await auditor.audit(
         chapter=state["chapter"], title=state.get("title", ""),
-        draft=audit_draft, repo=repo,
+        draft=state["draft"], repo=repo,
     )
     iterations = state.get("review_iterations", 0) + 1
+
+    # 确定性检查 issues 追加到审计报告作为参考信息，但不改变 LLM 审计结论
+    if det_issues:
+        report.issues = list(report.issues) + det_issues
+
     return {
         "audit_report": report.model_dump(),
         "review_iterations": iterations,

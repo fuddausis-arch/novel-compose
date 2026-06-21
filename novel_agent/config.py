@@ -107,6 +107,19 @@ def load_config(yaml_path: Path | None = None) -> Config:
         )
         if cfg.llm.context_length is None:
             cfg.llm.context_length = get_model_context_length(cfg.llm.model)
+        # 读取审校独立配置（写审分离铁律）
+        auditor_data = data.get("auditor_llm")
+        if auditor_data:
+            cfg.auditor_llm = LLMConfig(
+                base_url=auditor_data.get("base_url", cfg.llm.base_url),
+                api_key=auditor_data.get("api_key", cfg.llm.api_key),
+                model=auditor_data.get("model", cfg.llm.model),
+                temperature=auditor_data.get("temperature", cfg.llm.temperature),
+                max_tokens=auditor_data.get("max_tokens", cfg.llm.max_tokens),
+                timeout=auditor_data.get("timeout", cfg.llm.timeout),
+                vision_enabled=auditor_data.get("vision_enabled", cfg.llm.vision_enabled),
+                context_length=auditor_data.get("context_length", cfg.llm.context_length),
+            )
     # env 覆盖（仅在 env 非空时生效，避免空字符串覆盖 yaml 已保存的配置）
     _env_api_key = os.getenv("NOVEL_LLM_API_KEY", "")
     _env_base_url = os.getenv("NOVEL_LLM_BASE_URL", "")

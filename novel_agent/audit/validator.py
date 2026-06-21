@@ -32,22 +32,37 @@ def check_forbidden_words(draft: str, max_count: int = 3) -> tuple[bool, list[st
     return len(hits) <= max_count, hits
 
 
-def check_foreshadows_planted(draft: str, foreshadow_ids: list[str]) -> tuple[bool, list[str]]:
-    """检查本章应埋伏笔的关键词是否在正文中出现。"""
+def check_foreshadows_planted(draft: str, foreshadows: list[dict]) -> tuple[bool, list[str]]:
+    """检查本章应埋伏笔的描述关键词是否在正文中出现。
+
+    注意：检查的是伏笔描述的关键词，不是伏笔 ID（ID 是元数据，不应出现在正文中）。
+    foreshadows 参数是 [{"id": "S-001", "description": "神秘文物箱"}, ...] 格式。
+    """
     missing = []
-    for fid in foreshadow_ids:
-        # 检查 ID 本身或其描述关键词
-        if fid not in draft:
-            missing.append(fid)
+    for f in foreshadows:
+        desc = f.get("description", "").strip()
+        fid = f.get("id", "")
+        if not desc:
+            # 没有描述则跳过（无法检查）
+            continue
+        # 取描述中前 4-6 个字作为关键词检查
+        keywords = desc.split("，")[0].split("。")[0].split("、")[0][:6]
+        if keywords and keywords not in draft:
+            missing.append(f"{fid}({desc[:20]})")
     return len(missing) == 0, missing
 
 
-def run_deterministic_checks(draft: str, foreshadow_to_plant: list[str] = None) -> dict:
-    """运行全部确定性检查，返回 {passed, issues}。"""
-    foreshadow_to_plant = foreshadow_to_plant or []
+def run_deterministic_checks(draft: str, foreshadows_to_plant: list[dict] = None,
+                             word_min: int = 1500, word_max: int = 5000) -> dict:
+    """运行全部确定性检查，返回 {passed, issues}。
+
+    foreshadows_to_plant: [{"id":"S-001","description":"神秘文物箱"}, ...]
+    字数阈值可通过参数覆盖，默认与 writer prompt 目标对齐。
+    """
+    foreshadows_to_plant = foreshadows_to_plant or []
     issues = []
 
-    ok, msg = check_word_count(draft)
+    ok, msg = check_word_count(draft, min_w=word_min, max_w=word_max)
     if not ok:
         issues.append({"dimension": "字数", "severity": "important", "message": msg})
 
@@ -56,10 +71,11 @@ def run_deterministic_checks(draft: str, foreshadow_to_plant: list[str] = None) 
         issues.append({"dimension": "限频词", "severity": "important",
                        "message": f"AI 限频词过多：{', '.join(hits)}"})
 
-    ok, missing = check_foreshadows_planted(draft, foreshadow_to_plant)
+    ok, missing = check_foreshadows_planted(draft, foreshadows_to_plant)
     if not ok:
-        issues.append({"dimension": "伏笔", "severity": "critical",
-                       "message": f"本章应埋伏笔未出现：{', '.join(missing)}"})
+        # 降级为 important：伏笔检查是启发式的，不应阻断生成
+        issues.append({"dimension": "伏笔", "severity": "important",
+                       "message": f"本章应埋伏笔关键词未出现：{', '.join(missing)}"})
 
     return {
         "passed": len(issues) == 0,
