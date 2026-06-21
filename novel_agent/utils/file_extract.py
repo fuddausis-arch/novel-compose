@@ -6,7 +6,9 @@ import io
 import mimetypes
 from pathlib import Path
 
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
+
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 
 
 def _is_text_mime(mime: str | None) -> bool:
@@ -64,6 +66,8 @@ async def extract_text_or_image(file: UploadFile) -> tuple[str, bool]:
     - 图片：返回 base64 data URL，is_image=True
     """
     content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(413, f"文件过大（{len(content)} bytes），最大允许 {MAX_UPLOAD_SIZE} bytes")
     filename = file.filename or ""
     suffix = Path(filename).suffix.lower()
     mime = file.content_type or mimetypes.guess_type(filename)[0]

@@ -200,10 +200,11 @@ async def polish_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict:
         return {"polished": polished, "status": "polished",
                 "word_count": len(polished)}
     except Exception as e:
-        # 润色失败不影响主流程，用原草稿
+        logger.warning("polish_chapter 第%d章失败: %s", state["chapter"], e)
+        # polish 失败不阻塞流程，用原草稿继续
         draft = clean_chapter_text(state.get("draft", ""), state["chapter"], state.get("title", ""))
         return {"polished": draft, "status": "polished",
-                "error": f"润色失败用原稿: {e}"}
+                "polish_warning": str(e)}
 
 
 def save_text_polished(state: ChapterGenState, recall: RecallMemory) -> dict:

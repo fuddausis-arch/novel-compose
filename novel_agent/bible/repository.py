@@ -37,7 +37,8 @@ class BibleRepository:
         self._in_tx = True
         try:
             yield
-            self._commit_or_flush()
+            self._in_tx = False  # 先复位标志
+            self.db.commit()     # 直接 commit，不走 _commit_or_flush
         except Exception:
             self.db.rollback()
             raise

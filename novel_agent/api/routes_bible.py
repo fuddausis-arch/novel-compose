@@ -1,8 +1,9 @@
 """圣经 CRUD API：角色/伏笔/大纲/摘要 + 创建/编辑/删除/导入。"""
 from __future__ import annotations
 import json
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException, UploadFile, Depends
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from novel_agent.bible.database import SessionLocal, set_config
 from novel_agent.bible.models import Base, Foreshadow, Character
 from novel_agent.bible.repository import BibleRepository
@@ -12,25 +13,30 @@ from novel_agent.templates.loader import PromptLoader
 router = APIRouter()
 
 
-def _repo(project_id: int):
+def get_db(project_id: int):
+    """数据库会话依赖项：统一管理会话生命周期。"""
     cfg = load_config()
     set_config(cfg)
     from novel_agent.bible import database as db_mod
     Base.metadata.create_all(bind=db_mod.engine)
     db = SessionLocal()
-    return db, BibleRepository(db, project_id=project_id)
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_repo(project_id: int, db: Session = Depends(get_db)) -> BibleRepository:
+    """Repository 依赖项：基于数据库会话创建 repository 实例。"""
+    return BibleRepository(db, project_id=project_id)
 
 
 # ---- 世界设定 ----
 @router.get("/{project_id}/world-settings")
-def list_world_settings(project_id: int):
-    db, repo = _repo(project_id)
-    try:
-        return [{"id": w.id, "category": w.category, "title": w.title,
-                 "content": w.content, "order": w.order}
-                for w in repo.list_world_settings()]
-    finally:
-        db.close()
+def list_world_settings(project_id: int, repo: BibleRepository = Depends(get_repo)):
+    return [{"id": w.id, "category": w.category, "title": w.title,
+             "content": w.content, "order": w.order}
+            for w in repo.list_world_settings()]
 
 
 class WorldSettingInput(BaseModel):
@@ -93,59 +99,45 @@ class MonsterInput(BaseModel):
 
 
 @router.post("/{project_id}/world-settings")
-def create_world_setting(project_id: int, data: WorldSettingInput):
-    db, repo = _repo(project_id)
-    try:
-        w = repo.create_world_setting(**data.model_dump())
-        return {"id": w.id, "category": w.category, "title": w.title,
-                "content": w.content, "order": w.order}
-    finally:
-        db.close()
+def create_world_setting(project_id: int, data: WorldSettingInput, repo: BibleRepository = Depends(get_repo)):
+    w = repo.create_world_setting(**data.model_dump())
+    return {"id": w.id, "category": w.category, "title": w.title,
+            "content": w.content, "order": w.order}
 
 
 @router.put("/{project_id}/world-settings/{setting_id}")
-def update_world_setting(project_id: int, setting_id: int, data: WorldSettingInput):
-    db, repo = _repo(project_id)
-    try:
-        from novel_agent.bible.models import WorldSetting
-        w = db.query(WorldSetting).filter(
-            WorldSetting.project_id == project_id,
-            WorldSetting.id == setting_id).first()
-        if not w:
-            raise HTTPException(404, "世界设定不存在")
-        for k, v in data.model_dump().items():
-            setattr(w, k, v)
-        db.commit(); db.refresh(w)
-        return {"id": w.id, "category": w.category, "title": w.title,
-                "content": w.content, "order": w.order}
-    finally:
-        db.close()
+def update_world_setting(project_id: int, setting_id: int, data: WorldSettingInput,
+                         db: Session = Depends(get_db), repo: BibleRepository = Depends(get_repo)):
+    from novel_agent.bible.models import WorldSetting
+    w = db.query(WorldSetting).filter(
+        WorldSetting.project_id == project_id,
+        WorldSetting.id == setting_id).first()
+    if not w:
+        raise HTTPException(404, "世界设定不存在")
+    for k, v in data.model_dump().items():
+        setattr(w, k, v)
+    db.commit(); db.refresh(w)
+    return {"id": w.id, "category": w.category, "title": w.title,
+            "content": w.content, "order": w.order}
 
 
 @router.delete("/{project_id}/world-settings/{setting_id}")
-def delete_world_setting(project_id: int, setting_id: int):
-    db, repo = _repo(project_id)
-    try:
-        from novel_agent.bible.models import WorldSetting
-        w = db.query(WorldSetting).filter(
-            WorldSetting.project_id == project_id,
-            WorldSetting.id == setting_id).first()
-        if not w:
-            raise HTTPException(404, "世界设定不存在")
-        db.delete(w); db.commit()
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_world_setting(project_id: int, setting_id: int,
+                         db: Session = Depends(get_db), repo: BibleRepository = Depends(get_repo)):
+    from novel_agent.bible.models import WorldSetting
+    w = db.query(WorldSetting).filter(
+        WorldSetting.project_id == project_id,
+        WorldSetting.id == setting_id).first()
+    if not w:
+        raise HTTPException(404, "世界设定不存在")
+    db.delete(w); db.commit()
+    return {"deleted": True}
 
 
 # ---- 角色 ----
 @router.get("/{project_id}/characters")
-def list_characters(project_id: int):
-    db, repo = _repo(project_id)
-    try:
-        return [_char_dict(c) for c in repo.list_characters()]
-    finally:
-        db.close()
+def list_characters(project_id: int, repo: BibleRepository = Depends(get_repo)):
+    return [_char_dict(c) for c in repo.list_characters()]
 
 
 def _char_dict(c):
@@ -172,51 +164,35 @@ class CharacterInput(BaseModel):
 
 
 @router.post("/{project_id}/characters")
-def create_character(project_id: int, data: CharacterInput):
-    db, repo = _repo(project_id)
-    try:
-        if repo.get_character(data.name):
-            raise HTTPException(400, f"角色 {data.name} 已存在")
-        c = repo.create_character(**data.model_dump())
-        return _char_dict(c)
-    finally:
-        db.close()
+def create_character(project_id: int, data: CharacterInput, repo: BibleRepository = Depends(get_repo)):
+    if repo.get_character(data.name):
+        raise HTTPException(400, f"角色 {data.name} 已存在")
+    c = repo.create_character(**data.model_dump())
+    return _char_dict(c)
 
 
 @router.put("/{project_id}/characters/{name}")
-def update_character(project_id: int, name: str, data: CharacterInput):
-    db, repo = _repo(project_id)
-    try:
-        c = repo.update_character(name, **data.model_dump())
-        if not c:
-            raise HTTPException(404, "角色不存在")
-        return _char_dict(c)
-    finally:
-        db.close()
+def update_character(project_id: int, name: str, data: CharacterInput, repo: BibleRepository = Depends(get_repo)):
+    c = repo.update_character(name, **data.model_dump())
+    if not c:
+        raise HTTPException(404, "角色不存在")
+    return _char_dict(c)
 
 
 @router.delete("/{project_id}/characters/{name}")
-def delete_character(project_id: int, name: str):
-    db, repo = _repo(project_id)
-    try:
-        if not repo.delete_character(name):
-            raise HTTPException(404, "角色不存在")
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_character(project_id: int, name: str, repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_character(name):
+        raise HTTPException(404, "角色不存在")
+    return {"deleted": True}
 
 
 # ---- 伏笔 ----
 @router.get("/{project_id}/foreshadows")
-def list_foreshadows(project_id: int):
-    db, repo = _repo(project_id)
-    try:
-        fs = db.query(Foreshadow).filter(Foreshadow.project_id == project_id).all()
-        return [{"id": f.foreshadow_id, "foreshadow_id": f.foreshadow_id, "tier": f.tier, "status": f.status,
-                 "description": f.description, "plant_chapter": f.plant_chapter,
-                 "planned_resolve_chapter": f.planned_resolve_chapter} for f in fs]
-    finally:
-        db.close()
+def list_foreshadows(project_id: int, db: Session = Depends(get_db)):
+    fs = db.query(Foreshadow).filter(Foreshadow.project_id == project_id).all()
+    return [{"id": f.foreshadow_id, "foreshadow_id": f.foreshadow_id, "tier": f.tier, "status": f.status,
+             "description": f.description, "plant_chapter": f.plant_chapter,
+             "planned_resolve_chapter": f.planned_resolve_chapter} for f in fs]
 
 
 class ForeshadowInput(BaseModel):
@@ -229,50 +205,35 @@ class ForeshadowInput(BaseModel):
 
 
 @router.post("/{project_id}/foreshadows")
-def create_foreshadow(project_id: int, data: ForeshadowInput):
-    db, repo = _repo(project_id)
-    try:
-        if repo.get_foreshadow(data.foreshadow_id):
-            raise HTTPException(400, f"伏笔 {data.foreshadow_id} 已存在")
-        f = repo.create_foreshadow(**data.model_dump())
-        return {"id": f.foreshadow_id, "status": f.status, "description": f.description}
-    finally:
-        db.close()
+def create_foreshadow(project_id: int, data: ForeshadowInput, repo: BibleRepository = Depends(get_repo)):
+    if repo.get_foreshadow(data.foreshadow_id):
+        raise HTTPException(400, f"伏笔 {data.foreshadow_id} 已存在")
+    f = repo.create_foreshadow(**data.model_dump())
+    return {"id": f.foreshadow_id, "status": f.status, "description": f.description}
 
 
 @router.put("/{project_id}/foreshadows/{foreshadow_id}")
-def update_foreshadow(project_id: int, foreshadow_id: str, data: ForeshadowInput):
-    db, repo = _repo(project_id)
-    try:
-        f = repo.update_foreshadow(foreshadow_id, **data.model_dump())
-        if not f:
-            raise HTTPException(404, "伏笔不存在")
-        return {"id": f.foreshadow_id, "status": f.status, "description": f.description}
-    finally:
-        db.close()
+def update_foreshadow(project_id: int, foreshadow_id: str, data: ForeshadowInput, repo: BibleRepository = Depends(get_repo)):
+    f = repo.update_foreshadow(foreshadow_id, **data.model_dump())
+    if not f:
+        raise HTTPException(404, "伏笔不存在")
+    return {"id": f.foreshadow_id, "status": f.status, "description": f.description}
 
 
 @router.delete("/{project_id}/foreshadows/{foreshadow_id}")
-def delete_foreshadow(project_id: int, foreshadow_id: str):
-    db, repo = _repo(project_id)
-    try:
-        if not repo.delete_foreshadow(foreshadow_id):
-            raise HTTPException(404, "伏笔不存在")
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_foreshadow(project_id: int, foreshadow_id: str, repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_foreshadow(foreshadow_id):
+        raise HTTPException(404, "伏笔不存在")
+    return {"deleted": True}
 
 
 # ---- 大纲 ----
 @router.get("/{project_id}/outlines")
-def list_outlines(project_id: int, level: str | None = None, parent_id: int | None = None):
-    db, repo = _repo(project_id)
-    try:
-        return [{"id": o.id, "level": o.level, "parent_id": o.parent_id, "order": o.order,
-                 "title": o.title, "summary": o.summary, "act": o.act, "strand": o.strand}
-                for o in repo.list_outlines(level=level, parent_id=parent_id)]
-    finally:
-        db.close()
+def list_outlines(project_id: int, level: str | None = None, parent_id: int | None = None,
+                  repo: BibleRepository = Depends(get_repo)):
+    return [{"id": o.id, "level": o.level, "parent_id": o.parent_id, "order": o.order,
+             "title": o.title, "summary": o.summary, "act": o.act, "strand": o.strand}
+            for o in repo.list_outlines(level=level, parent_id=parent_id)]
 
 
 class OutlineInput(BaseModel):
@@ -286,289 +247,212 @@ class OutlineInput(BaseModel):
 
 
 @router.post("/{project_id}/outlines")
-def create_outline(project_id: int, data: OutlineInput):
-    db, repo = _repo(project_id)
-    try:
-        o = repo.create_outline(**data.model_dump())
-        return {"id": o.id, "level": o.level, "parent_id": o.parent_id, "order": o.order,
-                "title": o.title, "summary": o.summary, "act": o.act, "strand": o.strand}
-    finally:
-        db.close()
+def create_outline(project_id: int, data: OutlineInput, repo: BibleRepository = Depends(get_repo)):
+    o = repo.create_outline(**data.model_dump())
+    return {"id": o.id, "level": o.level, "parent_id": o.parent_id, "order": o.order,
+            "title": o.title, "summary": o.summary, "act": o.act, "strand": o.strand}
 
 
 @router.put("/{project_id}/outlines/{outline_id}")
-def update_outline(project_id: int, outline_id: int, data: OutlineInput):
-    db, repo = _repo(project_id)
-    try:
-        o = repo.update_outline(outline_id, **data.model_dump())
-        if not o:
-            raise HTTPException(404, "大纲条目不存在")
-        return {"id": o.id, "level": o.level, "parent_id": o.parent_id, "order": o.order,
-                "title": o.title, "summary": o.summary, "act": o.act, "strand": o.strand}
-    finally:
-        db.close()
+def update_outline(project_id: int, outline_id: int, data: OutlineInput,
+                   repo: BibleRepository = Depends(get_repo)):
+    o = repo.update_outline(outline_id, **data.model_dump())
+    if not o:
+        raise HTTPException(404, "大纲条目不存在")
+    return {"id": o.id, "level": o.level, "parent_id": o.parent_id, "order": o.order,
+            "title": o.title, "summary": o.summary, "act": o.act, "strand": o.strand}
 
 
 @router.delete("/{project_id}/outlines/{outline_id}")
-def delete_outline(project_id: int, outline_id: int):
-    db, repo = _repo(project_id)
-    try:
-        if not repo.delete_outline(outline_id):
-            raise HTTPException(404, "大纲条目不存在")
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_outline(project_id: int, outline_id: int, repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_outline(outline_id):
+        raise HTTPException(404, "大纲条目不存在")
+    return {"deleted": True}
 
 
 # ---- 摘要（只读 + 删除）----
 @router.get("/{project_id}/summaries")
-def list_summaries(project_id: int):
-    db, repo = _repo(project_id)
-    try:
-        return [{"chapter": s.chapter, "title": s.title, "core_events": s.core_events,
-                 "word_count": s.word_count}
-                for s in repo.list_chapter_summaries(limit=100)]
-    finally:
-        db.close()
+def list_summaries(project_id: int, repo: BibleRepository = Depends(get_repo)):
+    return [{"chapter": s.chapter, "title": s.title, "core_events": s.core_events,
+             "word_count": s.word_count}
+            for s in repo.list_chapter_summaries(limit=100)]
 
 
 @router.delete("/{project_id}/summaries/{chapter}")
-def delete_summary(project_id: int, chapter: int):
-    db, repo = _repo(project_id)
-    try:
-        if not repo.delete_chapter_summary(chapter):
-            raise HTTPException(404, "摘要不存在")
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_summary(project_id: int, chapter: int, repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_chapter_summary(chapter):
+        raise HTTPException(404, "摘要不存在")
+    return {"deleted": True}
 
 
 # ---- 势力 ----
 @router.get("/{project_id}/factions")
-def list_factions(project_id: int):
-    db, repo = _repo(project_id)
-    try:
-        return [{"id": f.id, "name": f.name, "alias": f.alias, "type": f.type,
-                 "tier": f.tier, "alignment": f.alignment, "description": f.description,
-                 "history": f.history, "goals": f.goals, "hierarchy": f.hierarchy,
-                 "territories": f.territories, "resources": f.resources} for f in repo.list_factions()]
-    finally:
-        db.close()
+def list_factions(project_id: int, repo: BibleRepository = Depends(get_repo)):
+    return [{"id": f.id, "name": f.name, "alias": f.alias, "type": f.type,
+             "tier": f.tier, "alignment": f.alignment, "description": f.description,
+             "history": f.history, "goals": f.goals, "hierarchy": f.hierarchy,
+             "territories": f.territories, "resources": f.resources} for f in repo.list_factions()]
 
 
 @router.post("/{project_id}/factions")
-def create_faction(project_id: int, data: FactionInput):
-    db, repo = _repo(project_id)
-    try:
-        if repo.get_faction_by_name(data.name):
-            raise HTTPException(409, "势力名称已存在")
-        f = repo.create_faction(**data.model_dump())
-        return {"id": f.id, "name": f.name, "alias": f.alias, "type": f.type,
-                "tier": f.tier, "alignment": f.alignment, "description": f.description,
-                "history": f.history, "goals": f.goals, "hierarchy": f.hierarchy,
-                "territories": f.territories, "resources": f.resources}
-    finally:
-        db.close()
+def create_faction(project_id: int, data: FactionInput, repo: BibleRepository = Depends(get_repo)):
+    if repo.get_faction_by_name(data.name):
+        raise HTTPException(409, "势力名称已存在")
+    f = repo.create_faction(**data.model_dump())
+    return {"id": f.id, "name": f.name, "alias": f.alias, "type": f.type,
+            "tier": f.tier, "alignment": f.alignment, "description": f.description,
+            "history": f.history, "goals": f.goals, "hierarchy": f.hierarchy,
+            "territories": f.territories, "resources": f.resources}
 
 
 @router.put("/{project_id}/factions/{faction_id}")
-def update_faction(project_id: int, faction_id: int, data: FactionInput):
-    db, repo = _repo(project_id)
-    try:
-        from novel_agent.bible.models import Faction
-        f = db.query(Faction).filter(Faction.project_id == project_id, Faction.id == faction_id).first()
-        if not f:
-            raise HTTPException(404, "势力不存在")
-        for k, v in data.model_dump().items():
-            setattr(f, k, v)
-        db.commit(); db.refresh(f)
-        return {"id": f.id, "name": f.name, "alias": f.alias, "type": f.type,
-                "tier": f.tier, "alignment": f.alignment, "description": f.description,
-                "history": f.history, "goals": f.goals, "hierarchy": f.hierarchy,
-                "territories": f.territories, "resources": f.resources}
-    finally:
-        db.close()
+def update_faction(project_id: int, faction_id: int, data: FactionInput,
+                   db: Session = Depends(get_db)):
+    from novel_agent.bible.models import Faction
+    f = db.query(Faction).filter(Faction.project_id == project_id, Faction.id == faction_id).first()
+    if not f:
+        raise HTTPException(404, "势力不存在")
+    for k, v in data.model_dump().items():
+        setattr(f, k, v)
+    db.commit(); db.refresh(f)
+    return {"id": f.id, "name": f.name, "alias": f.alias, "type": f.type,
+            "tier": f.tier, "alignment": f.alignment, "description": f.description,
+            "history": f.history, "goals": f.goals, "hierarchy": f.hierarchy,
+            "territories": f.territories, "resources": f.resources}
 
 
 @router.delete("/{project_id}/factions/{faction_id}")
-def delete_faction(project_id: int, faction_id: int):
-    db, repo = _repo(project_id)
-    try:
-        if not repo.delete_faction(faction_id):
-            raise HTTPException(404, "势力不存在")
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_faction(project_id: int, faction_id: int, repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_faction(faction_id):
+        raise HTTPException(404, "势力不存在")
+    return {"deleted": True}
 
 
 # ---- 势力关系 ----
 @router.get("/{project_id}/faction-relationships")
-def list_faction_relationships(project_id: int):
-    db, repo = _repo(project_id)
-    try:
-        return [{"id": r.id, "source_faction_id": r.source_faction_id, "target_faction_id": r.target_faction_id,
-                 "relation_type": r.relation_type, "strength": r.strength, "description": r.description,
-                 "since_chapter": r.since_chapter, "status": r.status} for r in repo.list_faction_relationships()]
-    finally:
-        db.close()
+def list_faction_relationships(project_id: int, repo: BibleRepository = Depends(get_repo)):
+    return [{"id": r.id, "source_faction_id": r.source_faction_id, "target_faction_id": r.target_faction_id,
+             "relation_type": r.relation_type, "strength": r.strength, "description": r.description,
+             "since_chapter": r.since_chapter, "status": r.status} for r in repo.list_faction_relationships()]
 
 
 @router.post("/{project_id}/faction-relationships")
-def create_faction_relationship(project_id: int, data: FactionRelationshipInput):
-    db, repo = _repo(project_id)
-    try:
-        r = repo.create_faction_relationship(**data.model_dump())
-        return {"id": r.id, "source_faction_id": r.source_faction_id, "target_faction_id": r.target_faction_id,
-                "relation_type": r.relation_type, "strength": r.strength, "description": r.description,
-                "since_chapter": r.since_chapter, "status": r.status}
-    finally:
-        db.close()
+def create_faction_relationship(project_id: int, data: FactionRelationshipInput,
+                                repo: BibleRepository = Depends(get_repo)):
+    r = repo.create_faction_relationship(**data.model_dump())
+    return {"id": r.id, "source_faction_id": r.source_faction_id, "target_faction_id": r.target_faction_id,
+            "relation_type": r.relation_type, "strength": r.strength, "description": r.description,
+            "since_chapter": r.since_chapter, "status": r.status}
 
 
 @router.put("/{project_id}/faction-relationships/{rel_id}")
-def update_faction_relationship(project_id: int, rel_id: int, data: FactionRelationshipInput):
-    db, repo = _repo(project_id)
-    try:
-        from novel_agent.bible.models import FactionRelationship
-        r = db.query(FactionRelationship).filter(FactionRelationship.project_id == project_id, FactionRelationship.id == rel_id).first()
-        if not r:
-            raise HTTPException(404, "关系不存在")
-        for k, v in data.model_dump().items():
-            setattr(r, k, v)
-        db.commit(); db.refresh(r)
-        return {"id": r.id, "source_faction_id": r.source_faction_id, "target_faction_id": r.target_faction_id,
-                "relation_type": r.relation_type, "strength": r.strength, "description": r.description,
-                "since_chapter": r.since_chapter, "status": r.status}
-    finally:
-        db.close()
+def update_faction_relationship(project_id: int, rel_id: int, data: FactionRelationshipInput,
+                                db: Session = Depends(get_db)):
+    from novel_agent.bible.models import FactionRelationship
+    r = db.query(FactionRelationship).filter(FactionRelationship.project_id == project_id, FactionRelationship.id == rel_id).first()
+    if not r:
+        raise HTTPException(404, "关系不存在")
+    for k, v in data.model_dump().items():
+        setattr(r, k, v)
+    db.commit(); db.refresh(r)
+    return {"id": r.id, "source_faction_id": r.source_faction_id, "target_faction_id": r.target_faction_id,
+            "relation_type": r.relation_type, "strength": r.strength, "description": r.description,
+            "since_chapter": r.since_chapter, "status": r.status}
 
 
 @router.delete("/{project_id}/faction-relationships/{rel_id}")
-def delete_faction_relationship(project_id: int, rel_id: int):
-    db, repo = _repo(project_id)
-    try:
-        if not repo.delete_faction_relationship(rel_id):
-            raise HTTPException(404, "关系不存在")
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_faction_relationship(project_id: int, rel_id: int, repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_faction_relationship(rel_id):
+        raise HTTPException(404, "关系不存在")
+    return {"deleted": True}
 
 
 # ---- 人物关系 ----
 @router.get("/{project_id}/character-relationships")
-def list_character_relationships(project_id: int):
-    db, repo = _repo(project_id)
-    try:
-        return [{"id": r.id, "source_character": r.source_character, "target_character": r.target_character,
-                 "relation_type": r.relation_type, "relation_subtype": r.relation_subtype, "strength": r.strength,
-                 "description": r.description, "since_chapter": r.since_chapter, "status": r.status,
-                 "is_bidirectional": r.is_bidirectional} for r in repo.list_character_relationships()]
-    finally:
-        db.close()
+def list_character_relationships(project_id: int, repo: BibleRepository = Depends(get_repo)):
+    return [{"id": r.id, "source_character": r.source_character, "target_character": r.target_character,
+             "relation_type": r.relation_type, "relation_subtype": r.relation_subtype, "strength": r.strength,
+             "description": r.description, "since_chapter": r.since_chapter, "status": r.status,
+             "is_bidirectional": r.is_bidirectional} for r in repo.list_character_relationships()]
 
 
 @router.post("/{project_id}/character-relationships")
-def create_character_relationship(project_id: int, data: CharacterRelationshipInput):
-    db, repo = _repo(project_id)
-    try:
-        r = repo.create_character_relationship(**data.model_dump())
-        return {"id": r.id, "source_character": r.source_character, "target_character": r.target_character,
-                "relation_type": r.relation_type, "relation_subtype": r.relation_subtype, "strength": r.strength,
-                "description": r.description, "since_chapter": r.since_chapter, "status": r.status,
-                "is_bidirectional": r.is_bidirectional}
-    finally:
-        db.close()
+def create_character_relationship(project_id: int, data: CharacterRelationshipInput,
+                                  repo: BibleRepository = Depends(get_repo)):
+    r = repo.create_character_relationship(**data.model_dump())
+    return {"id": r.id, "source_character": r.source_character, "target_character": r.target_character,
+            "relation_type": r.relation_type, "relation_subtype": r.relation_subtype, "strength": r.strength,
+            "description": r.description, "since_chapter": r.since_chapter, "status": r.status,
+            "is_bidirectional": r.is_bidirectional}
 
 
 @router.put("/{project_id}/character-relationships/{rel_id}")
-def update_character_relationship(project_id: int, rel_id: int, data: CharacterRelationshipInput):
-    db, repo = _repo(project_id)
-    try:
-        from novel_agent.bible.models import CharacterRelationship
-        r = db.query(CharacterRelationship).filter(CharacterRelationship.project_id == project_id, CharacterRelationship.id == rel_id).first()
-        if not r:
-            raise HTTPException(404, "关系不存在")
-        for k, v in data.model_dump().items():
-            setattr(r, k, v)
-        db.commit(); db.refresh(r)
-        return {"id": r.id, "source_character": r.source_character, "target_character": r.target_character,
-                "relation_type": r.relation_type, "relation_subtype": r.relation_subtype, "strength": r.strength,
-                "description": r.description, "since_chapter": r.since_chapter, "status": r.status,
-                "is_bidirectional": r.is_bidirectional}
-    finally:
-        db.close()
+def update_character_relationship(project_id: int, rel_id: int, data: CharacterRelationshipInput,
+                                  db: Session = Depends(get_db)):
+    from novel_agent.bible.models import CharacterRelationship
+    r = db.query(CharacterRelationship).filter(CharacterRelationship.project_id == project_id, CharacterRelationship.id == rel_id).first()
+    if not r:
+        raise HTTPException(404, "关系不存在")
+    for k, v in data.model_dump().items():
+        setattr(r, k, v)
+    db.commit(); db.refresh(r)
+    return {"id": r.id, "source_character": r.source_character, "target_character": r.target_character,
+            "relation_type": r.relation_type, "relation_subtype": r.relation_subtype, "strength": r.strength,
+            "description": r.description, "since_chapter": r.since_chapter, "status": r.status,
+            "is_bidirectional": r.is_bidirectional}
 
 
 @router.delete("/{project_id}/character-relationships/{rel_id}")
-def delete_character_relationship(project_id: int, rel_id: int):
-    db, repo = _repo(project_id)
-    try:
-        if not repo.delete_character_relationship(rel_id):
-            raise HTTPException(404, "关系不存在")
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_character_relationship(project_id: int, rel_id: int, repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_character_relationship(rel_id):
+        raise HTTPException(404, "关系不存在")
+    return {"deleted": True}
 
 
 # ---- 怪物 ----
 @router.get("/{project_id}/monsters")
-def list_monsters(project_id: int):
-    db, repo = _repo(project_id)
-    try:
-        return [{"id": m.id, "name": m.name, "alias": m.alias, "species": m.species,
-                 "rank": m.rank, "tier": m.tier, "attributes": m.attributes, "skills": m.skills,
-                 "drops": m.drops, "habitats": m.habitats, "behavior": m.behavior,
-                 "weaknesses": m.weaknesses, "lore": m.lore,
-                 "first_appearance": m.first_appearance} for m in repo.list_monsters()]
-    finally:
-        db.close()
+def list_monsters(project_id: int, repo: BibleRepository = Depends(get_repo)):
+    return [{"id": m.id, "name": m.name, "alias": m.alias, "species": m.species,
+             "rank": m.rank, "tier": m.tier, "attributes": m.attributes, "skills": m.skills,
+             "drops": m.drops, "habitats": m.habitats, "behavior": m.behavior,
+             "weaknesses": m.weaknesses, "lore": m.lore,
+             "first_appearance": m.first_appearance} for m in repo.list_monsters()]
 
 
 @router.post("/{project_id}/monsters")
-def create_monster(project_id: int, data: MonsterInput):
-    db, repo = _repo(project_id)
-    try:
-        if repo.get_monster_by_name(data.name):
-            raise HTTPException(409, "怪物名称已存在")
-        m = repo.create_monster(**data.model_dump())
-        return {"id": m.id, "name": m.name, "alias": m.alias, "species": m.species,
-                "rank": m.rank, "tier": m.tier, "attributes": m.attributes, "skills": m.skills,
-                "drops": m.drops, "habitats": m.habitats, "behavior": m.behavior,
-                "weaknesses": m.weaknesses, "lore": m.lore,
-                "first_appearance": m.first_appearance}
-    finally:
-        db.close()
+def create_monster(project_id: int, data: MonsterInput, repo: BibleRepository = Depends(get_repo)):
+    if repo.get_monster_by_name(data.name):
+        raise HTTPException(409, "怪物名称已存在")
+    m = repo.create_monster(**data.model_dump())
+    return {"id": m.id, "name": m.name, "alias": m.alias, "species": m.species,
+            "rank": m.rank, "tier": m.tier, "attributes": m.attributes, "skills": m.skills,
+            "drops": m.drops, "habitats": m.habitats, "behavior": m.behavior,
+            "weaknesses": m.weaknesses, "lore": m.lore,
+            "first_appearance": m.first_appearance}
 
 
 @router.put("/{project_id}/monsters/{monster_id}")
-def update_monster(project_id: int, monster_id: int, data: MonsterInput):
-    db, repo = _repo(project_id)
-    try:
-        from novel_agent.bible.models import Monster
-        m = db.query(Monster).filter(Monster.project_id == project_id, Monster.id == monster_id).first()
-        if not m:
-            raise HTTPException(404, "怪物不存在")
-        for k, v in data.model_dump().items():
-            setattr(m, k, v)
-        db.commit(); db.refresh(m)
-        return {"id": m.id, "name": m.name, "alias": m.alias, "species": m.species,
-                "rank": m.rank, "tier": m.tier, "attributes": m.attributes, "skills": m.skills,
-                "drops": m.drops, "habitats": m.habitats, "behavior": m.behavior,
-                "weaknesses": m.weaknesses, "lore": m.lore,
-                "first_appearance": m.first_appearance}
-    finally:
-        db.close()
+def update_monster(project_id: int, monster_id: int, data: MonsterInput,
+                   db: Session = Depends(get_db)):
+    from novel_agent.bible.models import Monster
+    m = db.query(Monster).filter(Monster.project_id == project_id, Monster.id == monster_id).first()
+    if not m:
+        raise HTTPException(404, "怪物不存在")
+    for k, v in data.model_dump().items():
+        setattr(m, k, v)
+    db.commit(); db.refresh(m)
+    return {"id": m.id, "name": m.name, "alias": m.alias, "species": m.species,
+            "rank": m.rank, "tier": m.tier, "attributes": m.attributes, "skills": m.skills,
+            "drops": m.drops, "habitats": m.habitats, "behavior": m.behavior,
+            "weaknesses": m.weaknesses, "lore": m.lore,
+            "first_appearance": m.first_appearance}
 
 
 @router.delete("/{project_id}/monsters/{monster_id}")
-def delete_monster(project_id: int, monster_id: int):
-    db, repo = _repo(project_id)
-    try:
-        if not repo.delete_monster(monster_id):
-            raise HTTPException(404, "怪物不存在")
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_monster(project_id: int, monster_id: int, repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_monster(monster_id):
+        raise HTTPException(404, "怪物不存在")
+    return {"deleted": True}
 
 
 # ---- 实体出场 ----
@@ -608,65 +492,50 @@ class RecordAppearancesInput(BaseModel):
 
 @router.get("/{project_id}/entity-appearances")
 def list_entity_appearances(project_id: int, entity_type: str | None = None,
-                            entity_id: str | None = None, chapter: int | None = None):
-    db, repo = _repo(project_id)
-    try:
-        return [_appearance_dict(a) for a in repo.list_entity_appearances(
-            entity_type=entity_type, entity_id=entity_id, chapter=chapter)]
-    finally:
-        db.close()
+                            entity_id: str | None = None, chapter: int | None = None,
+                            repo: BibleRepository = Depends(get_repo)):
+    return [_appearance_dict(a) for a in repo.list_entity_appearances(
+        entity_type=entity_type, entity_id=entity_id, chapter=chapter)]
 
 
 @router.post("/{project_id}/entity-appearances")
-def create_entity_appearance(project_id: int, data: EntityAppearanceInput):
-    db, repo = _repo(project_id)
-    try:
-        a = repo.create_entity_appearance(**data.model_dump())
-        return _appearance_dict(a)
-    finally:
-        db.close()
+def create_entity_appearance(project_id: int, data: EntityAppearanceInput,
+                             repo: BibleRepository = Depends(get_repo)):
+    a = repo.create_entity_appearance(**data.model_dump())
+    return _appearance_dict(a)
 
 
 @router.put("/{project_id}/entity-appearances/{appearance_id}")
-def update_entity_appearance(project_id: int, appearance_id: int, data: EntityAppearanceUpdateInput):
+def update_entity_appearance(project_id: int, appearance_id: int, data: EntityAppearanceUpdateInput,
+                             db: Session = Depends(get_db)):
     from novel_agent.bible.models import EntityAppearance
-    db, repo = _repo(project_id)
-    try:
-        a = db.query(EntityAppearance).filter(
-            EntityAppearance.project_id == project_id,
-            EntityAppearance.id == appearance_id,
-        ).first()
-        if not a:
-            raise HTTPException(404, "出场记录不存在")
-        for k, v in data.model_dump(exclude_unset=True).items():
-            if v is not None:
-                setattr(a, k, v)
-        db.commit(); db.refresh(a)
-        return _appearance_dict(a)
-    finally:
-        db.close()
+    a = db.query(EntityAppearance).filter(
+        EntityAppearance.project_id == project_id,
+        EntityAppearance.id == appearance_id,
+    ).first()
+    if not a:
+        raise HTTPException(404, "出场记录不存在")
+    for k, v in data.model_dump(exclude_unset=True).items():
+        if v is not None:
+            setattr(a, k, v)
+    db.commit(); db.refresh(a)
+    return _appearance_dict(a)
 
 
 @router.delete("/{project_id}/entity-appearances/{appearance_id}")
-def delete_entity_appearance(project_id: int, appearance_id: int):
-    db, repo = _repo(project_id)
-    try:
-        if not repo.delete_entity_appearance(appearance_id):
-            raise HTTPException(404, "出场记录不存在")
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_entity_appearance(project_id: int, appearance_id: int,
+                             repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_entity_appearance(appearance_id):
+        raise HTTPException(404, "出场记录不存在")
+    return {"deleted": True}
 
 
 @router.post("/{project_id}/chapters/{chapter}/record-appearances")
-def record_appearances(project_id: int, chapter: int, data: RecordAppearancesInput):
-    db, repo = _repo(project_id)
-    try:
-        created = repo.record_appearances(chapter, [a.model_dump() for a in data.appearances])
-        return {"chapter": chapter, "recorded": len(created),
-                "appearances": [_appearance_dict(a) for a in created]}
-    finally:
-        db.close()
+def record_appearances(project_id: int, chapter: int, data: RecordAppearancesInput,
+                       repo: BibleRepository = Depends(get_repo)):
+    created = repo.record_appearances(chapter, [a.model_dump() for a in data.appearances])
+    return {"chapter": chapter, "recorded": len(created),
+            "appearances": [_appearance_dict(a) for a in created]}
 
 
 # ---- AI 生成 ----
@@ -718,180 +587,168 @@ def _extract_json(text: str) -> dict:
 
 
 @router.post("/{project_id}/generate-faction")
-async def generate_faction(project_id: int, req: GenerateFactionRequest):
+async def generate_faction(project_id: int, req: GenerateFactionRequest,
+                           repo: BibleRepository = Depends(get_repo)):
     from novel_agent.llm.client import LLMClient
 
     cfg = load_config()
-    db, repo = _repo(project_id)
-    try:
-        project = repo.get_project()
-        if not project:
-            raise HTTPException(404, "项目不存在")
-        client = LLMClient(cfg.llm)
-        context = (
-            f"标题：{project.title}\n类型：{project.genre}\n简介：{project.summary}\n"
-            f"文风：{project.style}\n"
-        )
-        existing = repo.list_factions()
-        if existing:
-            context += "\n已有势力：\n" + "\n".join(f"- {f.name}（{f.type or '未分类'} / {f.tier or '未分级'}）" for f in existing)
-        prompt = (
-            f"请基于以下小说上下文，生成一个新的势力设定。\n\n{context}\n\n"
-            f"生成要求：\n- 名称提示：{req.name_hint or '无'}\n"
-            f"- 类型提示：{req.type or '无'}\n- 阵营提示：{req.alignment or '无'}\n\n"
-            "请输出 JSON：{\"name\":\"\",\"alias\":\"\",\"type\":\"\",\"tier\":\"\",\"alignment\":\"\",\"description\":\"\",\"history\":\"\",\"goals\":\"\",\"hierarchy\":\"\",\"territories\":\"\",\"resources\":\"\"}\n"
-            "tier 建议取值：顶级势力、一流势力、二流势力、三流势力、隐世势力。只输出 JSON，不要 markdown 代码块。"
-        )
-        raw = await client.generate(prompt, system="你是网文设定师，擅长设计势力组织。只输出 JSON。")
-        result = _extract_json(raw)
-        data = {k: _clean_text(result.get(k, "")) for k in FactionInput.model_fields}
-        if not data.get("name"):
-            data["name"] = req.name_hint or f"生成势力{len(existing) + 1}"
-        if repo.get_faction_by_name(data["name"]):
-            raise HTTPException(409, "同名势力已存在")
-        f = repo.create_faction(**data)
-        return {"id": f.id, "name": f.name, "alias": f.alias, "type": f.type,
-                "tier": f.tier, "alignment": f.alignment, "description": f.description,
-                "history": f.history, "goals": f.goals, "hierarchy": f.hierarchy,
-                "territories": f.territories, "resources": f.resources}
-    finally:
-        db.close()
+    project = repo.get_project()
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    client = LLMClient(cfg.llm)
+    context = (
+        f"标题：{project.title}\n类型：{project.genre}\n简介：{project.summary}\n"
+        f"文风：{project.style}\n"
+    )
+    existing = repo.list_factions()
+    if existing:
+        context += "\n已有势力：\n" + "\n".join(f"- {f.name}（{f.type or '未分类'} / {f.tier or '未分级'}）" for f in existing)
+    prompt = (
+        f"请基于以下小说上下文，生成一个新的势力设定。\n\n{context}\n\n"
+        f"生成要求：\n- 名称提示：{req.name_hint or '无'}\n"
+        f"- 类型提示：{req.type or '无'}\n- 阵营提示：{req.alignment or '无'}\n\n"
+        "请输出 JSON：{\"name\":\"\",\"alias\":\"\",\"type\":\"\",\"tier\":\"\",\"alignment\":\"\",\"description\":\"\",\"history\":\"\",\"goals\":\"\",\"hierarchy\":\"\",\"territories\":\"\",\"resources\":\"\"}\n"
+        "tier 建议取值：顶级势力、一流势力、二流势力、三流势力、隐世势力。只输出 JSON，不要 markdown 代码块。"
+    )
+    raw = await client.generate(prompt, system="你是网文设定师，擅长设计势力组织。只输出 JSON。")
+    result = _extract_json(raw)
+    data = {k: _clean_text(result.get(k, "")) for k in FactionInput.model_fields}
+    if not data.get("name"):
+        data["name"] = req.name_hint or f"生成势力{len(existing) + 1}"
+    if repo.get_faction_by_name(data["name"]):
+        raise HTTPException(409, "同名势力已存在")
+    f = repo.create_faction(**data)
+    return {"id": f.id, "name": f.name, "alias": f.alias, "type": f.type,
+            "tier": f.tier, "alignment": f.alignment, "description": f.description,
+            "history": f.history, "goals": f.goals, "hierarchy": f.hierarchy,
+            "territories": f.territories, "resources": f.resources}
 
 
 @router.post("/{project_id}/generate-monster")
-async def generate_monster(project_id: int, req: GenerateMonsterRequest):
+async def generate_monster(project_id: int, req: GenerateMonsterRequest,
+                           repo: BibleRepository = Depends(get_repo)):
     from novel_agent.llm.client import LLMClient
 
     cfg = load_config()
-    db, repo = _repo(project_id)
-    try:
-        project = repo.get_project()
-        if not project:
-            raise HTTPException(404, "项目不存在")
-        client = LLMClient(cfg.llm)
-        context = (
-            f"标题：{project.title}\n类型：{project.genre}\n简介：{project.summary}\n"
-            f"文风：{project.style}\n"
-        )
-        existing = repo.list_monsters()
-        if existing:
-            context += "\n已有怪物：\n" + "\n".join(f"- {m.name}（{m.species or '未知'} / {m.tier or '未分级'}）" for m in existing)
-        prompt = (
-            f"请基于以下小说上下文，生成一个新的怪物图鉴。\n\n{context}\n\n"
-            f"生成要求：\n- 名称提示：{req.name_hint or '无'}\n"
-            f"- 等级提示：{req.rank or '无'}\n- 物种提示：{req.species or '无'}\n\n"
-            "请输出 JSON：{\"name\":\"\",\"alias\":\"\",\"species\":\"\",\"rank\":\"\",\"tier\":\"\",\"attributes\":\"\",\"skills\":\"\",\"drops\":\"\",\"habitats\":\"\",\"behavior\":\"\",\"weaknesses\":\"\",\"lore\":\"\",\"first_appearance\":0}\n"
-            "tier 建议取值：BOSS、精英、首领、小怪、普通。只输出 JSON，不要 markdown 代码块。"
-        )
-        raw = await client.generate(prompt, system="你是网文怪物设计师，擅长设计有特色的怪物。只输出 JSON。")
-        result = _extract_json(raw)
-        data = {k: _clean_text(result.get(k, "")) for k in MonsterInput.model_fields}
-        if "first_appearance" in result:
-            data["first_appearance"] = result.get("first_appearance", 0)
-        if not data.get("name"):
-            data["name"] = req.name_hint or f"生成怪物{len(existing) + 1}"
-        if repo.get_monster_by_name(data["name"]):
-            raise HTTPException(409, "同名怪物已存在")
-        m = repo.create_monster(**data)
-        return {"id": m.id, "name": m.name, "alias": m.alias, "species": m.species,
-                "rank": m.rank, "tier": m.tier, "attributes": m.attributes, "skills": m.skills,
-                "drops": m.drops, "habitats": m.habitats, "behavior": m.behavior,
-                "weaknesses": m.weaknesses, "lore": m.lore,
-                "first_appearance": m.first_appearance}
-    finally:
-        db.close()
+    project = repo.get_project()
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    client = LLMClient(cfg.llm)
+    context = (
+        f"标题：{project.title}\n类型：{project.genre}\n简介：{project.summary}\n"
+        f"文风：{project.style}\n"
+    )
+    existing = repo.list_monsters()
+    if existing:
+        context += "\n已有怪物：\n" + "\n".join(f"- {m.name}（{m.species or '未知'} / {m.tier or '未分级'}）" for m in existing)
+    prompt = (
+        f"请基于以下小说上下文，生成一个新的怪物图鉴。\n\n{context}\n\n"
+        f"生成要求：\n- 名称提示：{req.name_hint or '无'}\n"
+        f"- 等级提示：{req.rank or '无'}\n- 物种提示：{req.species or '无'}\n\n"
+        "请输出 JSON：{\"name\":\"\",\"alias\":\"\",\"species\":\"\",\"rank\":\"\",\"tier\":\"\",\"attributes\":\"\",\"skills\":\"\",\"drops\":\"\",\"habitats\":\"\",\"behavior\":\"\",\"weaknesses\":\"\",\"lore\":\"\",\"first_appearance\":0}\n"
+        "tier 建议取值：BOSS、精英、首领、小怪、普通。只输出 JSON，不要 markdown 代码块。"
+    )
+    raw = await client.generate(prompt, system="你是网文怪物设计师，擅长设计有特色的怪物。只输出 JSON。")
+    result = _extract_json(raw)
+    data = {k: _clean_text(result.get(k, "")) for k in MonsterInput.model_fields}
+    if "first_appearance" in result:
+        data["first_appearance"] = result.get("first_appearance", 0)
+    if not data.get("name"):
+        data["name"] = req.name_hint or f"生成怪物{len(existing) + 1}"
+    if repo.get_monster_by_name(data["name"]):
+        raise HTTPException(409, "同名怪物已存在")
+    m = repo.create_monster(**data)
+    return {"id": m.id, "name": m.name, "alias": m.alias, "species": m.species,
+            "rank": m.rank, "tier": m.tier, "attributes": m.attributes, "skills": m.skills,
+            "drops": m.drops, "habitats": m.habitats, "behavior": m.behavior,
+            "weaknesses": m.weaknesses, "lore": m.lore,
+            "first_appearance": m.first_appearance}
 
 
 @router.post("/{project_id}/generate-character-relationship")
-async def generate_character_relationship(project_id: int, req: GenerateCharacterRelationshipRequest):
+async def generate_character_relationship(project_id: int, req: GenerateCharacterRelationshipRequest,
+                                          repo: BibleRepository = Depends(get_repo)):
     from novel_agent.llm.client import LLMClient
 
     cfg = load_config()
-    db, repo = _repo(project_id)
-    try:
-        project = repo.get_project()
-        if not project:
-            raise HTTPException(404, "项目不存在")
-        source = repo.get_character(req.source_character)
-        target = repo.get_character(req.target_character)
-        if not source or not target:
-            raise HTTPException(404, "源角色或目标角色不存在")
-        client = LLMClient(cfg.llm)
-        context = (
-            f"标题：{project.title}\n类型：{project.genre}\n简介：{project.summary}\n"
-            f"文风：{project.style}\n\n"
-            f"源角色：{source.name}\n角色身份：{source.role}\n性格：{source.personality}\n"
-            f"目标角色：{target.name}\n角色身份：{target.role}\n性格：{target.personality}\n"
-        )
-        prompt = (
-            f"请基于以下角色与小说上下文，生成一段人物关系设定。\n\n{context}\n\n"
-            f"关系类型提示：{req.relation_type_hint or '无'}\n\n"
-            "请输出 JSON：{\"relation_type\":\"\",\"relation_subtype\":\"\",\"strength\":0,\"description\":\"\",\"since_chapter\":0,\"status\":\"active\",\"is_bidirectional\":true}\n"
-            "strength 为 0-10 的整数。只输出 JSON，不要 markdown 代码块。"
-        )
-        raw = await client.generate(prompt, system="你是网文关系设计师，擅长设计立体的人物关系。只输出 JSON。")
-        result = _extract_json(raw)
-        data = {
-            "source_character": source.name,
-            "target_character": target.name,
-            "relation_type": _clean_text(result.get("relation_type", "other")) or "other",
-            "relation_subtype": _clean_text(result.get("relation_subtype", "")),
-            "strength": int(result.get("strength", 0)) if str(result.get("strength", "")).isdigit() else 0,
-            "description": _clean_text(result.get("description", "")),
-            "since_chapter": int(result.get("since_chapter", 0)) if str(result.get("since_chapter", "")).isdigit() else 0,
-            "status": _clean_text(result.get("status", "active")) or "active",
-            "is_bidirectional": bool(result.get("is_bidirectional", True)),
-        }
-        r = repo.create_character_relationship(**data)
-        return {"id": r.id, "source_character": r.source_character, "target_character": r.target_character,
-                "relation_type": r.relation_type, "relation_subtype": r.relation_subtype, "strength": r.strength,
-                "description": r.description, "since_chapter": r.since_chapter, "status": r.status,
-                "is_bidirectional": r.is_bidirectional}
-    finally:
-        db.close()
+    project = repo.get_project()
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    source = repo.get_character(req.source_character)
+    target = repo.get_character(req.target_character)
+    if not source or not target:
+        raise HTTPException(404, "源角色或目标角色不存在")
+    client = LLMClient(cfg.llm)
+    context = (
+        f"标题：{project.title}\n类型：{project.genre}\n简介：{project.summary}\n"
+        f"文风：{project.style}\n\n"
+        f"源角色：{source.name}\n角色身份：{source.role}\n性格：{source.personality}\n"
+        f"目标角色：{target.name}\n角色身份：{target.role}\n性格：{target.personality}\n"
+    )
+    prompt = (
+        f"请基于以下角色与小说上下文，生成一段人物关系设定。\n\n{context}\n\n"
+        f"关系类型提示：{req.relation_type_hint or '无'}\n\n"
+        "请输出 JSON：{\"relation_type\":\"\",\"relation_subtype\":\"\",\"strength\":0,\"description\":\"\",\"since_chapter\":0,\"status\":\"active\",\"is_bidirectional\":true}\n"
+        "strength 为 0-10 的整数。只输出 JSON，不要 markdown 代码块。"
+    )
+    raw = await client.generate(prompt, system="你是网文关系设计师，擅长设计立体的人物关系。只输出 JSON。")
+    result = _extract_json(raw)
+    data = {
+        "source_character": source.name,
+        "target_character": target.name,
+        "relation_type": _clean_text(result.get("relation_type", "other")) or "other",
+        "relation_subtype": _clean_text(result.get("relation_subtype", "")),
+        "strength": int(result.get("strength", 0)) if str(result.get("strength", "")).isdigit() else 0,
+        "description": _clean_text(result.get("description", "")),
+        "since_chapter": int(result.get("since_chapter", 0)) if str(result.get("since_chapter", "")).isdigit() else 0,
+        "status": _clean_text(result.get("status", "active")) or "active",
+        "is_bidirectional": bool(result.get("is_bidirectional", True)),
+    }
+    r = repo.create_character_relationship(**data)
+    return {"id": r.id, "source_character": r.source_character, "target_character": r.target_character,
+            "relation_type": r.relation_type, "relation_subtype": r.relation_subtype, "strength": r.strength,
+            "description": r.description, "since_chapter": r.since_chapter, "status": r.status,
+            "is_bidirectional": r.is_bidirectional}
 
 
 @router.post("/{project_id}/generate-character")
-async def generate_character(project_id: int, req: GenerateCharacterRequest):
+async def generate_character(project_id: int, req: GenerateCharacterRequest,
+                             repo: BibleRepository = Depends(get_repo)):
     from novel_agent.llm.client import LLMClient
 
     cfg = load_config()
-    db, repo = _repo(project_id)
-    try:
-        project = repo.get_project()
-        if not project:
-            raise HTTPException(404, "项目不存在")
-        client = LLMClient(cfg.llm)
-        context = (
-            f"标题：{project.title}\n类型：{project.genre}\n简介：{project.summary}\n"
-            f"文风：{project.style}\n"
+    project = repo.get_project()
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    client = LLMClient(cfg.llm)
+    context = (
+        f"标题：{project.title}\n类型：{project.genre}\n简介：{project.summary}\n"
+        f"文风：{project.style}\n"
+    )
+    existing = repo.list_characters()
+    if existing:
+        context += "\n已有角色：\n" + "\n".join(
+            f"- {c.name}（{c.role or '无身份'} / {c.importance or '未分级'}）" for c in existing
         )
-        existing = repo.list_characters()
-        if existing:
-            context += "\n已有角色：\n" + "\n".join(
-                f"- {c.name}（{c.role or '无身份'} / {c.importance or '未分级'}）" for c in existing
-            )
-        prompt = (
-            f"请基于以下小说上下文，生成一个新的角色设定。\n\n{context}\n\n"
-            f"生成要求：\n- 名称提示：{req.name_hint or '无'}\n"
-            f"- 身份提示：{req.role_hint or '无'}\n"
-            f"- 重要性提示：{req.importance_hint or '无'}\n\n"
-            "请输出 JSON：{\"name\":\"\",\"role\":\"\",\"personality\":\"\",\"background\":\"\",\"goals\":\"\",\"abilities\":\"\",\"appearance\":\"\",\"importance\":\"\"}\n"
-            "importance 建议取值：主角、配角、关键人物、小人物、NPC。只输出 JSON，不要 markdown 代码块。"
-        )
-        raw = await client.generate(prompt, system="你是网文角色设计师，擅长设计立体角色。只输出 JSON。")
-        result = _extract_json(raw)
-        data = {k: _clean_text(result.get(k, "")) for k in CharacterInput.model_fields}
-        if not data.get("name"):
-            data["name"] = req.name_hint or f"生成角色{len(existing) + 1}"
-        if repo.get_character(data["name"]):
-            raise HTTPException(409, "同名角色已存在")
-        c = repo.create_character(**data)
-        return {"id": c.id, "name": c.name, "role": c.role, "personality": c.personality,
-                "background": c.background, "goals": c.goals, "abilities": c.abilities,
-                "appearance": c.appearance, "importance": c.importance}
-    finally:
-        db.close()
+    prompt = (
+        f"请基于以下小说上下文，生成一个新的角色设定。\n\n{context}\n\n"
+        f"生成要求：\n- 名称提示：{req.name_hint or '无'}\n"
+        f"- 身份提示：{req.role_hint or '无'}\n"
+        f"- 重要性提示：{req.importance_hint or '无'}\n\n"
+        "请输出 JSON：{\"name\":\"\",\"role\":\"\",\"personality\":\"\",\"background\":\"\",\"goals\":\"\",\"abilities\":\"\",\"appearance\":\"\",\"importance\":\"\"}\n"
+        "importance 建议取值：主角、配角、关键人物、小人物、NPC。只输出 JSON，不要 markdown 代码块。"
+    )
+    raw = await client.generate(prompt, system="你是网文角色设计师，擅长设计立体角色。只输出 JSON。")
+    result = _extract_json(raw)
+    data = {k: _clean_text(result.get(k, "")) for k in CharacterInput.model_fields}
+    if not data.get("name"):
+        data["name"] = req.name_hint or f"生成角色{len(existing) + 1}"
+    if repo.get_character(data["name"]):
+        raise HTTPException(409, "同名角色已存在")
+    c = repo.create_character(**data)
+    return {"id": c.id, "name": c.name, "role": c.role, "personality": c.personality,
+            "background": c.background, "goals": c.goals, "abilities": c.abilities,
+            "appearance": c.appearance, "importance": c.importance}
 
 
 # ---- 批量导入 ----
@@ -908,14 +765,10 @@ class ImportData(BaseModel):
 
 
 @router.post("/{project_id}/import")
-def import_settings(project_id: int, data: ImportData):
+def import_settings(project_id: int, data: ImportData, repo: BibleRepository = Depends(get_repo)):
     """批量导入世界观/设定数据。已存在的跳过。"""
-    db, repo = _repo(project_id)
-    try:
-        added = _apply_import_data(repo, data)
-        return {"imported": added}
-    finally:
-        db.close()
+    added = _apply_import_data(repo, data)
+    return {"imported": added}
 
 
 def _apply_import_data(repo: BibleRepository, data: ImportData) -> dict:
@@ -1052,36 +905,29 @@ async def parse_document(project_id: int, data: DocumentImportInput):
     from novel_agent.llm.client import LLMClient
 
     cfg = load_config()
-    db, repo = _repo(project_id)
-    try:
-        client = LLMClient(cfg.llm)
-        import_data = await _parse_text(client, data.content)
-        return {
-            "world_settings": [w.model_dump() for w in import_data.world_settings],
-            "factions": [f.model_dump() for f in import_data.factions],
-            "faction_relationships": [r.model_dump() for r in import_data.faction_relationships],
-            "character_relationships": [r.model_dump() for r in import_data.character_relationships],
-            "characters": [c.model_dump() for c in import_data.characters],
-            "foreshadows": [f.model_dump() for f in import_data.foreshadows],
-            "outlines": [o.model_dump() for o in import_data.outlines],
-            "monsters": [m.model_dump() for m in import_data.monsters],
-        }
-    finally:
-        db.close()
+    client = LLMClient(cfg.llm)
+    import_data = await _parse_text(client, data.content)
+    return {
+        "world_settings": [w.model_dump() for w in import_data.world_settings],
+        "factions": [f.model_dump() for f in import_data.factions],
+        "faction_relationships": [r.model_dump() for r in import_data.faction_relationships],
+        "character_relationships": [r.model_dump() for r in import_data.character_relationships],
+        "characters": [c.model_dump() for c in import_data.characters],
+        "foreshadows": [f.model_dump() for f in import_data.foreshadows],
+        "outlines": [o.model_dump() for o in import_data.outlines],
+        "monsters": [m.model_dump() for m in import_data.monsters],
+    }
 
 
 @router.post("/{project_id}/import-document")
-async def import_document(project_id: int, data: DocumentImportInput):
+async def import_document(project_id: int, data: DocumentImportInput,
+                          repo: BibleRepository = Depends(get_repo)):
     """从自然语言文档中提取角色/伏笔/大纲并导入圣经。"""
     from novel_agent.llm.client import LLMClient
 
     cfg = load_config()
-    db, repo = _repo(project_id)
-    try:
-        client = LLMClient(cfg.llm)
-        return await _import_from_text(repo, client, data.content)
-    finally:
-        db.close()
+    client = LLMClient(cfg.llm)
+    return await _import_from_text(repo, client, data.content)
 
 
 async def _parse_file_content(client, cfg, file: UploadFile) -> ImportData:
@@ -1123,26 +969,23 @@ async def parse_file(project_id: int, file: UploadFile):
     from novel_agent.llm.client import LLMClient
 
     cfg = load_config()
-    db, repo = _repo(project_id)
-    try:
-        client = LLMClient(cfg.llm)
-        import_data = await _parse_file_content(client, cfg, file)
-        return {
-            "world_settings": [w.model_dump() for w in import_data.world_settings],
-            "factions": [f.model_dump() for f in import_data.factions],
-            "faction_relationships": [r.model_dump() for r in import_data.faction_relationships],
-            "character_relationships": [r.model_dump() for r in import_data.character_relationships],
-            "characters": [c.model_dump() for c in import_data.characters],
-            "foreshadows": [f.model_dump() for f in import_data.foreshadows],
-            "outlines": [o.model_dump() for o in import_data.outlines],
-            "monsters": [m.model_dump() for m in import_data.monsters],
-        }
-    finally:
-        db.close()
+    client = LLMClient(cfg.llm)
+    import_data = await _parse_file_content(client, cfg, file)
+    return {
+        "world_settings": [w.model_dump() for w in import_data.world_settings],
+        "factions": [f.model_dump() for f in import_data.factions],
+        "faction_relationships": [r.model_dump() for r in import_data.faction_relationships],
+        "character_relationships": [r.model_dump() for r in import_data.character_relationships],
+        "characters": [c.model_dump() for c in import_data.characters],
+        "foreshadows": [f.model_dump() for f in import_data.foreshadows],
+        "outlines": [o.model_dump() for o in import_data.outlines],
+        "monsters": [m.model_dump() for m in import_data.monsters],
+    }
 
 
 @router.post("/{project_id}/import-file")
-async def import_file(project_id: int, file: UploadFile):
+async def import_file(project_id: int, file: UploadFile,
+                      repo: BibleRepository = Depends(get_repo)):
     """上传文件（txt/md/json/csv/html/docx/pdf/图片等）并提取内容导入圣经。
 
     图片需 LLM 开启 vision_enabled，否则返回错误。
@@ -1150,69 +993,61 @@ async def import_file(project_id: int, file: UploadFile):
     from novel_agent.llm.client import LLMClient
 
     cfg = load_config()
-    db, repo = _repo(project_id)
-    try:
-        client = LLMClient(cfg.llm)
-        import_data = await _parse_file_content(client, cfg, file)
-        added = _apply_import_data(repo, import_data)
-        return {"imported": added, "raw_summary": {"world_settings": len(import_data.world_settings),
-                                                   "factions": len(import_data.factions),
-                                                   "faction_relationships": len(import_data.faction_relationships),
-                                                   "character_relationships": len(import_data.character_relationships),
-                                                   "characters": len(import_data.characters),
-                                                   "foreshadows": len(import_data.foreshadows),
-                                                   "outlines": len(import_data.outlines),
-                                                   "monsters": len(import_data.monsters)}}
-    finally:
-        db.close()
+    client = LLMClient(cfg.llm)
+    import_data = await _parse_file_content(client, cfg, file)
+    added = _apply_import_data(repo, import_data)
+    return {"imported": added, "raw_summary": {"world_settings": len(import_data.world_settings),
+                                               "factions": len(import_data.factions),
+                                               "faction_relationships": len(import_data.faction_relationships),
+                                               "character_relationships": len(import_data.character_relationships),
+                                               "characters": len(import_data.characters),
+                                               "foreshadows": len(import_data.foreshadows),
+                                               "outlines": len(import_data.outlines),
+                                               "monsters": len(import_data.monsters)}}
 
 
 @router.get("/{project_id}/consistency-dashboard")
-def consistency_dashboard(project_id: int):
+def consistency_dashboard(project_id: int, repo: BibleRepository = Depends(get_repo)):
     """项目级一致性看板：状态变更、未回收伏笔、近期事件、冲突检测。"""
-    db, repo = _repo(project_id)
-    try:
-        # 最近状态变更
-        state_changes = repo.list_state_changes()[-20:]
-        # 未回收伏笔
-        foreshadows = repo.list_foreshadows()
-        max_chapter = max((o.order for o in repo.list_outlines()), default=0)
-        unresolved = [f for f in foreshadows if f.status not in ("resolved", "abandoned")]
-        overdue = [f for f in unresolved if (f.planned_resolve_chapter or 0) > 0 and (f.planned_resolve_chapter or 0) < max_chapter]
-        # 近期事件
-        events = repo.list_events()[-20:]
-        # 冲突检测
-        conflicts = _detect_conflicts(repo, state_changes, foreshadows, max_chapter)
+    # 最近状态变更
+    state_changes = repo.list_state_changes()[-20:]
+    # 未回收伏笔
+    foreshadows = repo.list_foreshadows()
+    max_chapter = max((o.order for o in repo.list_outlines()), default=0)
+    unresolved = [f for f in foreshadows if f.status not in ("resolved", "abandoned")]
+    overdue = [f for f in unresolved if (f.planned_resolve_chapter or 0) > 0 and (f.planned_resolve_chapter or 0) < max_chapter]
+    # 近期事件
+    events = repo.list_events()[-20:]
+    # 冲突检测
+    conflicts = _detect_conflicts(repo, state_changes, foreshadows, max_chapter)
 
-        factions = repo.list_factions()
-        faction_relationships = repo.list_faction_relationships()
-        character_relationships = repo.list_character_relationships()
-        monsters = repo.list_monsters()
+    factions = repo.list_factions()
+    faction_relationships = repo.list_faction_relationships()
+    character_relationships = repo.list_character_relationships()
+    monsters = repo.list_monsters()
 
-        return {
-            "stats": {
-                "characters": len(repo.list_characters()),
-                "world_settings": len(repo.list_world_settings()),
-                "outlines": len(repo.list_outlines()),
-                "foreshadows": len(foreshadows),
-                "unresolved_foreshadows": len(unresolved),
-                "overdue_foreshadows": len(overdue),
-                "state_changes": len(repo.list_state_changes()),
-                "events": len(repo.list_events()),
-                "conflicts": len(conflicts),
-                "factions": len(factions),
-                "faction_relationships": len(faction_relationships),
-                "character_relationships": len(character_relationships),
-                "monsters": len(monsters),
-            },
-            "recent_state_changes": [_state_change_dict(s) for s in state_changes],
-            "unresolved_foreshadows": [_foreshadow_dict(f) for f in unresolved],
-            "overdue_foreshadows": [_foreshadow_dict(f) for f in overdue],
-            "recent_events": [_event_dict(e) for e in events],
-            "conflicts": conflicts,
-        }
-    finally:
-        db.close()
+    return {
+        "stats": {
+            "characters": len(repo.list_characters()),
+            "world_settings": len(repo.list_world_settings()),
+            "outlines": len(repo.list_outlines()),
+            "foreshadows": len(foreshadows),
+            "unresolved_foreshadows": len(unresolved),
+            "overdue_foreshadows": len(overdue),
+            "state_changes": len(repo.list_state_changes()),
+            "events": len(repo.list_events()),
+            "conflicts": len(conflicts),
+            "factions": len(factions),
+            "faction_relationships": len(faction_relationships),
+            "character_relationships": len(character_relationships),
+            "monsters": len(monsters),
+        },
+        "recent_state_changes": [_state_change_dict(s) for s in state_changes],
+        "unresolved_foreshadows": [_foreshadow_dict(f) for f in unresolved],
+        "overdue_foreshadows": [_foreshadow_dict(f) for f in overdue],
+        "recent_events": [_event_dict(e) for e in events],
+        "conflicts": conflicts,
+    }
 
 
 def _detect_conflicts(repo, state_changes, foreshadows, max_chapter):

@@ -69,6 +69,7 @@ async def generate_chapter_stream(project_id: int, chapter: int, title: str,
         initial = {"project_id": project_id, "chapter": chapter, "title": title,
                    "context": "", "draft": "", "status": "pending", "error": "",
                    "word_count": 0, "draft_version": 0, "review_iterations": 0}
+        final_status = "completed"
         try:
             async for mode, chunk in runner.graph.astream(
                 initial,
@@ -77,12 +78,15 @@ async def generate_chapter_stream(project_id: int, chapter: int, title: str,
             ):
                 if mode == "updates":
                     for node_name, node_output in chunk.items():
+                        # 检查是否有失败状态
+                        if isinstance(node_output, dict) and node_output.get("status") in ("failed", "end_failed"):
+                            final_status = "failed"
                         yield {"event": "node", "data": json.dumps({
                             "node": node_name, "output": node_output,
                         }, ensure_ascii=False, default=str)}
-            yield {"event": "done", "data": json.dumps({"status": "completed", "thread_id": tid})}
+            yield {"event": "done", "data": json.dumps({"status": final_status, "thread_id": tid})}
         except Exception as e:
-            yield {"event": "error", "data": json.dumps({"message": str(e)})}
+            yield {"event": "error", "data": json.dumps({"error": str(e)})}
         finally:
             runner.close()
             db.close()

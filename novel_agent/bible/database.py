@@ -45,6 +45,7 @@ def _create_engine():
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA foreign_keys=ON")  # 启用外键级联
             cursor.close()
     return eng
 

@@ -1,5 +1,6 @@
 """项目 CRUD API。"""
 from __future__ import annotations
+import re
 import shutil
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
@@ -35,7 +36,15 @@ def _template_dir() -> Path:
 def _load_template_text(template_key: str | None) -> str | None:
     if not template_key:
         return None
+    # 防路径穿越：只允许字母数字下划线横线
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', template_key):
+        return None
     template_path = _template_dir() / f"{template_key}.md"
+    # 确保路径在模板目录内
+    try:
+        template_path.resolve().relative_to(_template_dir().resolve())
+    except ValueError:
+        return None
     if not template_path.exists():
         return None
     return template_path.read_text(encoding="utf-8")
