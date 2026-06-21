@@ -22,14 +22,18 @@ class RecallMemory:
 
     def save_chapter_text(self, chapter: int, title: str, content: str) -> Path:
         """保存章节正文到 markdown 文件。重生成时覆盖同章号旧文件。"""
-        safe_title = re.sub(r'[\\/:*?"<>|]', "_", title)
+        # sanitize 标题：去除控制字符 + 截断到 50 字 + 替换文件名非法字符
+        clean_title = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', title).strip()
+        safe_title = re.sub(r'[\\/:*?"<>|]', "_", clean_title)[:50]
+        if not safe_title:
+            safe_title = "untitled"
         filename = f"第{chapter:03d}章_{safe_title}.md"
         path = self.chapters_dir / filename
         # 删除同章号的旧文件（标题可能已改，文件名不同）
         for old in self.chapters_dir.glob(f"第{chapter:03d}章_*.md"):
             if old != path:
                 old.unlink()
-        path.write_text(f"# 第{chapter}章 {title}\n\n{content}", encoding="utf-8")
+        path.write_text(f"# 第{chapter}章 {clean_title or 'untitled'}\n\n{content}", encoding="utf-8")
         return path
 
     def read_chapter_text(self, chapter: int) -> str:

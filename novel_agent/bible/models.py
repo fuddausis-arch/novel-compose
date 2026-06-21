@@ -36,6 +36,7 @@ class Project(Base):
 class Character(Base):
     """角色卡（对应「主要人物卡」）。"""
     __tablename__ = "characters"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_character_project_name"),)
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)

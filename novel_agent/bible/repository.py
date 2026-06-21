@@ -1,6 +1,7 @@
 """圣经仓储：CRUD 封装。所有写操作经此层，便于后续加校验/事件。"""
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 
 from sqlalchemy.orm import Session
@@ -11,6 +12,8 @@ from novel_agent.bible.models import (
     Faction, FactionRelationship, CharacterRelationship, Monster,
     EntityAppearance, AiSuggestion,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class BibleRepository:
@@ -72,6 +75,30 @@ class BibleRepository:
         c = self.get_character(name)
         if not c:
             return None
+        new_name = kwargs.get("name")
+        if new_name and new_name != name:
+            # 级联更新引用角色名的其他表
+            for ea in self.db.query(EntityAppearance).filter(
+                EntityAppearance.entity_type == "角色",
+                EntityAppearance.entity_id == name,
+            ).all():
+                ea.entity_id = new_name
+            for cr in self.db.query(CharacterRelationship).filter(
+                (CharacterRelationship.source_character == name) |
+                (CharacterRelationship.target_character == name)
+            ).all():
+                if cr.source_character == name:
+                    cr.source_character = new_name
+                if cr.target_character == name:
+                    cr.target_character = new_name
+            for sc in self.db.query(StateChange).filter(
+                StateChange.entity_id == name,
+            ).all():
+                sc.entity_id = new_name
+            for te in self.db.query(TruthEvent).filter(
+                TruthEvent.entity_id == name,
+            ).all():
+                te.entity_id = new_name
         for k, v in kwargs.items():
             if hasattr(c, k):
                 setattr(c, k, v)
@@ -98,10 +125,21 @@ class BibleRepository:
             Foreshadow.project_id == self.project_id,
         ).all()
 
+    _VALID_TRANSITIONS = {
+        "pending": {"planted"},
+        "planted": {"developing", "resolved"},
+        "developing": {"resolved"},
+        "resolved": set(),  # 终态
+    }
+
     def update_foreshadow_status(self, foreshadow_id: str, status: str) -> Foreshadow | None:
         f = self.get_foreshadow(foreshadow_id)
         if not f:
             return None
+        current = f.status or "pending"
+        allowed = self._VALID_TRANSITIONS.get(current, set())
+        if status not in allowed and current != status:
+            logger.warning("伏笔 %s 非法状态跳转: %s → %s", foreshadow_id, current, status)
         f.status = status
         self._commit_or_flush()
         self.db.refresh(f)

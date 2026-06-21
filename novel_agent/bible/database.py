@@ -14,6 +14,7 @@ from novel_agent.config import Config, load_config
 from novel_agent.bible.models import migrate_db
 
 _config: Config | None = None
+_initialized: bool = False
 
 
 def get_config() -> Config:
@@ -23,12 +24,15 @@ def get_config() -> Config:
     return _config
 
 
-def set_config(cfg: Config) -> None:
-    """测试/编排层注入配置用。"""
-    global _config, engine
+def set_config(cfg: Config, force: bool = False) -> None:
+    """测试/编排层注入配置用。force=True 时强制重绑（测试用）。"""
+    global _config, engine, _initialized
+    if _initialized and not force:
+        return  # 已初始化，避免每请求重绑 engine + 并发 migrate_db
     _config = cfg
     engine = _create_engine()
     migrate_db(engine)
+    _initialized = True
 
 
 def _create_engine():
