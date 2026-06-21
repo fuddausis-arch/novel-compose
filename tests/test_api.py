@@ -220,6 +220,7 @@ def test_generate_chapter(client):
                new=AsyncMock(return_value=AuditReport(passed=True, overall_score=85, summary="ok"))):
         mock = MagicMock()
         mock.generate = AsyncMock(side_effect=["草稿", "润色", '{"core_events":"e"}'])
+        mock.close = AsyncMock()
         MockLLM.return_value = mock
         MockAuditLLM.return_value = MagicMock()
         resp = client.post("/api/chapters/generate", json={

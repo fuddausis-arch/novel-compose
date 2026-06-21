@@ -58,8 +58,7 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
         setPreviewItems(r.items);
         setPreviewOpen(true);
       } else {
-        await refresh();
-        showSuccess("AI 未返回角色");
+        showError("AI 未返回角色");
       }
     } catch (e: any) {
       showError("生成失败：" + e.message);
@@ -69,22 +68,19 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
     }
   };
 
-  const discardGenerated = async (items: Partial<Character>[]) => {
-    await Promise.all(items.map((item) => api.deleteCharacter(project.id, item.name as string)));
-  };
-
   const handleImport = async (selected: Partial<Character>[]) => {
-    const discarded = previewItems.filter((item) => !selected.find((s) => s.id === item.id));
-    await discardGenerated(discarded);
-    await refresh();
-    setPreviewOpen(false);
-    setPreviewItems([]);
-    showSuccess(`已导入 ${selected.length} 位角色`);
+    try {
+      await api.importCharacters(project.id, selected as any[]);
+      await refresh();
+      setPreviewOpen(false);
+      setPreviewItems([]);
+      showSuccess(`已导入 ${selected.length} 位角色`);
+    } catch (e: any) {
+      showError("导入失败：" + e.message);
+    }
   };
 
   const handlePreviewClose = async () => {
-    await discardGenerated(previewItems);
-    await refresh();
     setPreviewOpen(false);
     setPreviewItems([]);
   };

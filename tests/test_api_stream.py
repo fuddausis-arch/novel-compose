@@ -21,6 +21,7 @@ def test_generate_stream_emits_node_events(client):
                new=AsyncMock(return_value=AuditReport(passed=True, overall_score=85, summary="ok"))):
         mock = MagicMock()
         mock.generate = AsyncMock(side_effect=["草稿", "润色", '{"core_events":"e"}'])
+        mock.close = AsyncMock()
         MockLLM.return_value = mock
         MockAuditLLM.return_value = MagicMock()
         with client.stream("GET", f"/api/chapters/generate/stream?project_id={pid}&chapter=1&title=ch1") as resp:
@@ -43,6 +44,7 @@ def test_generate_stream_node_events_contain_pipeline_stages(client):
                new=AsyncMock(return_value=AuditReport(passed=True, overall_score=85, summary="ok"))):
         mock = MagicMock()
         mock.generate = AsyncMock(side_effect=["草稿", "润色", '{"core_events":"e"}'])
+        mock.close = AsyncMock()
         MockLLM.return_value = mock
         MockAuditLLM.return_value = MagicMock()
         nodes_seen = set()

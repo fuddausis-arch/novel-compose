@@ -29,7 +29,7 @@ def make_runner(tmp_config):
 
     yield _make
     for rn in runners:
-        rn.close()
+        rn._saver_conn.close()
     db.close()
 
 

@@ -167,6 +167,15 @@ class BibleRepository:
             Foreshadow.status.in_(["planted", "developing"]),
         ).all()
 
+    def get_overdue_foreshadows(self, current_chapter: int) -> list[Foreshadow]:
+        """获取已逾期未回收的伏笔（planned_resolve_chapter < current_chapter 且 status != resolved）。"""
+        return self.db.query(Foreshadow).filter(
+            Foreshadow.project_id == self.project_id,
+            Foreshadow.status != "resolved",
+            Foreshadow.planned_resolve_chapter > 0,
+            Foreshadow.planned_resolve_chapter < current_chapter,
+        ).all()
+
     # ---- 事件流 ----
     def append_event(self, chapter: int, type: str, entity_id: str = "",
                      payload: dict | None = None) -> TruthEvent:

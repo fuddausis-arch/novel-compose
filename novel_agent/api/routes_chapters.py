@@ -1,8 +1,9 @@
 """章节生成 API + 列表 + 正文。"""
 from __future__ import annotations
 import asyncio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from novel_agent.api.app import limiter
 from novel_agent.bible.database import SessionLocal, set_config
 from novel_agent.bible.models import Base
 from novel_agent.bible.repository import BibleRepository
@@ -20,7 +21,8 @@ class GenerateRequest(BaseModel):
 
 
 @router.post("/generate")
-async def generate_chapter(req: GenerateRequest):
+@limiter.limit("10/minute")
+async def generate_chapter(request: Request, req: GenerateRequest):
     """异步生成章节，与 SSE 端点共用同一事件循环，避免 asyncio.run 嵌套。"""
     cfg = load_config()
     set_config(cfg)
@@ -34,7 +36,7 @@ async def generate_chapter(req: GenerateRequest):
             chapter=req.chapter, title=req.title, thread_id=req.thread_id)
         return result
     finally:
-        runner.close()
+        await runner.close()
         db.close()
 
 
@@ -49,7 +51,8 @@ def list_chapters(project_id: int):
 
 
 @router.get("/generate/stream")
-async def generate_chapter_stream(project_id: int, chapter: int, title: str,
+@limiter.limit("10/minute")
+async def generate_chapter_stream(request: Request, project_id: int, chapter: int, title: str,
                                   thread_id: str | None = None):
     """SSE 流式生成章节，实时推送节点状态（assemble/write/audit/polish/...）。"""
     import json
@@ -70,25 +73,46 @@ async def generate_chapter_stream(project_id: int, chapter: int, title: str,
                    "context": "", "draft": "", "status": "pending", "error": "",
                    "word_count": 0, "draft_version": 0, "review_iterations": 0}
         final_status = "completed"
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def producer():
+            nonlocal final_status
+            try:
+                async for mode, chunk in runner.graph.astream(
+                    initial,
+                    config={"configurable": {"thread_id": tid}},
+                    stream_mode=["updates"],
+                ):
+                    if mode == "updates":
+                        for node_name, node_output in chunk.items():
+                            # 检查是否有失败状态
+                            if isinstance(node_output, dict) and node_output.get("status") in ("failed", "end_failed"):
+                                final_status = "failed"
+                            await queue.put({"event": "node", "data": json.dumps({
+                                "node": node_name, "output": node_output,
+                            }, ensure_ascii=False, default=str)})
+                await queue.put({"event": "done", "data": json.dumps({"status": final_status, "thread_id": tid})})
+            except Exception as e:
+                await queue.put({"event": "error", "data": json.dumps({"error": str(e)})})
+
+        producer_task = asyncio.create_task(producer())
         try:
-            async for mode, chunk in runner.graph.astream(
-                initial,
-                config={"configurable": {"thread_id": tid}},
-                stream_mode=["updates"],
-            ):
-                if mode == "updates":
-                    for node_name, node_output in chunk.items():
-                        # 检查是否有失败状态
-                        if isinstance(node_output, dict) and node_output.get("status") in ("failed", "end_failed"):
-                            final_status = "failed"
-                        yield {"event": "node", "data": json.dumps({
-                            "node": node_name, "output": node_output,
-                        }, ensure_ascii=False, default=str)}
-            yield {"event": "done", "data": json.dumps({"status": final_status, "thread_id": tid})}
-        except Exception as e:
-            yield {"event": "error", "data": json.dumps({"error": str(e)})}
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield event
+                    if event["event"] in ("done", "error"):
+                        break
+                except asyncio.TimeoutError:
+                    yield {"event": "heartbeat", "data": "{}"}
         finally:
-            runner.close()
+            if not producer_task.done():
+                producer_task.cancel()
+                try:
+                    await producer_task
+                except asyncio.CancelledError:
+                    pass
+            await runner.close()
             db.close()
 
     return EventSourceResponse(event_generator())

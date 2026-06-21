@@ -21,6 +21,19 @@ class LLMClient:
 
     def __init__(self, config: LLMConfig):
         self.config = config
+        self._client: httpx.AsyncClient | None = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """获取或创建持久 httpx 连接，复用 TCP 连接池。"""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.config.timeout)
+        return self._client
+
+    async def close(self):
+        """关闭底层 httpx 连接池。"""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     def _build_payload(self, user_content: str, system: str | None = None,
                        images: list[str] | None = None) -> dict[str, Any]:
@@ -59,20 +72,20 @@ class LLMClient:
         last_err: Exception | None = None
         for attempt in range(max_retries):
             try:
-                async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    # 检查响应体是否包含 choices（方舟可能返回 200 + 错误 JSON）
-                    if "choices" not in data or not data["choices"]:
-                        body = resp.text
-                        body_lower = body.lower()
-                        quota_keywords = ["quota", "exceeded", "limit reached",
-                                          "insufficient", "余额不足", "配额", "rate limit"]
-                        if any(kw in body_lower or kw in body for kw in quota_keywords):
-                            raise LLMError(self._quota_msg(body))
-                        raise LLMError(f"AI 接口返回异常（无 choices 字段）: {body[:300]}")
-                    return data["choices"][0]["message"]["content"]
+                client = await self._get_client()
+                resp = await client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                # 检查响应体是否包含 choices（方舟可能返回 200 + 错误 JSON）
+                if "choices" not in data or not data["choices"]:
+                    body = resp.text
+                    body_lower = body.lower()
+                    quota_keywords = ["quota", "exceeded", "limit reached",
+                                      "insufficient", "余额不足", "配额", "rate limit"]
+                    if any(kw in body_lower or kw in body for kw in quota_keywords):
+                        raise LLMError(self._quota_msg(body))
+                    raise LLMError(f"AI 接口返回异常（无 choices 字段）: {body[:300]}")
+                return data["choices"][0]["message"]["content"]
             except (httpx.TimeoutException, httpx.NetworkError) as e:
                 last_err = e
                 if attempt < max_retries - 1:

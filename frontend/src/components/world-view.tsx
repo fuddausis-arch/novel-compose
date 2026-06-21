@@ -82,8 +82,7 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
         setPreviewItems(r.items);
         setPreviewOpen(true);
       } else {
-        await refresh();
-        showSuccess("AI 未返回世界观设定");
+        showError("AI 未返回世界观设定");
       }
     } catch (e: any) {
       showError("生成失败：" + e.message);
@@ -93,22 +92,19 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
     }
   };
 
-  const discardGenerated = async (items: Partial<WorldSetting>[]) => {
-    await Promise.all(items.map((item) => api.deleteWorldSetting(project.id, item.id as number)));
-  };
-
   const handleImport = async (selected: Partial<WorldSetting>[]) => {
-    const discarded = previewItems.filter((item) => !selected.find((s) => s.id === item.id));
-    await discardGenerated(discarded);
-    await refresh();
-    setPreviewOpen(false);
-    setPreviewItems([]);
-    showSuccess(`已导入 ${selected.length} 条世界观设定`);
+    try {
+      await api.importWorld(project.id, selected as any[]);
+      await refresh();
+      setPreviewOpen(false);
+      setPreviewItems([]);
+      showSuccess(`已导入 ${selected.length} 条世界观设定`);
+    } catch (e: any) {
+      showError("导入失败：" + e.message);
+    }
   };
 
   const handlePreviewClose = async () => {
-    await discardGenerated(previewItems);
-    await refresh();
     setPreviewOpen(false);
     setPreviewItems([]);
   };

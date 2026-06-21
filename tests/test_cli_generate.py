@@ -54,7 +54,7 @@ async def test_cmd_generate_runs_pipeline(isolated_cli, monkeypatch, capsys):
         async def run(self, chapter, title):
             return {"status": "completed", "draft": "正文", "word_count": 100}
 
-        def close(self):
+        async def close(self):
             pass
 
     # generate 内部从 runner 模块 import ChapterRunner，patch 真正的 import 点

@@ -5,9 +5,10 @@ import json
 import re
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from novel_agent.api.app import limiter
 from novel_agent.bible.database import SessionLocal, set_config
 from novel_agent.bible.models import Base, Faction, Monster, Project
 from novel_agent.bible.repository import BibleRepository
@@ -208,7 +209,8 @@ def _extract_json(text: str) -> dict:
 
 
 @router.post("/world/generate", response_model=GenerateWorldResponse)
-async def generate_world(req: GenerateWorldRequest):
+@limiter.limit("10/minute")
+async def generate_world(request: Request, req: GenerateWorldRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
     try:
         client = LLMClient(cfg.llm)
@@ -232,21 +234,15 @@ async def generate_world(req: GenerateWorldRequest):
         settings = result.get("world_settings") or result.get("worlds") or result.get("settings") or []
         if not settings:
             raise HTTPException(422, "LLM 未返回有效设定项，请检查模型配置或重试")
+        # 预览模式：不写库，只返回带临时 ID 的 items，用户确认后再调 /world/import
         items = []
         for i, s in enumerate(settings):
-            data = {
+            items.append({
+                "id": i,
                 "category": _clean_text(s.get("category", "其他")),
                 "title": _clean_text(s.get("title", "未命名")),
                 "content": _clean_text(s.get("content", "")),
                 "order": i,
-            }
-            created = repo.create_world_setting(**data)
-            items.append({
-                "id": created.id,
-                "category": created.category,
-                "title": created.title,
-                "content": created.content,
-                "order": created.order,
             })
         return GenerateWorldResponse(created=len(items), items=items)
     finally:
@@ -254,7 +250,8 @@ async def generate_world(req: GenerateWorldRequest):
 
 
 @router.post("/characters/generate", response_model=GenerateCharactersResponse)
-async def generate_characters(req: GenerateCharactersRequest):
+@limiter.limit("10/minute")
+async def generate_characters(request: Request, req: GenerateCharactersRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
     try:
         client = LLMClient(cfg.llm)
@@ -280,9 +277,11 @@ async def generate_characters(req: GenerateCharactersRequest):
         characters = result.get("characters") or result.get("chars") or result.get("roles") or []
         if not characters:
             raise HTTPException(422, "LLM 未返回有效角色项，请检查模型配置或重试")
+        # 预览模式：不写库，只返回带临时 ID 的 items，用户确认后再调 /characters/import
         items = []
-        for c in characters:
-            data = {
+        for i, c in enumerate(characters):
+            items.append({
+                "id": i,
                 "name": _clean_text(c.get("name", "未命名")),
                 "role": _clean_text(c.get("role", "配角")),
                 "age": _clean_text(c.get("age", "")),
@@ -293,22 +292,59 @@ async def generate_characters(req: GenerateCharactersRequest):
                 "motivation": _clean_text(c.get("motivation", "")),
                 "arc": _clean_text(c.get("arc", "")),
                 "secrets": _clean_text(c.get("secrets", "")),
-            }
-            created = repo.create_character(**data)
-            items.append({
-                "id": created.id,
-                "name": created.name,
-                "role": created.role,
-                "age": created.age,
-                "gender": created.gender,
-                "appearance": created.appearance,
-                "background": created.background,
-                "personality": created.personality,
-                "motivation": created.motivation,
-                "arc": created.arc,
-                "secrets": created.secrets,
             })
         return GenerateCharactersResponse(created=len(items), items=items)
+    finally:
+        db.close()
+
+
+class ImportWorldRequest(BaseModel):
+    project_id: int
+    items: list[dict]
+
+
+class ImportCharactersRequest(BaseModel):
+    project_id: int
+    items: list[dict]
+
+
+@router.post("/world/import")
+def import_world(req: ImportWorldRequest):
+    db, repo, project, cfg = _get_repo(req.project_id)
+    try:
+        created = []
+        for item in req.items:
+            obj = repo.create_world_setting(
+                category=item.get("category", "其他"),
+                title=item.get("title", ""),
+                content=item.get("content", ""),
+            )
+            created.append({"id": obj.id, "title": obj.title})
+        return {"created": len(created), "items": created}
+    finally:
+        db.close()
+
+
+@router.post("/characters/import")
+def import_characters(req: ImportCharactersRequest):
+    db, repo, project, cfg = _get_repo(req.project_id)
+    try:
+        created = []
+        for item in req.items:
+            obj = repo.create_character(
+                name=item.get("name", "未命名"),
+                role=item.get("role", "配角"),
+                age=item.get("age", ""),
+                gender=item.get("gender", ""),
+                appearance=item.get("appearance", ""),
+                background=item.get("background", ""),
+                personality=item.get("personality", ""),
+                motivation=item.get("motivation", ""),
+                arc=item.get("arc", ""),
+                secrets=item.get("secrets", ""),
+            )
+            created.append({"id": obj.id, "name": obj.name})
+        return {"created": len(created), "items": created}
     finally:
         db.close()
 
@@ -358,7 +394,8 @@ def _list_asset_text(repo, suggest_type: str) -> str:
 
 
 @router.post("/volumes/generate", response_model=GenerateOutlinesResponse)
-async def generate_volumes(req: GenerateVolumesRequest):
+@limiter.limit("10/minute")
+async def generate_volumes(request: Request, req: GenerateVolumesRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
     try:
         client = LLMClient(cfg.llm)
@@ -410,7 +447,8 @@ async def generate_volumes(req: GenerateVolumesRequest):
 
 
 @router.post("/arcs/generate", response_model=GenerateOutlinesResponse)
-async def generate_arcs(req: GenerateArcsRequest):
+@limiter.limit("10/minute")
+async def generate_arcs(request: Request, req: GenerateArcsRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
     try:
         volume = repo.get_outline(req.parent_id)
@@ -470,7 +508,8 @@ async def generate_arcs(req: GenerateArcsRequest):
 
 
 @router.post("/chapters/generate", response_model=GenerateOutlinesResponse)
-async def generate_chapters(req: GenerateChaptersRequest):
+@limiter.limit("10/minute")
+async def generate_chapters(request: Request, req: GenerateChaptersRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
     try:
         arc = repo.get_outline(req.parent_id)
@@ -608,7 +647,8 @@ def _strand_balance_advice(outlines: list, current_chapter: int) -> str:
 
 
 @router.post("/chapter/brief", response_model=ChapterBriefResponse)
-async def generate_chapter_brief(req: ChapterBriefRequest):
+@limiter.limit("10/minute")
+async def generate_chapter_brief(request: Request, req: ChapterBriefRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
     try:
         cg = canonical_genre(project.genre)
@@ -732,7 +772,8 @@ async def review_chapter(req: ChapterReviewRequest):
 
 
 @router.post("/chapter/commit")
-async def commit_chapter(req: ChapterCommitRequest):
+@limiter.limit("10/minute")
+async def commit_chapter(request: Request, req: ChapterCommitRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
     try:
         recall = RecallMemory(cfg, project_id=req.project_id)
@@ -870,7 +911,8 @@ def get_genre_context(req: GenreContextRequest):
 
 
 @router.post("/suggest", response_model=SuggestResponse)
-async def suggest(req: SuggestRequest):
+@limiter.limit("10/minute")
+async def suggest(request: Request, req: SuggestRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
     try:
         client = LLMClient(cfg.llm)

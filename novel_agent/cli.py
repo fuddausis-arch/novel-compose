@@ -51,7 +51,7 @@ async def cmd_generate(args):
             print(f"字数：{result.get('word_count', 0)}")
             print(f"正文：{cfg.chapters_dir}")
     finally:
-        runner.close()
+        await runner.close()
         db.close()
 
 

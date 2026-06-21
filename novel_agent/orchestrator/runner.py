@@ -5,6 +5,7 @@ Runner 是编排层的运行入口，把 M1 的各模块（repo/llm/recall/appli
 """
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import uuid
 from typing import Any
@@ -34,14 +35,18 @@ class ChapterRunner:
         self.archival = ArchivalMemory(config, project_id=repo.project_id)
         self.applier = DeltaApplier(repo, archival=self.archival)
         # Auditor 用独立 client（写审分离；auditor_llm 为 None 时回退到 llm）
-        auditor_client = LLMClient(config.auditor_llm or config.llm)
-        self.auditor = auditor or Auditor(auditor_client)
-        # checkpoint 存储：持久化到文件，崩溃可恢复
-        config.project_data_dir.mkdir(parents=True, exist_ok=True)
+        self._auditor_client = LLMClient(config.auditor_llm or config.llm)
+        self.auditor = auditor or Auditor(self._auditor_client)
+        # checkpoint 存储：每项目独立 db + WAL，崩溃可恢复
+        saver_path = config.project_dir(self.repo.project_id) / "checkpoints.db"
+        saver_path.parent.mkdir(parents=True, exist_ok=True)
         self._saver_conn = sqlite3.connect(
-            str(config.project_data_dir / "checkpoints.db"),
+            str(saver_path),
             check_same_thread=False,
         )
+        # 启用 WAL 模式提升并发读写性能，busy_timeout 防止锁等待失败
+        self._saver_conn.execute("PRAGMA journal_mode=WAL")
+        self._saver_conn.execute("PRAGMA busy_timeout=5000")
         self.checkpointer = SqliteSaver(self._saver_conn)
         self.checkpointer.setup()
         # build_graph 已 compile（无 checkpointer）；用 with_config 绑定
@@ -74,10 +79,18 @@ class ChapterRunner:
             "error": "",
             "word_count": 0,
         }
-        result = await self.graph.ainvoke(
-            initial_state, config={"configurable": {"thread_id": tid}},
-        )
-        return result
+        try:
+            result = await asyncio.wait_for(
+                self.graph.ainvoke(
+                    initial_state, config={"configurable": {"thread_id": tid}},
+                ),
+                timeout=600,
+            )
+            return result
+        except asyncio.TimeoutError:
+            return {"status": "failed", "error": "生成超时（600秒）"}
 
-    def close(self):
+    async def close(self):
+        await self.llm_client.close()
+        await self._auditor_client.close()
         self._saver_conn.close()
