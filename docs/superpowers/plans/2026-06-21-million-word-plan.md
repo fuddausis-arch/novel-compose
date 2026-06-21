@@ -638,4 +638,233 @@ class BookRunner:
 | 3 | 爽点供应链+欠账 | 百万字=百万字流水账 | ~400行 |
 | 4 | 元认知+跨卷 | 无编排者，每章人审太累，无卷末止损 | ~350行 |
 
-**总计约1300行，4阶段每阶段独立可验证。建议按顺序逐阶段实施，每阶段完成后用真实LLM跑5章验证。**
+**总计约1300行。4阶段是串行依赖链（非独立可验证），必须按顺序逐阶段实施，每阶段完成后用真实LLM跑5章验证。**
+
+---
+
+## 对抗审查修订项（工程师必读）
+
+> 以下为多agent对抗审查发现的致命问题，**必须在实现时遵守**，否则方案执行到一半会崩盘。
+
+### P0 必改项（不改会崩）
+
+#### P0-1. 阶段1角色回写必须包 try/except + 角色不存在时跳过
+**问题**：方案1.4把`repo.update_character`直写改为applier.apply，但applier的`_character_state_change`在角色不存在时抛`ApplyError`，且角色回写块**没有try/except包裹**。LLM常返回圣经里没有的角色名 → 整章生成失败。
+**修法**：角色回写块（方案1.4第106-121行）必须像emotion/matrix块一样包`try/except Exception: pass`，且在apply前先`if not repo.get_character(name): continue`：
+```python
+for cs in data.get("character_states", []) or []:
+    name = cs.get("name", "").strip()
+    if not name or not repo or not repo.get_character(name):
+        continue  # 角色不存在则跳过，不崩
+    try:
+        # ... applier.apply 逻辑 ...
+    except Exception:
+        pass  # 单条失败不崩整章
+```
+
+#### P0-2. 阶段4拆为4a（BookRunner无interrupt）+ 4b（metacog+resume）
+**问题**：metacog的interrupt没有resume端点。`cli.py`无章节级resume；`runner.py`不处理`GraphInterrupt`。metacog触发interrupt → 章节永久挂起。
+**修法**：
+- **4a**：BookRunner + 卷摘要激活（不含metacog interrupt）。BookRunner串行跑卷，每章用ChapterRunner现有流程（不interrupt）。
+- **4b**：metacog + resume。**必须先实现resume端点**（CLI `chapter-resume` 子命令 + API `/api/chapters/resume` 端点），再启用metacog的interrupt。`runner.py`的`run`方法必须捕获`GraphInterrupt`并返回`{"status":"interrupted","interrupt_data":...}`而非崩溃。
+- 4a可独立上线验证，4b在resume端点就位后再做。
+
+#### P0-3. 阶段3/4的repo方法必须先实现并单测
+**问题**：`get_pleasure_gap`/`get_overdue_debts`/`list_open_debts`/`list_beats_for_chapter`/`update_beat_delivered`/`increment_debt_pressure`/`resolve_debt`/`create_pleasure_beat`/`create_or_update_subplot` 全库零存在。阶段3/4的core.py注入/validator检查/metacog指标直接调这些方法 → AttributeError。
+**修法**：阶段3落地**第一步**就是实现方案3.2的全部repo方法 + 写单测（`tests/test_repository_debts.py`），确认方法存在且返回正确，再接core.py/validator/metacog。
+
+#### P0-4. "4阶段独立可验证"改为"串行依赖链"
+**问题**：阶段3爽点注入依赖阶段2快照（活跃伏笔），阶段2快照依赖阶段1回写（SubplotBoard/StateChange），阶段4 metacog依赖阶段3数据（欠账/爽点gap）。**不是独立的**。
+**修法**：必须严格按1→2→3→4顺序。每阶段做完用真实LLM跑5章验证上游产出正确，再做下一阶段。不能跳阶段或并行做。
+
+#### P0-5. Delta.target Literal 与 handler 必须同一commit原子提交
+**问题**：先改applier后改schema（或反之），pydantic在`Delta(...)`构造时即抛ValidationError，发生在summarize主路径无except兜底 → 整章失败。
+**修法**：方案1.1（schemas.py加Literal值）和1.2（applier.py加handler）必须在**同一个git commit**里提交，不能分两次。
+
+### P1 必改项（不改会有严重bug）
+
+#### P1-1. snapshot.py 不能用 `last_active_chapter`（字段不存在）
+**问题**：Character表无`last_active_chapter`列，`hasattr`恒False → 配角从快照消失。
+**修法**：用`EntityAppearance`表查最近3章出场的角色（`get_active_entities_for_chapter`已有），或给Character加`last_active_chapter`列（migrate_db自动加列）。推荐前者——不改表结构。
+```python
+# 替代方案2.2的角色过滤
+active_result = repo.get_active_entities_for_chapter(chapter)  # 返回dict
+active_char_names = set(active_result.get("characters", []))
+chars = [c for c in repo.list_characters()
+         if c.role in ("主角", "反派") or c.name in active_char_names]
+```
+
+#### P1-2. validator 新check签名必须兼容现有 run_deterministic_checks
+**问题**：现有`run_deterministic_checks(draft, foreshadows_to_plant, word_min, word_max)`不接受repo/chapter。方案3.6的`check_pleasure_gap(repo, chapter)`接不进去。
+**修法**：改`run_deterministic_checks`签名加`repo=None, chapter=None`可选参数，保持向后兼容：
+```python
+def run_deterministic_checks(draft, foreshadows_to_plant, word_min=2000, word_max=5000,
+                              repo=None, chapter=None):
+    issues = [...现有3项检查...]
+    if repo and chapter:
+        issues.extend(check_pleasure_gap(repo, chapter))
+        issues.extend(check_overdue_debts(repo, chapter))
+    return issues
+```
+
+#### P1-3. 8000字符预算优先级必须明确
+**问题**：爽点档位+欠账注入可能800-1200字，挤占角色段导致OOC。
+**修法**：明确优先级序列（从高到低）：
+1. 本章细纲（最高，不压缩）
+2. 爽点档位（硬约束，不压缩）
+3. 角色状态快照（不压缩）
+4. 应还欠账（可截断到top3）
+5. 前文摘要（可压缩到5章）
+6. 逾期伏笔/欠账提醒（可截断到top5）
+7. archival检索（最低，可全删）
+
+#### P1-4. 章末钩检查改LLM判断，不用关键词硬门禁
+**问题**：方案3.6用"？/！/……/突然"关键词检查——违反方案自身原则"LLM判断的=软信号"。且会教模型刷分（硬塞"？！"过检查）。
+**修法**：章末钩改由auditor的LLM判断（已有"读者期待管理"维度），validator不加关键词检查。章末钩强度由summarize抽取的`hook_strength`回填，metacog监控连续低钩子章节。
+
+#### P1-5. generate_volume_summary 签名必须传 llm_client
+**问题**：实际`generate_volume_summary(self, volume, llm_client)`需要llm_client参数，方案4.4省略了。BookRunner未初始化summary_tree。
+**修法**：
+```python
+# BookRunner.__init__ 里
+from novel_agent.memory.summary_tree import SummaryTree
+self.summary_tree = SummaryTree(repo)
+
+# 调用时传 llm_client
+summary = await self.summary_tree.generate_volume_summary(current_volume, self.llm_client)
+```
+
+#### P1-6. archival 双路径不能删commit的全文索引
+**问题**：applier索引的是`core_events+chapter_hook`（摘要拼接），commit索引的是正文全文。方案1.5说"删除commit的archival.index_chapter"会丢失全文检索能力。
+**修法**：保留commit的全文索引，applier的摘要索引改为可选（或删除applier的索引避免重复）。两条路径索引不同内容，都有价值。
+
+### P2 应改项（不改会有质量问题）
+
+#### P2-1. 爽点阈值和类型从自家CSV读取，不硬编码
+**问题**：方案small_gap>4断层，但自家`references/csv/爽点与节奏.csv` R-005说"每5-10章一个小高潮"。beat_type六类也太粗，CSV有更全的类型。
+**修法**：
+- 阈值从CSV读取：`small_gap_threshold = int(csv_config.get("small_gap", 5))`
+- beat_type从CSV的爽点类型列读取，不硬编码六类
+- 不同题材不同阈值（CSV有"适用题材"列）
+
+#### P2-2. 压抑章不累加gap
+**问题**：压抑章delivered_intensity=0 → gap+1 → 报断层 → 逼系统硬塞爽点，破坏"压抑-爆发"结构。
+**修法**：`check_pleasure_gap`区分压抑章和断档章。如果本章大纲标记为"压抑/铺垫"且有意为之，不累加gap。或：gap计算时跳过`status=skipped`的beat行（压抑章不产beat行）。
+
+#### P2-3. pressure非线性累积
+**问题**：线性+1是玩具模型，长线欠账会涨到天文数字无信息量。
+**修法**：
+```python
+# pressure 累积公式
+urgency = 2.0 if chapter > debt.promised_resolve_chapter else 1.0  # 逾期翻倍
+decay = 0.5 if chapter - debt.created_chapter > 60 else 1.0  # 超60章衰减（读者已遗忘）
+debt.pressure = int(debt.weight * (1 + min(chapter - debt.created_chapter, 30) * 0.1) * urgency * decay)
+```
+
+#### P2-4. 卷高潮只强制还本卷欠账，长线欠账保留
+**问题**：方案`check_overdue_debts`在卷高潮把所有overdue判critical——会逼系统把长线大欠账（身世/总BOSS）也在卷末还掉。
+**修法**：`get_overdue_debts(chapter)`加`scope`参数：
+```python
+def get_overdue_debts(self, chapter: int, scope: str = "volume") -> list:
+    """scope=volume只取本卷欠账，scope=all取全部。卷高潮用volume。"""
+    # 按 created_chapter >= volume_start 过滤
+```
+
+#### P2-5. 接入方舟Embedding模型替代bge-small-zh
+**背景**：方舟Coding Plan提供Embedding模型，用于语义向量检索。
+**修法**：见下方"Embedding接入"专节。
+
+### P3 后续补强（不阻塞百万字地基，但影响质量上限）
+
+- **开篇/上架节奏曲线**：前3章密度加密（2章一爽）、上架章强制大爽、之后转常规。需要PleasureBeat表加`phase`字段（opening/shangjia/regular）
+- **配角上限护栏**：Character加`residence_status`（resident/guest/exited），超8个resident强制最低importance退场
+- **角色声音指纹**：Character加`catchphrase/avg_sentence_len/speech_style/voice_sample`字段，validator加漂移检测
+- **力量体系追踪**：Character加`power_level`字段，StateChange追踪power_level变化，validator检查"只能升不能降除非有剧情事件"
+- **"不写什么"裁剪**：新增`cut_rules`表，validator加水戏/配角戏超载/支线膨胀检测
+
+---
+
+## Embedding接入（方舟模型）
+
+### 背景
+方舟Coding Plan提供Embedding模型，替代当前archival的bge-small-zh（本地模型，加载慢、占内存）。
+
+### 改造文件
+**`novel_agent/memory/archival.py`**
+
+当前archival用Chroma默认的`all-MiniLM-L6-v2`或`bge-small-zh`（本地）。改为调方舟Embedding API：
+
+```python
+import httpx
+from novel_agent.config import Config
+
+class ArkEmbeddingFunction:
+    """方舟Embedding模型适配器，替代Chroma默认的本地embedding。"""
+
+    def __init__(self, config: Config):
+        self.base_url = config.llm.base_url.rstrip("/")
+        self.api_key = config.llm.api_key
+        # 方舟embedding端点（具体model名按方舟文档）
+        self.model = "ep-xxx-embedding"  # TODO: 填方舟embedding模型ID
+
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        """批量文本转向量。Chroma的embedding_function接口。"""
+        resp = httpx.post(
+            f"{self.base_url}/embeddings",
+            headers={"Authorization": f"Bearer {self.api_key}",
+                     "Content-Type": "application/json"},
+            json={"model": self.model, "input": input},
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return [item["embedding"] for item in data["data"]]
+```
+
+ArchivalMemory初始化时注入：
+```python
+class ArchivalMemory:
+    def __init__(self, config: Config):
+        # ...
+        self._embedding_fn = ArkEmbeddingFunction(config)
+        self._collection = self._client.get_or_create_collection(
+            name="novel_archive",
+            embedding_function=self._embedding_fn,  # 用方舟模型
+            metadata={"hnsw:space": "cosine"},
+        )
+```
+
+### 注意事项
+1. **写作热路径仍优先用状态快照**，archival仅作"快照不足时的可选补充"和"用户主动检索"场景
+2. 方舟Embedding是API调用（有网络延迟+成本），不像bge是本地推理。大批量索引时注意限流
+3. 需要在`config.yaml`加embedding模型配置项（或复用llm的base_url/api_key）
+4. 方舟embedding的具体model ID需要查方舟控制台获取（如`ep-202404xxxxxx-xxxxx`）
+
+### 验证标准
+```bash
+# 索引一章后检索，确认向量来自方舟模型
+python -c "
+from novel_agent.memory.archival import ArchivalMemory
+from novel_agent.config import load_config
+am = ArchivalMemory(load_config())
+am.index_chapter(1, '测试', '主角在废墟中觉醒异能')
+results = am.retrieve(query='异能觉醒', top_k=2)
+print('results:', len(results))
+# 预期：能召回，且不报本地模型加载错误
+"
+```
+
+---
+
+## 修订后的工作量估算
+
+| 阶段 | 原估算 | 修订后 | 增加原因 |
+|---|---|---|---|
+| 1 | ~250行 | ~300行 | +try/except兜底 +atomic提交约束 |
+| 2 | ~300行 | ~350行 | +EntityAppearance替代last_active +fallback修正 |
+| 3 | ~400行 | ~550行 | +repo方法先实现单测 +CSV阈值 +压抑章处理 +pressure非线性 |
+| 4 | ~350行 | ~500行 | +拆4a/4b +resume端点 +llm_client传递 |
+| Embedding | 0 | ~100行 | 新增方舟模型适配 |
+| **总计** | ~1300行 | **~1800行** | |
+
+**实际工作量（含测试+调试+prompt调优）预计3000-4000行。建议每阶段做完真实LLM验证再进下一阶段。**
