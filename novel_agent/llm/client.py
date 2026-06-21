@@ -103,7 +103,7 @@ class LLMClient:
                 # 429 限流 / 503 服务不可用：可重试
                 if code in (429, 503) and attempt < max_retries - 1:
                     last_err = e
-                    await asyncio.sleep(2 ** (attempt + 2))
+                    await asyncio.sleep(min(2 ** (attempt + 2), 8))  # 最多8秒，配合SSE心跳
                     continue
                 # 401/403 鉴权错误：不重试
                 if code in (401, 403):

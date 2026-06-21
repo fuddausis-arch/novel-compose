@@ -58,6 +58,10 @@ class BibleRepository:
         self.db.add(c)
         self._commit_or_flush()
         self.db.refresh(c)
+        self.append_event(
+            chapter=0, type="character_created",
+            entity_id=c.name, payload={"role": c.role},
+        )
         return c
 
     def list_characters(self) -> list[Character]:
@@ -112,6 +116,10 @@ class BibleRepository:
         self.db.add(f)
         self._commit_or_flush()
         self.db.refresh(f)
+        self.append_event(
+            chapter=0, type="foreshadow_created",
+            entity_id=f.foreshadow_id, payload={"description": f.description},
+        )
         return f
 
     def get_foreshadow(self, foreshadow_id: str) -> Foreshadow | None:
@@ -264,6 +272,10 @@ class BibleRepository:
         self.db.add(ws)
         self._commit_or_flush()
         self.db.refresh(ws)
+        self.append_event(
+            chapter=0, type="world_setting_created",
+            entity_id=ws.title, payload={"category": ws.category},
+        )
         return ws
 
     def list_world_settings(self) -> list[WorldSetting]:

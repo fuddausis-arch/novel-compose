@@ -22,14 +22,23 @@ def _load_csv(name: str) -> list[dict[str, str]]:
 
 
 def canonical_genre(genre_text: str) -> str:
-    """根据用户输入的 genre 文本推断 canonical genre（返回关键词，如「玄幻修仙」）。"""
-    text = (genre_text or "").lower()
+    """根据用户输入的 genre 文本推断 canonical genre（返回关键词，如「玄幻修仙」）。
+
+    优先精确匹配，匹配不到再回退到子串匹配。
+    """
+    text = (genre_text or "").strip().lower()
     rows = _load_csv("题材与调性推理")
+    # 1. 精确匹配：输入与 canonical genre 完全一致
+    for row in rows:
+        canonical = row.get("关键词", "")
+        if canonical and text == canonical.lower():
+            return canonical
+    # 2. 子串匹配（回退）：canonical genre 包含在输入中
     for row in rows:
         keywords = row.get("关键词", "")
         if all(k.strip().lower() in text for k in keywords.split("/") if k.strip()):
             return row.get("关键词", "")
-    # fallback：命中单个关键词
+    # 3. fallback：命中单个关键词
     for row in rows:
         keywords = row.get("关键词", "").lower()
         for kw in keywords.split("/"):

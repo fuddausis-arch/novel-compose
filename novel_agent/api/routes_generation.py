@@ -15,7 +15,6 @@ from novel_agent.bible.repository import BibleRepository
 from novel_agent.config import load_config
 from novel_agent.llm.client import LLMClient
 from novel_agent.memory.archival import ArchivalMemory
-from novel_agent.memory.memory_pack import MemoryBudget, MemoryPackBuilder
 from novel_agent.memory.recall import RecallMemory
 from novel_agent.references.search import ReferenceSearch, canonical_genre
 from novel_agent.templates.loader import GenreLoader, PromptLoader
@@ -622,11 +621,17 @@ def _genre_context(project: Project) -> tuple[str, str, str]:
     return cg, template_text, ref_text
 
 
-def _build_memory_pack(repo, project, chapter: int, cfg) -> dict[str, str]:
-    """使用 MemoryPack 组装带预算的上下文（working/episodic/semantic）。"""
-    recall = RecallMemory(cfg, project_id=repo.project_id)
-    builder = MemoryPackBuilder(repo, chapter=chapter, recall=recall)
-    return builder.build(MemoryBudget())
+def _build_memory_pack(repo, project, chapter, cfg):
+    """构建记忆包：复用 CoreMemoryAssembler 保证上下文一致性。"""
+    from novel_agent.memory.core import CoreMemoryAssembler
+    assembler = CoreMemoryAssembler(repo, archival=None)  # brief 不走 archival
+    working = assembler.assemble(chapter=chapter, max_chars=6000)
+    # brief 特有：章纲详细信息
+    outline = next((o for o in repo.list_outlines(level="chapter") if o.order == chapter), None)
+    episodic = f"第{chapter}章《{outline.title}》：{outline.summary}" if outline else ""
+    # semantic: 项目级信息
+    semantic = f"《{project.title}》{project.genre}：{project.summary}"
+    return {"working": working, "episodic": episodic, "semantic": semantic}
 
 
 def _strand_balance_advice(outlines: list, current_chapter: int) -> str:
@@ -829,6 +834,13 @@ async def commit_chapter(request: Request, req: ChapterCommitRequest):
                     if char and d.get("field", "") in {"current_location", "current_emotion", "known_info"}:
                         setattr(char, d["field"], str(d.get("new", "")))
                         db.add(char)
+                # 补写事件流
+                repo.append_event(
+                    chapter=req.chapter,
+                    type="state_change",
+                    entity_id=d.get("entity_id", ""),
+                    payload={"field": d.get("field", ""), "new": d.get("new", "")},
+                )
 
             # 记录人物关系变更
             for rel in relationships:
@@ -851,6 +863,13 @@ async def commit_chapter(request: Request, req: ChapterCommitRequest):
             # 更新伏笔状态
             for fu in fore_updates:
                 repo.update_foreshadow_status(fu.get("foreshadow_id", ""), fu.get("status", "planted"))
+                # 补写事件流
+                repo.append_event(
+                    chapter=req.chapter,
+                    type="foreshadow_update",
+                    entity_id=fu.get("foreshadow_id", ""),
+                    payload={"status": fu.get("status", "planted")},
+                )
 
             # 生成/更新章节摘要
             repo.create_or_update_chapter_summary(

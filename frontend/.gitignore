@@ -9,6 +9,9 @@ lerna-debug.log*
 
 node_modules
 dist
+# 前端构建产物（需要跟踪，新人 clone 即可用）
+!dist/
+!dist/**
 dist-ssr
 *.local
 

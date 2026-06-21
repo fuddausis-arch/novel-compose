@@ -31,7 +31,7 @@ def get_repo(project_id: int, db: Session = Depends(get_db)) -> BibleRepository:
     return BibleRepository(db, project_id=project_id)
 
 
-# ---- 世界设定 ----
+# ===== 世界设定（World Setting）=====
 @router.get("/{project_id}/world-settings")
 def list_world_settings(project_id: int, repo: BibleRepository = Depends(get_repo)):
     return [{"id": w.id, "category": w.category, "title": w.title,
@@ -134,7 +134,7 @@ def delete_world_setting(project_id: int, setting_id: int,
     return {"deleted": True}
 
 
-# ---- 角色 ----
+# ===== 角色（Character）=====
 @router.get("/{project_id}/characters")
 def list_characters(project_id: int, repo: BibleRepository = Depends(get_repo)):
     return [_char_dict(c) for c in repo.list_characters()]
@@ -186,7 +186,7 @@ def delete_character(project_id: int, name: str, repo: BibleRepository = Depends
     return {"deleted": True}
 
 
-# ---- 伏笔 ----
+# ===== 伏笔（Foreshadow）=====
 @router.get("/{project_id}/foreshadows")
 def list_foreshadows(project_id: int, db: Session = Depends(get_db)):
     fs = db.query(Foreshadow).filter(Foreshadow.project_id == project_id).all()
@@ -328,7 +328,7 @@ def delete_faction(project_id: int, faction_id: int, repo: BibleRepository = Dep
     return {"deleted": True}
 
 
-# ---- 势力关系 ----
+# ===== 势力关系（Faction Relationship）=====
 @router.get("/{project_id}/faction-relationships")
 def list_faction_relationships(project_id: int, repo: BibleRepository = Depends(get_repo)):
     return [{"id": r.id, "source_faction_id": r.source_faction_id, "target_faction_id": r.target_faction_id,
@@ -538,7 +538,7 @@ def record_appearances(project_id: int, chapter: int, data: RecordAppearancesInp
             "appearances": [_appearance_dict(a) for a in created]}
 
 
-# ---- AI 生成 ----
+# ===== AI 生成（AI Generation）=====
 class GenerateFactionRequest(BaseModel):
     name_hint: str = ""
     type: str = ""
@@ -751,7 +751,7 @@ async def generate_character(project_id: int, req: GenerateCharacterRequest,
             "appearance": c.appearance, "importance": c.importance}
 
 
-# ---- 批量导入 ----
+# ===== 批量导入（Batch Import）=====
 class ImportData(BaseModel):
     """批量导入设定数据（世界观/势力/关系/角色/伏笔/大纲/怪物）。"""
     world_settings: list[WorldSettingInput] = []

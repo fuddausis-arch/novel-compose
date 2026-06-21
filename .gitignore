@@ -11,6 +11,9 @@ __pycache__/
 .eggs/
 build/
 dist/
+# 前端构建产物（需要跟踪，新人 clone 即可用）
+!frontend/dist/
+!frontend/dist/**
 .venv/
 venv/
 env/

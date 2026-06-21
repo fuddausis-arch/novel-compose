@@ -269,6 +269,7 @@ export default function App() {
         )}
 
         {/* Center Workspace */}
+        {/* TODO(A6-props): Workspace 应从 useAppStore 直接读，减少 props 传递 */}
         <Workspace
           activeTab={activeTab}
           selectedAsset={selectedAsset}
