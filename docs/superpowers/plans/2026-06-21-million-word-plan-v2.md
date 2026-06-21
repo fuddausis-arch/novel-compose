@@ -28,7 +28,242 @@
 
 ---
 
-## 阶段0：数据流掉头（先改方向，再补功能）
+## 阶段0a：风格指南落地（与阶段0并行，不阻塞）
+
+**目标**：让系统正确理解使用`写作风格指南/`里的30份指南，补确定性检查缺口，修复已有的浅层集成问题。
+**工作量**：3文件改造 + 1文件新增 + 2文件精简，约200行
+
+### 背景：当前集成状态（已存在但有问题）
+
+指南**已部分集成**，但方式有问题：
+- `templates/style_guides/core_constraints.txt`（72行）已蒸馏4.1/4.4/4.7注入write/rewrite的prompt——但含具体百分比（23%/27%/32%），LLM无法执行且会刷分
+- `audit/dimensions.py:54-59`已有反AI味六维度——但全是LLM软信号，无确定性硬检查
+- `audit/validator.py`只有3项确定性检查（字数/7个限频词/伏笔关键词）——**句长/对话/段长分布完全缺失**
+- `references/csv/爽点与节奏.csv`有黄金三章/压抑爆发/章末钩规则——但写作热路径零消费
+- plan v2阶段3.3的CSV阈值读取代码对不上schema（读"规则/数值"列，实际是"指令/核心摘要"），会静默回退默认值
+
+### 步骤A：validator补确定性检查（最高ROI，即加即用）
+
+**文件**：`novel_agent/audit/validator.py`
+
+新增3个检查函数（来自4.1文风指南的量化标准）：
+
+```python
+import re, statistics
+
+_SENT_SPLIT = re.compile(r'[。！？…]+')
+
+def check_sentence_length(draft: str) -> list[dict]:
+    """句长分布检测（4.1文风指南）。
+    基准：均值~30字，短句(≤10字)23-35%，CV高=交错好。
+    CV<0.4=过于均匀(AI味)，CV>0.6=交错良好。"""
+    sentences = [s for s in _SENT_SPLIT.split(draft) if s.strip()]
+    lens = [len(re.findall(r'[\u4e00-\u9fff]', s)) for s in sentences]
+    if len(lens) < 10:
+        return []
+    mean = statistics.mean(lens)
+    short_ratio = sum(1 for n in lens if n <= 10) / len(lens)
+    cv = statistics.pstdev(lens) / mean if mean else 0
+    issues = []
+    if mean < 18 or mean > 45:
+        issues.append({"dimension": "句式", "severity": "important",
+            "message": f"平均句长{mean:.1f}字(基准~30)，偏离过大"})
+    if short_ratio < 0.15:
+        issues.append({"dimension": "句式", "severity": "important",
+            "message": f"短句占比{short_ratio:.0%}(基准23-35%)，句式过于均匀"})
+    if cv < 0.4:
+        issues.append({"dimension": "句式", "severity": "important",
+            "message": f"句长变异系数{cv:.2f}<0.4，长短句缺乏交错(AI味)"})
+    return issues
+
+_DIAL = re.compile(r'\u201c([^\u201d]*)\u201d')
+_TAG_WORDS = ("说道", "问道", "答道", "道：", "说：")
+
+def check_dialog_ratio(draft: str) -> list[dict]:
+    """对话占比检测（4.1文风指南）。
+    基准：对话占全文27-32%，60%+对话句无标签。"""
+    total = len(re.findall(r'[\u4e00-\u9fff]', draft)) or 1
+    dial_chars = sum(len(re.findall(r'[\u4e00-\u9fff]', m))
+                     for m in _DIAL.findall(draft))
+    ratio = dial_chars / total
+    dial_sents = re.findall(r'[^。！？]*\u201c[^\u201d]*\u201d[^。！？]*[。！？]?', draft)
+    tagged = sum(1 for ds in dial_sents if any(t in ds for t in _TAG_WORDS))
+    tag_ratio = tagged / len(dial_sents) if dial_sents else 0
+    issues = []
+    if not 0.15 <= ratio <= 0.50:
+        issues.append({"dimension": "对话", "severity": "minor",
+            "message": f"对话占比{ratio:.0%}(基准27-32%，容差15-50%)"})
+    if tag_ratio > 0.5:
+        issues.append({"dimension": "对话", "severity": "important",
+            "message": f"对话标签率{tag_ratio:.0%}>50%，应用动作替代'说道'(反AI味)"})
+    return issues
+
+FORBIDDEN_PATTERNS = [
+    (re.compile(r"好消息[，,].*?坏消息"), "好消息/坏消息三连(AI味)"),
+    (re.compile(r"他不知道的是"), "全知视角'他不知道的是'(AI味)"),
+    (re.compile(r"深吸一口气"), "AI高频'深吸一口气'"),
+    (re.compile(r"眼中闪过一丝"), "AI高频'眼中闪过一丝'"),
+    (re.compile(r"嘴角勾起一抹"), "AI高频'嘴角勾起一抹'"),
+    (re.compile(r"缓缓开口"), "AI高频'缓缓开口'"),
+]
+
+def check_forbidden_patterns(draft: str) -> list[dict]:
+    """禁用表达检测（4.1禁用句式 + 4.7高频套话）。"""
+    issues = []
+    for pat, label in FORBIDDEN_PATTERNS:
+        matches = pat.findall(draft)
+        if matches:
+            issues.append({"dimension": "禁用表达", "severity": "minor",
+                "message": f"{label}：出现{len(matches)}次"})
+    return issues
+```
+
+接入`run_deterministic_checks`（约55行）：在现有3项检查后追加：
+```python
+issues.extend(check_sentence_length(draft))
+issues.extend(check_dialog_ratio(draft))
+issues.extend(check_forbidden_patterns(draft))
+```
+
+### 步骤B：core_constraints精简 + few-shot注入
+
+**文件**：`novel_agent/templates/style_guides/core_constraints.txt`（精简）
+
+- **删掉**具体百分比和硬计数（"短句23-35%""对话27-32%""每场景3个细节"）——LLM无法执行且会刷分
+- **保留**方向性描述（"长短句交替、避免均匀""用动作替代直接告诉情绪""对话用动作引出不加标签"）
+- **删掉**"每章至少1个小爽点"——改成"每8-12章一个大爽点"（4.4原话），单章不强制
+- 单次prompt硬约束不超过5条（按本章beat类型动态选）
+
+**文件**：`novel_agent/templates/style_guides/few_shot_samples.py`（新增）
+
+从4.9对标作品分析中提取few-shot样本，按场景类型分类：
+```python
+"""对标作品few-shot样本库（来自4.9人类写作风格分析）。
+按场景类型注入write/polish的prompt，用示范教语感而非规则教指标。"""
+
+FEW_SHOT_SAMPLES = {
+    "战斗": {
+        "human": "他跑了。跑得很快。快得像被狗撵。身后那东西没追上来——不，追上来了。",
+        "ai": "他开始快速奔跑，速度非常快，仿佛被什么东西追赶着。身后的生物正在迅速接近。",
+        "lesson": "短句冲击+碎片化+省略主语"
+    },
+    "开场": {
+        "human": '"我……是谁？"\n轰隆——雨流狂落，神怒般的雷雨浇灌在泥泞大地。',
+        "ai": "一个少年站在雨中，他不知道自己是谁。天空下着大雨，雷声轰鸣。",
+        "lesson": "对话先行+画面感+1:8句长比例"
+    },
+    "情绪": {
+        "human": "她没哭。手在抖，但没哭。",
+        "ai": "她感到非常悲伤，眼泪在眼眶中打转，内心充满了痛苦。",
+        "lesson": "动作展示情绪+省略+碎片"
+    },
+}
+
+def get_few_shot(scene_type: str) -> str:
+    """按场景类型取few-shot对照样本。"""
+    sample = FEW_SHOT_SAMPLES.get(scene_type)
+    if not sample:
+        return ""
+    return f"\n【文风示范·{scene_type}】\n人类写法：{sample['human']}\nAI写法(避免)：{sample['ai']}\n要点：{sample['lesson']}\n"
+```
+
+**文件**：`novel_agent/orchestrator/nodes.py`（write_chapter注入few-shot）
+
+在write_chapter的prompt里，按本章beat类型注入1-2段few-shot：
+```python
+# 按beat类型选few-shot
+beat_type = _get_beat_type(state)  # 从Outline约束取
+few_shot = get_few_shot(beat_type) if beat_type else ""
+prompt = f"...{few_shot}\n{core_constraints}\n..."
+```
+
+**文件**：`novel_agent/orchestrator/nodes.py`（删除WRITER_SYSTEM_PROMPT重复）
+
+删掉WRITER_SYSTEM_PROMPT（约35-41行）与core_constraints重复的节奏要求，减少注意力稀释。
+
+### 步骤C：CSV阈值修复 + 按题材文风标杆
+
+**文件**：`novel_agent/references/csv/节奏阈值.csv`（新增，数值列）
+
+把4.4/4.5里的`[数字]`占位符参数化成可代码读取的数值表：
+```csv
+参数名,数值,来源,说明
+small_gap_max,5,4.4-节奏情绪,小爽最大间隔章数
+medium_gap_max,12,4.4-节奏情绪,中爽最大间隔章数
+large_gap_max,30,4.4-节奏情绪,大爽最大间隔章数
+suppression_max,3,4.4-节奏情绪,最大连续压抑章数
+opening_chapters,3,4.5-商业化,黄金三章数
+shangjia_chapter,20,4.5-商业化,上架章(可配置)
+hook_no_repeat,2,4.4-节奏情绪,章末钩不连续同种章数
+sentence_mean_min,18,4.1-文风,平均句长下限
+sentence_mean_max,45,4.1-文风,平均句长上限
+sentence_short_ratio_min,0.15,4.1-文风,短句占比下限
+sentence_cv_min,0.4,4.1-文风,句长变异系数下限
+dialog_ratio_min,0.15,4.1-文风,对话占比下限
+dialog_ratio_max,0.50,4.1-文风,对话占比上限
+dialog_tag_ratio_max,0.5,4.7-反AI味,对话标签率上限
+```
+
+**文件**：`novel_agent/audit/validator.py`（步骤A的阈值从CSV读）
+
+```python
+import csv
+from pathlib import Path
+
+_THRESHOLDS = None
+
+def _load_thresholds() -> dict:
+    """从节奏阈值.csv读取数值（单一真源，避免三处漂移）。"""
+    global _THRESHOLDS
+    if _THRESHOLDS is None:
+        csv_path = Path(__file__).parent.parent / "references" / "csv" / "节奏阈值.csv"
+        _THRESHOLDS = {}
+        try:
+            with open(csv_path, encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    _THRESHOLDS[row["参数名"]] = float(row["数值"])
+        except Exception:
+            _THRESHOLDS = {}  # 回退到硬编码默认值
+    return _THRESHOLDS
+
+# check_sentence_length 等函数改用 _load_thresholds() 取阈值
+```
+
+**文件**：`novel_agent/templates/genres/`（15个题材模板各配文风标杆）
+
+给每个题材模板加一个`style_benchmark`字段，指向4.9里对应对标作品的few-shot样本。例如：
+- 末日生存 → 板面王仔《末日生存方案供应商》的口语碎片对话
+- 玄幻修仙 → 三九音域《我不是戏神》的画面修辞
+- 克苏鲁悬疑 → 一月九十秋《诸神愚戏》的留白不解释
+
+write节点按题材加载对应的文风few-shot，而非全局统一一份core_constraints。
+
+### 验证标准
+```bash
+# 1. validator新增3个检查函数能跑
+python -c "
+from novel_agent.audit.validator import check_sentence_length, check_dialog_ratio, check_forbidden_patterns
+draft = open('project_data/chapters/第001章_测试.md', encoding='utf-8').read()
+print('句长:', check_sentence_length(draft))
+print('对话:', check_dialog_ratio(draft))
+print('禁用:', check_forbidden_patterns(draft))
+"
+# 2. 节奏阈值.csv能被代码读取（不再静默回退）
+python -c "
+from novel_agent.audit.validator import _load_thresholds
+t = _load_thresholds()
+print('small_gap_max:', t.get('small_gap_max'))
+"
+# 预期：能读到数值，不是默认值
+```
+
+### 明确不做（避免"融了但没用"的陷阱）
+- ❌ 不做全局str.replace替换（误伤风险——"深吸一口气"在溺水场景是正确写法）
+- ❌ 不做"每章必爽"硬规则（改成"每8-12章一大爽"）
+- ❌ 不做7本平均的标准（按题材选一本对标）
+- ❌ 不做30份.md全文塞prompt（token爆炸+注意力稀释）
+- ❌ 不做6维度全留LLM软信号（能确定性的下沉成硬检查）
+- ❌ 不做三翻四震作为每章硬约束（改成卷级规划参考，单章不预设"必须翻"）
 
 **目标**：让大纲节点承载约束载荷，summarize从"抽取器"改"校验器"。这一步消除原方案大半复杂度。
 **工作量**：3文件改造，约150行
@@ -474,14 +709,15 @@ pip install openai
 
 | 阶段 | 内容 | 工作量 | 比原方案 |
 |---|---|---|---|
-| 0 | 数据流掉头 | ~150行 | 新增（消除后续复杂度） |
-| 1 | 回写闭环（精简） | ~200行 | -50行（阶段0减少了抽取字段） |
-| 2 | 快照+保真度校验 | ~350行 | +50行（加保真度校验+全量重摘要） |
-| 3 | 爽点+欠账+去重+黄金三章 | ~600行 | +200行（加去重+黄金三章+CSV阈值） |
+| 0a | 风格指南落地（validator检查+few-shot+CSV修复） | ~200行 | 新增 |
+| 0 | 数据流掉头 | ~150行 | 新增 |
+| 1 | 回写闭环（精简） | ~200行 | -50行 |
+| 2 | 快照+保真度校验 | ~350行 | +50行 |
+| 3 | 爽点+欠账+去重+黄金三章 | ~600行 | +200行 |
 | 4a | BookRunner+卷摘要 | ~250行 | 同原方案 |
 | 4b | metacog+resume（后置） | ~250行 | 同原方案 |
-| Embedding | 重定位 | ~30行 | -70行（从100行降到30行） |
-| **总计** | | **~1830行** | |
+| Embedding | 重定位 | ~30行 | -70行 |
+| **总计** | | **~2030行** | |
 
 **实际工作量（含测试+调试+prompt调优）预计3500-4500行。**
 
@@ -513,6 +749,7 @@ pip install openai
 4. **快照保真度校验**（drift_score < 阈值）
 
 **阶段验证清单**：
+- [ ] 阶段0a：validator新增3检查函数能跑 + 节奏阈值.csv能读 + few-shot样本注入write
 - [ ] 阶段0：Outline约束字段有数据 + summarize日志显示校验模式（非抽取模式）
 - [ ] 阶段1：truth_events有character_state_change事件 + 角色位置变更走applier
 - [ ] 阶段2：core memory字数稳定 + 第20章触发全量重摘要 + drift_score<3
@@ -522,11 +759,12 @@ pip install openai
 
 ---
 
-## 最关键的三件事（不补百万字就是空谈）
+## 最关键的四件事（不补百万字就是空谈）
 
-1. **数据流掉头**（阶段0）——不补，summarize是12字段抽取怪兽，不可靠
-2. **快照保真度校验**（阶段2.5）——不补，第200章快照与正文渐行渐远，metacog还报正常
-3. **爽点新鲜度检测**（阶段3.5 DedupScanner）——不补，500章按档位排打脸=必然腻
+1. **阶段0a 风格指南落地**——不补，validator零文风检查，生成的是AI味流水账
+2. **阶段0 数据流掉头**——不补，summarize是12字段抽取怪兽，不可靠
+3. **阶段2 快照保真度校验**——不补，第200章快照与正文渐行渐远，metacog还报正常
+4. **阶段3 爽点新鲜度检测**（阶段3.5 DedupScanner）——不补，500章按档位排打脸=必然腻
 
 ---
 
