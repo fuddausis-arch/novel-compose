@@ -1,4 +1,5 @@
-import type { Project, Character, Foreshadow, Outline, WorldSetting, ChapterListItem, ChapterText, ReviewResult, ChapterBrief, Summary, GenreContext, PlanningResult, Faction, FactionRelationship, CharacterRelationship, Monster, ImportPreviewData, EntityAppearance, EntityType, AppearanceRole, LLMConfig, SuggestionItem } from "./types";
+import type { Project, Character, Foreshadow, Outline, WorldSetting, ChapterListItem, ChapterText, ReviewResult, ChapterBrief, Summary, GenreContext, PlanningResult, Faction, FactionRelationship, CharacterRelationship, Monster, ImportPreviewData, EntityAppearance, EntityType, AppearanceRole, LLMConfig, AgentLLMConfig, SuggestionItem } from "./types";
+import type { ChatSession, ChatMessageItem, ChatSendPayload, ChatChunkEvent, ChatActionEvent } from "./types/chat";
 
 const API_BASE = "";
 
@@ -191,6 +192,65 @@ export const api = {
     return new EventSource(`/api/chapters/generate/stream?${params.toString()}`);
   },
 
+  // Chat
+  listChatSessions: (projectId: number) => request<ChatSession[]>(`/api/chat/sessions?project_id=${projectId}`),
+  getChatMessages: (projectId: number, sessionId: string) =>
+    request<ChatMessageItem[]>(`/api/chat/sessions/${sessionId}/messages?project_id=${projectId}`),
+  deleteChatSession: (projectId: number, sessionId: string) =>
+    request<void>(`/api/chat/sessions/${sessionId}?project_id=${projectId}`, { method: "DELETE" }),
+
+  sendChatMessage: (payload: ChatSendPayload, onChunk: (event: ChatChunkEvent) => void, onAction: (event: ChatActionEvent) => void) => {
+    return new Promise<void>((resolve, reject) => {
+      fetch("/api/chat/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          object_id: String(payload.object_id),
+          title: payload.title || `${payload.object_type || "global"}-${payload.object_id || "project"}`,
+        }),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const text = await res.text().catch(() => "Unknown error");
+            throw new Error(extractErrorMessage(res.status, text));
+          }
+          const reader = res.body?.getReader();
+          const decoder = new TextDecoder();
+          if (!reader) {
+            resolve();
+            return;
+          }
+          let buffer = "";
+          let currentEvent = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                currentEvent = line.slice(7).trim();
+              } else if (line.startsWith("data: ")) {
+                const data = line.slice(6);
+                if (data === "{}") continue;
+                try {
+                  const parsed = JSON.parse(data);
+                  if (currentEvent === "chunk") onChunk(parsed as ChatChunkEvent);
+                  else if (currentEvent === "action") onAction(parsed as ChatActionEvent);
+                } catch {
+                  // ignore malformed
+                }
+              }
+            }
+          }
+          resolve();
+        })
+        .catch(reject);
+    });
+  },
+
   // Planning
   runPlanning: (projectId: number, volume: string, chapterCount: number, threadId?: string) => request<PlanningResult>("/api/planning/run", { method: "POST", body: JSON.stringify({ project_id: projectId, volume, chapter_count: chapterCount, thread_id: threadId || crypto.randomUUID() }) }),
   resumePlanning: (projectId: number, threadId: string, approved: boolean, edits?: string) => request<PlanningResult>("/api/planning/resume", { method: "POST", body: JSON.stringify({ project_id: projectId, thread_id: threadId, approved, edits: edits || "" }) }),
@@ -199,4 +259,9 @@ export const api = {
   getLLMConfig: () => request<LLMConfig>("/api/config/llm"),
   updateLLMConfig: (data: Partial<LLMConfig>) => request<{ saved: boolean; context_length?: number }>("/api/config/llm", { method: "PUT", body: JSON.stringify(data) }),
   testLLMConfig: (data?: Partial<LLMConfig>) => request<{ ok: boolean; response: string; context_length?: number }>("/api/config/llm/test", { method: "POST", body: JSON.stringify(data || {}) }),
+
+  // Per-agent LLM config
+  listAgentLLMConfigs: () => request<Record<string, AgentLLMConfig>>("/api/config/agent-llm"),
+  updateAgentLLMConfig: (role: string, data: Partial<LLMConfig>) => request<{ saved: boolean; context_length?: number }>(`/api/config/agent-llm/${role}`, { method: "PUT", body: JSON.stringify(data) }),
+  resetAgentLLMConfig: (role: string) => request<{ saved: boolean; message: string }>(`/api/config/agent-llm/${role}`, { method: "DELETE" }),
 };
