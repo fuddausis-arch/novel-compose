@@ -28,7 +28,9 @@ class Project(Base):
     style = Column(Text, default="")
     constitution = Column(Text, default="")
     target_audience = Column(String(200), default="")
+    central_concept = Column(Text, default="")  # JSON: {"core_hook":"","protagonist_goal":"","taboos":[]}
     word_count_target = Column(Integer, default=0)
+    generation_checkpoint = Column(JSON, default=dict)  # 元认知 checkpoint：失败章节、已完成、待生成范围
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -48,6 +50,10 @@ class Character(Base):
     background = Column(Text, default="")
     personality = Column(Text, default="")
     motivation = Column(Text, default="")
+    # 活人味三件套（替代形容词列表）
+    core_contradiction = Column(Text, default="")    # 承重矛盾："他是___的人，但同时___"
+    sensory_memories = Column(Text, default="")      # 感官瞬间：3-4个第一人称关键记忆片段
+    absolute_taboos = Column(Text, default="")       # 绝对禁令：2-3条"这个角色绝对不会做X"
     importance = Column(String(50), default="")    # 主角/配角/关键人物/小人物/NPC
     # 动态状态（每章 diff 更新）
     current_location = Column(String(200), default="")
@@ -185,6 +191,12 @@ class Outline(Base):
     strand = Column(String(20), default="")        # quest / fire / constellation
     title = Column(String(200), default="")
     summary = Column(Text, default="")
+    # 约束载荷（大纲带规范，正文满足规范，summarize校验而非抽取）
+    required_beats = Column(Text, default="")      # JSON: [{"tier":"small","type":"打脸","intensity":5}]
+    owed_debts = Column(Text, default="")          # JSON: [{"type":"复仇","desc":"...","pressure":3}]
+    required_hooks = Column(Text, default="")      # JSON: {"type":"悬念","target_strength":7}
+    character_constraints = Column(Text, default="")  # JSON: {"陆辰":{"location":"基地","emotion":"愤怒"}}
+    phase = Column(String(20), default="regular")  # opening/shangjia/regular（黄金三章/上架/常规）
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -344,6 +356,95 @@ class AiSuggestion(Base):
     adopted_items = Column(JSON, default=list)
     status = Column(String(20), default="adopted")      # adopted / partial / rejected
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StateSnapshot(Base):
+    """状态快照：O(1) 读当前世界状态，防止长篇上下文爆炸。
+
+    每章生成后存一条快照，包含角色状态/伏笔状态/支线进度/势力状态的序列化 JSON。
+    CoreMemoryAssembler 优先读快照而非全量查表。
+    """
+    __tablename__ = "state_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter = Column(Integer, nullable=False, index=True)
+    snapshot_data = Column(JSON, default=dict)  # 序列化的世界状态
+    drift_score = Column(Integer, default=0)    # 保真度校验漂移分数
+    is_full_resummary = Column(Boolean, default=False)  # 是否全量重摘要
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PleasureBeat(Base):
+    """爽点供应链：档位规划/断层检测/交付追踪。"""
+    __tablename__ = "pleasure_beats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter = Column(Integer, nullable=False, index=True)
+    tier = Column(String(20), default="small")      # small/medium/large
+    beat_type = Column(String(50), default="")       # 打脸/揭示/获取/共鸣/碾压/守护
+    intensity = Column(Integer, default=0)           # 1-10
+    phase = Column(String(20), default="regular")    # opening/shangjia/regular
+    delivered = Column(Boolean, default=False)       # 是否已交付
+    delivered_intensity = Column(Integer, default=0) # 实际交付强度
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PlotDebt(Base):
+    """欠账账本：追踪未兑现的剧情承诺。"""
+    __tablename__ = "plot_debts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    debt_type = Column(String(50), default="")        # 复仇/承诺/秘密/因果
+    description = Column(Text, default="")
+    pressure = Column(Integer, default=3)             # 1-5，5=最高压（基础压力）
+    term = Column(String(20), default="short")        # short=短线（本卷内）/ long=长线（跨卷）
+    status = Column(String(20), default="open")       # open/resolved/abandoned
+    created_chapter = Column(Integer, default=0)      # 欠账产生章节
+    resolved_chapter = Column(Integer, default=0)     # 欠账偿还章节
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChatSession(Base):
+    """聊天会话：按对象隔离或项目级全局会话。"""
+    __tablename__ = "chat_sessions"
+
+    id = Column(String(36), primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_type = Column(String(20), nullable=False)      # "object" | "global"
+    object_type = Column(String(50), default="")           # chapter|outline|character|monster|world|faction|relationship
+    object_id = Column(String(100), default="")
+    title = Column(String(200), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChatMessage(Base):
+    """聊天消息。"""
+    __tablename__ = "chat_messages"
+
+    id = Column(String(36), primary_key=True)
+    session_id = Column(String(36), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)              # "user" | "assistant" | "system"
+    content = Column(Text, default="")
+    actions = Column(JSON, default=list)                   # 主 Agent 执行的动作列表
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ChapterFeedback(Base):
+    """用户对章节的聊天反馈，待生成时注入 writer prompt。"""
+    __tablename__ = "chapter_feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter = Column(Integer, nullable=False, index=True)
+    feedback = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    applied = Column(Boolean, default=False)
 
 
 def migrate_db(engine) -> None:
