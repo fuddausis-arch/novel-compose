@@ -15,6 +15,8 @@ import { useEntityGeneration } from "@/hooks/useEntityGeneration";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog";
 import { ThemeSwitcher } from "@/components/theme-switcher";
+import { ChatPanel } from "@/components/chat-panel";
+import type { ChatObjectType } from "@/types/chat";
 
 type Tab = "dashboard" | "planning" | "world" | "characters" | "outlines-volume" | "outlines-arc" | "outlines-chapter" | "asset" | "chapter" | "summaries" | "import" | "export" | "factions" | "relationships" | "monsters" | "settings";
 
@@ -26,6 +28,44 @@ const EMPTY_PROJECT: Partial<Project> = {
 };
 
 const AUTOSAVE_DELAY_MS = 1000;
+
+function inferChatObject(
+  activeTab: Tab,
+  selectedAsset: { type: AssetType; id: string } | null
+): { objectType: ChatObjectType | ""; objectId: string; title: string } {
+  if (selectedAsset) {
+    const map: Record<AssetType, ChatObjectType | ""> = {
+      chapter: "chapter",
+      character: "character",
+      foreshadow: "outline",
+      outline: "outline",
+      faction: "faction",
+      factionRelationship: "relationship",
+      characterRelationship: "relationship",
+      monster: "monster",
+    };
+    return { objectType: map[selectedAsset.type], objectId: selectedAsset.id, title: "" };
+  }
+  const tabMap: Record<Tab, ChatObjectType | ""> = {
+    planning: "outline",
+    world: "world",
+    characters: "character",
+    monsters: "monster",
+    factions: "faction",
+    relationships: "relationship",
+    "outlines-volume": "outline",
+    "outlines-arc": "outline",
+    "outlines-chapter": "outline",
+    dashboard: "",
+    asset: "",
+    chapter: "",
+    summaries: "",
+    import: "",
+    export: "",
+    settings: "",
+  };
+  return { objectType: tabMap[activeTab] || "", objectId: "", title: "" };
+}
 
 export default function App() {
   const store = useAppStore();
@@ -268,47 +308,58 @@ export default function App() {
           <div className="absolute inset-0 bg-black/20 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />
         )}
 
-        {/* Center Workspace */}
-        {/* TODO(A6-props): Workspace 应从 useAppStore 直接读，减少 props 传递 */}
-        <Workspace
-          activeTab={activeTab}
-          selectedAsset={selectedAsset}
-          loading={loading}
-          projectForm={projectForm}
-          setProjectForm={setProjectForm}
-          onSaveProject={projectActions.save}
-          characterForm={characterForm}
-          setCharacterForm={setCharacterForm}
-          foreshadowForm={foreshadowForm}
-          setForeshadowForm={setForeshadowForm}
-          outlineForm={outlineForm}
-          setOutlineForm={setOutlineForm}
-          chapterTitle={chapterTitle}
-          setChapterTitle={setChapterTitle}
-          chapterContent={chapterContent}
-          setChapterContent={setChapterContent}
-          chapterDirty={chapterDirty}
-          setChapterDirty={setChapterDirty}
-          autoSaveState={autoSaveState}
-          onSaveAsset={assetActions.save}
-          onDeleteAsset={handleDeleteAsset}
-          onGenerate={generation.generate}
-          generatingChapter={generation.generatingChapter}
-          importContent={importActions.importContent}
-          setImportContent={importActions.setImportContent}
-          onImportDocument={importActions.parseDocument}
-          onImportFile={importActions.parseFile}
-          onImportStructured={importActions.importStructured}
-          importPreviewOpen={importActions.importPreviewOpen}
-          setImportPreviewOpen={importActions.setImportPreviewOpen}
-          importPreviewData={importActions.importPreviewData}
-          onImportFromPreview={importActions.importFromPreview}
-          totalWords={totalWords}
-          setLoading={setLoading}
-          onSelectAsset={handleSelectAsset}
-          setActiveTab={setActiveTab}
-          entityGeneration={entityGeneration}
-        />
+        {/* Center Workspace + Chat */}
+        <div className="flex-1 flex overflow-hidden gap-3 min-w-0">
+          {/* TODO(A6-props): Workspace 应从 useAppStore 直接读，减少 props 传递 */}
+          <Workspace
+            activeTab={activeTab}
+            selectedAsset={selectedAsset}
+            loading={loading}
+            projectForm={projectForm}
+            setProjectForm={setProjectForm}
+            onSaveProject={projectActions.save}
+            characterForm={characterForm}
+            setCharacterForm={setCharacterForm}
+            foreshadowForm={foreshadowForm}
+            setForeshadowForm={setForeshadowForm}
+            outlineForm={outlineForm}
+            setOutlineForm={setOutlineForm}
+            chapterTitle={chapterTitle}
+            setChapterTitle={setChapterTitle}
+            chapterContent={chapterContent}
+            setChapterContent={setChapterContent}
+            chapterDirty={chapterDirty}
+            setChapterDirty={setChapterDirty}
+            autoSaveState={autoSaveState}
+            onSaveAsset={assetActions.save}
+            onDeleteAsset={handleDeleteAsset}
+            onGenerate={generation.generate}
+            generatingChapter={generation.generatingChapter}
+            importContent={importActions.importContent}
+            setImportContent={importActions.setImportContent}
+            onImportDocument={importActions.parseDocument}
+            onImportFile={importActions.parseFile}
+            onImportStructured={importActions.importStructured}
+            importPreviewOpen={importActions.importPreviewOpen}
+            setImportPreviewOpen={importActions.setImportPreviewOpen}
+            importPreviewData={importActions.importPreviewData}
+            onImportFromPreview={importActions.importFromPreview}
+            totalWords={totalWords}
+            setLoading={setLoading}
+            onSelectAsset={handleSelectAsset}
+            onClearAsset={() => setSelectedAsset(null)}
+            setActiveTab={setActiveTab}
+            entityGeneration={entityGeneration}
+          />
+          {store.currentProject && (
+            <ChatPanel
+              projectId={store.currentProject.id}
+              objectType={inferChatObject(activeTab, selectedAsset).objectType}
+              objectId={inferChatObject(activeTab, selectedAsset).objectId}
+              title={inferChatObject(activeTab, selectedAsset).title || undefined}
+            />
+          )}
+        </div>
 
         {/* Right Pipeline Panel */}
         <div
