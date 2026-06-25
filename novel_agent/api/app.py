@@ -1,5 +1,6 @@
 """FastAPI app 工厂 + 静态文件挂载。"""
 from __future__ import annotations
+import sys
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,15 +29,22 @@ def create_app(project_data_dir: Path | None = None) -> FastAPI:
         project_data_dir.mkdir(parents=True, exist_ok=True)
         app.state.project_data_dir = project_data_dir
     # 注册路由
-    from novel_agent.api import routes_projects, routes_planning, routes_chapters, routes_bible, routes_generation, routes_config
+    from novel_agent.api import routes_projects, routes_planning, routes_chapters, routes_bible, routes_generation, routes_config, routes_telemetry, routes_chat
     app.include_router(routes_projects.router, prefix="/api/projects", tags=["projects"])
     app.include_router(routes_planning.router, prefix="/api/planning", tags=["planning"])
     app.include_router(routes_chapters.router, prefix="/api/chapters", tags=["chapters"])
     app.include_router(routes_bible.router, prefix="/api/bible", tags=["bible"])
     app.include_router(routes_generation.router, prefix="/api/generation", tags=["generation"])
     app.include_router(routes_config.router, prefix="/api/config", tags=["config"])
+    app.include_router(routes_telemetry.router, prefix="/api/telemetry", tags=["telemetry"])
+    app.include_router(routes_chat.router, prefix="/api/chat", tags=["chat"])
     # 静态前端（生产构建后的 dist 目录）
-    dist_dir = Path(__file__).parent.parent.parent / "frontend" / "dist"
+    dist_dir = None
+    if getattr(sys, "frozen", False):
+        # PyInstaller 打包模式：dist 在 exe 同级
+        dist_dir = Path(sys.executable).parent / "frontend" / "dist"
+    else:
+        dist_dir = Path(__file__).parent.parent.parent / "frontend" / "dist"
     if dist_dir.exists():
         app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="frontend")
     return app
