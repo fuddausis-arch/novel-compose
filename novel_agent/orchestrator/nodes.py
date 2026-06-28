@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import random
 import re
+from pathlib import Path
 from typing import Any
 
 from novel_agent.audit.auditor import Auditor
@@ -19,6 +22,7 @@ from novel_agent.audit.validator import (
     check_volume_climax,
 )
 from novel_agent.bible.repository import BibleRepository
+from novel_agent.config import Config
 from novel_agent.llm.client import LLMClient
 from novel_agent.memory.core import CoreMemoryAssembler
 from novel_agent.memory.recall import RecallMemory
@@ -29,6 +33,67 @@ from novel_agent.protocol.schemas import Delta, SummaryDelta, ForeshadowDelta
 from novel_agent.templates.style_guides.few_shot_samples import get_few_shot_for_beat
 
 logger = logging.getLogger(__name__)
+
+
+def _check_cancelled(state: ChapterGenState, node_name: str) -> dict | None:
+    """检查是否已被取消，返回取消状态 dict 或 None。"""
+    from novel_agent.orchestrator.runner import is_cancelled
+    tid = state.get("_thread_id", "")
+    if tid and is_cancelled(tid):
+        logger.warning("第%d章 %s 节点检测到取消令牌，终止生成", state.get("chapter", 0), node_name)
+        return {"status": "failed", "error": "用户取消生成"}
+    return None
+
+# ── 语料库按书打标签 ── 每本书代表不同的方向特长 ──
+BOOK_TAGS: dict[str, list[str]] = {
+    "序列：吃神者 - 不要大脑要小脑":           ["cthulhu", "power", "wasteland", "combat", "politics", "dark"],
+    "时停时停时停时停时停时停时停！ - 六个葫芦":  ["cthulhu", "power", "wasteland", "combat", "taboo"],
+    "异兽迷城 - 彭湃":                         ["mutation", "power", "combat", "humanity", "mystery"],
+    "灵异复苏，永夜降临 - 庆元职高小天才":       ["cthulhu", "horror", "mystery", "dark"],
+    "我在精神病院学斩神 - 三九音域":            ["combat", "myth", "power", "cthulhu"],
+    "我不是戏神 - 三九音域":                    ["apocalypse", "power", "combat", "mystery"],
+    "我无限回档，洞悉所有底牌 - 六个葫芦":       ["cthulhu", "horror", "combat", "dark", "mystery"],
+    "十日终焉 - 杀虫队队员":                    ["mystery", "horror", "humanity", "dark", "power"],
+    "末日降临？我先降临！ - 板面王仔":           ["wasteland", "survival", "combat", "apocalypse", "power"],
+}
+
+# beat_type 关键词 → 标签映射
+BEAT_TAG_MAP: dict[str, list[str]] = {
+    "cthulhu":    ["古神", "邪神", "低语", "呓语", "不可名状", "理智", "san", "污染", "侵蚀",
+                  "旧日", "支配", "深渊", "触手", "诅咒", "疯狂", "寄生", "禁忌", "呓语", "凝视"],
+    "power":      ["异能", "觉醒", "序列", "能力", "进化", "权柄", "代价", "异化", "畸变",
+                  "超凡", "天赋", "神格", "本源", "法则", "吞噬", "变异"],
+    "wasteland":  ["废土", "废墟", "辐射", "荒野", "避难所", "安全区", "聚集地", "变异体",
+                  "畸变体", "堡垒", "壁垒"],
+    "survival":   ["丧尸", "围城", "感染", "尸潮", "物资", "幸存者", "求生", "食物", "短缺"],
+    "combat":     ["搏杀", "厮杀", "猎杀", "围剿", "越级", "斩杀", "激战", "死战",
+                  "血腥", "杀戮", "反杀", "对决", "交战"],
+    "horror":     ["诡异", "规则", "怪谈", "灵异", "恐怖", "压抑", "阴森", "诡异降临"],
+    "myth":       ["神明", "神话", "怪物", "古神", "旧日", "支配者", "邪神", "神兽"],
+    "apocalypse":  ["灾变", "灾厄", "末日", "文明崩塌", "末世", "灾难", "大灾变"],
+    "humanity":   ["信任", "背叛", "救赎", "抉择", "人性", "牺牲", "羁绊", "温暖"],
+    "dark":       ["绝望", "黑暗", "压抑", "崩溃", "残忍", "疯狂", "窒息"],
+    "politics":   ["势力", "权谋", "阴谋", "博弈", "算计", "背叛", "阵营"],
+    "taboo":      ["收容", "禁忌", "禁忌物", "规则", "异常"],
+}
+
+
+def _books_for_beat(beat_type: str) -> list[str] | None:
+    """根据 beat_type 推断应该优先查哪些书。返回 None = 不过滤（查全部）。"""
+    if not beat_type:
+        return None
+    text = beat_type.lower()
+    matched_tags: set[str] = set()
+    for tag, keywords in BEAT_TAG_MAP.items():
+        if any(kw in text for kw in keywords):
+            matched_tags.add(tag)
+    if not matched_tags:
+        return None
+    relevant_books = [
+        book for book, tags in BOOK_TAGS.items()
+        if matched_tags & set(tags)
+    ]
+    return relevant_books if relevant_books else None
 
 WRITER_SYSTEM_PROMPT = (
     "你是一位资深网络小说写手。根据给定的设定和上下文，"
@@ -48,24 +113,51 @@ WRITER_SYSTEM_PROMPT = (
     "- 大段旁白直接讲解世界观规则（这是说明书不是小说）"
     "- 老人/导师长篇大论讲解设定（这是NPC发任务）"
     "正确做法：角色在日常场景中'撞见'设定，通过误解→纠正→理解的过程传递信息。\n\n"
-    "【对话必须有博弈】"
+    "【网文语感铁律——这是网文，不是文学小说】"
+    "你写的是网文，目的是让读者爽、让读者翻页不停，不是让读者停下来品鉴文字。"
+    "AI写作像'绅士'，追求精确、克制、留白；人类网文写作像'土匪'，追求粗糙、直给、情绪爆发。"
+    "你要把那个优雅的观察者，拉成一个浑身脏泥、满腹牢骚、一边算账一边骂街的活人。"
+    "心法：把'他感受到了'全部改成'他妈的，他感受到了'。\n"
+    "1. 修辞要'主观情绪评价'不要'客观物性描写'：不要写'灰烬带的日出是灰白色的'，"
+    "   要写'天亮了，又是那种灰了吧唧的颜色，看得人心里堵得慌'。主角就是读者的'嘴替'，"
+    "   每个环境描写都要带一句主观评价（堵得慌/烦死了/真他妈冷/又来这一套）。"
+    "   比喻用'跟狗啃过似的''像糊了一层水泥'这种路人甲秒懂的生活化明喻，禁用'像被封印的一小片活海'这种需要脑补的暗喻。\n"
+    "2. 连接要'因为所以'不要'蒙太奇跳跃'：给每一个动作加上'目的'。"
+    "   不要写'出楼。旧商业街。翻倒的轿车。'这种空间切换，要写'出了楼就是旧商业街，那里是必经之路，也是最容易被堵的地方'。"
+    "   把潜台词全部翻出来：'他之所以走得快，是因为……''如果耽误了，就会……'。"
+    "   大胆用'于是''因为''所以''但是''然后''接着''谁知道''毕竟'，把因果链铺明白，让读者不动脑就能跟上。\n"
+    "3. 句式要'情绪词前置+短句轰炸'：不要先描述再结论，先把结论/情绪甩出来再补环境。"
+    "   '完了。''糟了。''好家伙。''妈的。'——情绪词前置，读者跟着主角情绪走。"
+    "   把修饰性从句拆成独立判断句：'是尸臭。但不是新鲜的。林深一闻就知道——这种味儿至少死了四五天了。早就烂透了。'"
+    "   短句是主节奏，独句段是常规武器（'滚。''哦。''双喜临门么！'）。少写多层嵌套长难句。\n"
+    "4. 人物要'内心戏+庸俗化'不要'沉默的尊严'：每写一个外部动作，补一句内心独白。"
+    "   '林深没动'→'林深站在原地，心里骂了一句娘。这两个瘪犊子摆明了是要吃定他。'"
+    "   主角可以怕死、可以哆嗦、可以骂城防军、可以幻想吃香喝辣——他是'有脾气的活人'，不是'有尊严的沉默者'。"
+    "   允许粗话和口语进入叙事：'他娘的''滚''一肚子坏水''冤种''瘪犊子'。\n"
+    "5. 细节要'痛点'不要'象征'：不要写'锈斑像旧世界的地图'（象征），要写'铁皮顶棚锈透了，窟窿眼儿直往脖子里灌冷风，妈的这破棚子不知道还能撑几个冬天'（痛点）。"
+    "   所有外部描写必须关联到主角的'生存利益'或'情绪波动'上——这东西让主角哪里不舒服、亏了多少、赚了什么、怕了什么。"
+    "   加一句口语化的咒骂或牢骚，这是最廉价也最有效的'人味'添加剂。\n"
+    "6. 对话要'潜冲突+脏字称呼'不要'潜台词+克制'：扔掉'我不是跟他们一伙的''我是想找你谈个事'这种克制台词，"
+    "   改成'你别紧张，我跟那群拦路抢劫的傻逼不是一伙的。我是从内城偷跑出来的，有个活儿，你敢不敢接？'。"
+    "   对话里加脏字、加称呼、加语气词（妈的/老娘/卧槽/敢不敢/你丫），每句对话都要带出人物的'立场'或'情绪'，而不是单纯交代信息。\n"
+    "7. 整体语感：像人在耳边讲一个刺激的故事，不是在纸上砌砖石。读者翻页不停就是成功，停在某一页品鉴描写就是失败。\n\n"
+    "【对话博弈】"
     "对话不是NPC发任务。两个人说话时必须有：试探、信息不对称、或立场冲突。"
     "禁止单向信息灌输（A说B听B问A答）。"
     "正确的对话：A试探→B反问→A加码→B暴露底线→达成或破裂。"
     "引路人不能只是'告诉你规则然后让你选'，必须有自己的目的和隐藏信息。\n\n"
-    "【段落节奏——最重要】"
-    "段落是呼吸的单位，不是每句话都自成一段。"
-    "正常叙事段落由3-6句组成，句子之间有逻辑关联。"
-    "独句段只用于强调、场景切换、或关键对话回应，一章内独句段不超过5处。"
-    "一章内必须有长段落（心理描写/环境渲染）、中段落（叙事过渡）、短段落（爆发点），三者交替。"
-    "如果连续5段以上都是独句段，就是废稿。\n\n"
-    "【节奏呼吸——必须有起伏】"
+    "【对话模拟法——产生博弈感的核心方法】"
+    "写对话密集的场景时，不要直接'写一段对话'。按以下步骤模拟："
+    "1. 先想清楚每个参与者的goal（他想要什么）、secret（他藏着什么）、leverage（他手里有什么牌）。"
+    "2. 对话是双方用语言试探对方底线的过程——A试探→B反问或回避→A加码→B暴露或反击→达成/破裂。"
+    "3. 每个角色说话方式必须不同——不能所有人都说标准的普通话书面语。"
+    "   老油条说话绕弯子，年轻人说话直接，紧张的人会重复，心虚的人会过度解释。"
+    "4. 引路人/导师角色绝不能只是'告诉你规则然后让你选'——他必须有自己的目的和隐藏信息，"
+    "   他说的每句话都是在引导主角走向他想要的结果。\n\n"
+    "【节奏呼吸——有张有弛】"
     "一章不能全程紧张。必须有张有弛：紧张段→松弛段→再紧张。"
     "结尾不要总是悬念炸弹——有时候一个松弛的收尾（主角回家、喝水、想事情）"
     "比又一个'黑影浮现'更有力量。读者需要喘气。\n\n"
-    "【句式变化】"
-    "长句写心理和环境，中句写叙事和过渡，短句只用于爆发点（战斗高潮/情绪冲击/关键揭示）。"
-    "一章内三种句式必须交替出现，形成呼吸感。\n\n"
     "【AI味黑名单——禁止使用以下表达】"
     "- '深吸一口气'（AI最爱的动作描写，用'喘了口气'或具体动作替代）"
     "- '心跳如擂鼓/心跳快得像要炸开'（陈词滥调，用具体感受替代）"
@@ -75,18 +167,6 @@ WRITER_SYSTEM_PROMPT = (
     "- '后背一阵发凉/后背发凉'（AI标记词，用具体恐惧反应替代）"
     "- '系统提示音/脑海中响起声音'（AI网文套路，用角色自己的感知替代）"
     "- 连续使用'忽然/突然/猛地'（AI节奏标记词，一章不超过2次）\n\n"
-    "【对话自然度】"
-    "对话不是电报。正常人有废话、有犹豫、有打断。不允许出现乒乓球式对答（A一句B一句A一句）。"
-    "对话中穿插动作和沉默。允许10-20%的对话是闲聊或吐槽。\n\n"
-    "【对话模拟法——产生博弈感的核心方法】"
-    "写对话密集的场景时，不要直接'写一段对话'。按以下步骤模拟："
-    "1. 先想清楚每个参与者的goal（他想要什么）、secret（他藏着什么）、leverage（他手里有什么牌）。"
-    "2. 对话是双方用语言试探对方底线的过程——A试探→B反问或回避→A加码→B暴露或反击→达成/破裂。"
-    "3. 潜台词：角色很少直接说心里话。'你看着办吧'可能是威胁也可能是妥协——上下文决定。"
-    "4. 每个角色说话方式必须不同——不能所有人都说标准的普通话书面语。"
-    "   老油条说话绕弯子，年轻人说话直接，紧张的人会重复，心虚的人会过度解释。"
-    "5. 引路人/导师角色绝不能只是'告诉你规则然后让你选'——他必须有自己的目的和隐藏信息，"
-    "   他说的每句话都是在引导主角走向他想要的结果。\n\n"
     "只输出正文，不要解释。"
 )
 
@@ -130,7 +210,10 @@ def _get_temperature_for_narrative(narrative_function: str, base_temp: float = 0
 
 def assemble_context(state: ChapterGenState, repo: BibleRepository,
                      archival: Any | None = None) -> dict:
-    """节点 1：装配章节上下文（core memory + 可选 archival 检索 + 题材文风标杆）。"""
+    """节点 1：装配章节上下文（core memory + 可选 archival 检索 + 题材文风标杆 + CSV 参考资料兜底）。"""
+    cancel = _check_cancelled(state, "assemble")
+    if cancel:
+        return cancel
     assembler = CoreMemoryAssembler(repo, archival=archival)
     query = f"第{state['chapter']}章 {state.get('title', '')} 的相关前文"
     context = assembler.assemble(chapter=state["chapter"], query=query)
@@ -159,6 +242,48 @@ def assemble_context(state: ChapterGenState, repo: BibleRepository,
                 context = f"{context}\n\n【题材模板】\n{genre_block}"
     except Exception as e:
         logger.debug("assemble_context: 注入题材模板失败: %s", e)
+
+    # Gap 1 修复：注入 CSV 参考资料兜底（按 beat_type 检索爽点/桥段/场景/写作技法）
+    # 让 writer 拿到"桥段套路库""场景写法库""爽点与节奏库"的直接参考，不依赖大纲 beats 的详细程度
+    try:
+        from novel_agent.references.search import ReferenceSearch, canonical_genre as _cg
+        outline = repo.get_outline_by_chapter(state["chapter"])
+        beat_type = ""
+        if outline:
+            beats = _safe_json_loads(outline.required_beats)
+            if beats and isinstance(beats, list) and beats:
+                beat_type = beats[0].get("type", "") if isinstance(beats[0], dict) else ""
+        project = repo.get_project()
+        cg_text = ""
+        if project and project.genre:
+            cg_text = _cg(project.genre)
+        ref_search = ReferenceSearch()
+        # 按 beat_type 检索相关参考资料（爽点/桥段/场景/写作技法）
+        ref_rows = ref_search.search(
+            query=beat_type or state.get("title", ""),
+            canonical_genre=cg_text,
+            skills=["webnovel-write"],
+            limit=6,
+        )
+        if ref_rows:
+            ref_lines = []
+            for r in ref_rows:
+                cat = r.get("分类", "")
+                kw = r.get("关键词", "")
+                inst = r.get("指令", "")
+                detail = r.get("详细展开", "")
+                line = f"- [{cat}] {kw}"
+                if inst:
+                    line += f"：{inst}"
+                if detail:
+                    line += f"（{detail}）"
+                ref_lines.append(line)
+            ref_block = "\n".join(ref_lines)
+            context = f"{context}\n\n【参考资料·兜底（按本章beat_type={beat_type or '通用'}检索）】\n{ref_block}"
+            logger.info("assemble_context 第%d章：注入CSV参考资料%d条(beat=%s)",
+                        state["chapter"], len(ref_rows), beat_type or "通用")
+    except Exception as e:
+        logger.debug("assemble_context: 注入CSV参考资料失败: %s", e)
 
     return {"context": context, "status": "assembled"}
 
@@ -225,6 +350,12 @@ def _build_chapter_brief(outline, repo) -> str:
         nf = cc.pop("narrative_function", "")
         info_focus = cc.pop("info_focus", "")
         char_decisions = cc.pop("character_decisions", "")
+        # 叙事意图（Phase 4）
+        emotion_arc = cc.pop("emotion_arc", "")
+        pacing_intent = cc.pop("pacing_intent", "")
+        theme_progression = cc.pop("theme_progression", "")
+        char_focus = cc.pop("character_focus", "")
+        scene_beats = cc.pop("scene_beats", "")
         if nf:
             soft_parts.append(f"剧情功能参考：{nf}")
         if info_focus:
@@ -233,6 +364,20 @@ def _build_chapter_brief(outline, repo) -> str:
             soft_parts.append(f"信息增量参考：{info_inc}")
         if char_decisions:
             soft_parts.append(f"角色决策清单参考：{char_decisions}")
+        # 叙事意图注入（核心约束，让 writer 按意图执行而非自由发挥）
+        intent_parts = []
+        if emotion_arc:
+            intent_parts.append(f"  - 情感弧线：{emotion_arc}")
+        if pacing_intent:
+            intent_parts.append(f"  - 节奏意图：{pacing_intent}")
+        if theme_progression:
+            intent_parts.append(f"  - 主题推进：{theme_progression}")
+        if char_focus:
+            intent_parts.append(f"  - 角色弧光：{char_focus}")
+        if scene_beats:
+            intent_parts.append(f"  - 场景节拍：{scene_beats}")
+        if intent_parts:
+            hard_parts.append("叙事意图（必须忠实执行）：\n" + "\n".join(intent_parts))
         # 角色状态约束
         cc_lines = []
         for char_name, constraints in cc.items():
@@ -301,10 +446,125 @@ def _safe_json_loads(text: str):
         return None
 
 
+async def analyze_style_benchmark(state: ChapterGenState,
+                                   llm_client: LLMClient,
+                                   repo: BibleRepository | None = None) -> dict:
+    """节点：write 前加载人类网文样本并分析其写法特征。
+
+    流程：加载人类章节 → LLM 按7维度分析（土匪式6维度+三拍节奏）→ 存 state。
+    分析结果注入 write_chapter 的 prompt，并在 SSE 推送给前端展示。
+    """
+    cancel = _check_cancelled(state, "analyze_style")
+    if cancel:
+        return cancel
+
+    # 从大纲提取 beat_type，推断偏好标签
+    preferred_tags: list[str] = []
+    beat_type = ""
+    if repo:
+        try:
+            outline = repo.get_outline_by_chapter(state["chapter"])
+            if outline:
+                beats = _safe_json_loads(outline.required_beats)
+                if beats and isinstance(beats, list):
+                    beat_type = beats[0].get("type", "") if beats else ""
+                if beat_type:
+                    tags = set()
+                    for tag, keywords in BEAT_TAG_MAP.items():
+                        if any(kw in beat_type.lower() for kw in keywords):
+                            tags.add(tag)
+                    preferred_tags = list(tags) if tags else []
+        except Exception as e:
+            logger.warning("analyze_style 第%d章：提取beat_type失败: %s", state["chapter"], e)
+
+    # 加载人类网文章节
+    human_chapter = _load_random_human_chapter(max_chars=2500, preferred_tags=preferred_tags or None)
+    if not human_chapter:
+        logger.info("analyze_style 第%d章：未加载到人类样本，跳过分析", state["chapter"])
+        return {"style_benchmark_text": "", "style_analysis": "", "status": "style_skipped"}
+
+    # LLM 分析人类样本的写法特征
+    analyze_prompt = (
+        "你是网文写作教练。下面是一段人类网文作家的章节文本。"
+        "请分析它的写法特征，提炼出可复用的技巧。分析必须具体，引用原文片段，说明'这样写好在哪里'。\n\n"
+        "按以下7个维度逐一分析：\n\n"
+        "1. 修辞策略：有没有主观情绪评价？比喻是生活化明喻还是文学化暗喻？主角是不是'嘴替'？\n"
+        "2. 连接逻辑：用显性连接词（因为/所以/于是/但是）还是蒙太奇跳跃？动作有没有带'目的'？\n"
+        "3. 句式节奏：短句还是长句为主？有没有情绪词前置？独句段怎么用？\n"
+        "4. 人物塑造：有没有内心独白/骂娘/吐槽？主角是'有脾气的活人'还是'有尊严的沉默者'？\n"
+        "5. 细节筛选：细节是'痛点'（让人不舒服）还是'象征'（需要脑补）？有没有关联生存利益？\n"
+        "6. 对话处理：对话有没有脏字/称呼/语气词？是高信息量捅刀还是低信息量潜台词？\n"
+        "7. 章节节奏：能不能看出起手式（直接进动作）/中盘（一收一放）/落锤（回收细节制造悬念）？\n\n"
+        "每个维度格式：\n"
+        "【维度名】\n"
+        "原文片段：\"...\"\n"
+        "分析：...\n"
+        "可复用技巧：...\n\n"
+        f"<人类网文样本>\n{human_chapter}\n</人类网文样本>\n\n"
+        "只输出分析结果，不要废话。"
+    )
+    try:
+        analysis = await llm_client.generate(analyze_prompt, temperature=0.3)
+        logger.info("analyze_style 第%d章：分析完成（%d字），beat_type=%s",
+                    state["chapter"], len(analysis or ""), beat_type)
+        return {
+            "style_benchmark_text": human_chapter,
+            "style_analysis": analysis or "",
+            "status": "style_analyzed",
+        }
+    except Exception as e:
+        logger.warning("analyze_style 第%d章失败: %s，跳过分析", state["chapter"], e)
+        return {"style_benchmark_text": human_chapter, "style_analysis": "", "status": "style_skipped"}
+
+
+def _style_guides_for_beat(beat_type: str, narrative_function: str) -> str:
+    """Gap 3 修复：按 beat_type/narrative_function 动态加载 task-specific style guides。
+
+    style_guide_loader.get_guides_for_generation 把 write_chapter 映射成""（空），
+    导致 combat_guide.txt/character_guide.txt 等纯文本写法指南在写章节时一个都不注入。
+    此函数按章节类型动态加载，补上这个缺口。
+
+    映射规则：
+    - 战斗/搏杀/厮杀/猎杀/围剿/激战/对决 → combat_guide
+    - 人物塑造/关系建立/角色弧光 → character_guide
+    - 世界观铺陈/设定传递 → worldview_guide
+    - 势力/谈判/权谋/博弈 → faction_guide
+    """
+    from novel_agent.templates.style_guide_loader import get_task_guide
+    text = f"{beat_type} {narrative_function}"
+    guides: list[tuple[str, str]] = []
+    if any(k in text for k in ["战斗", "搏杀", "厮杀", "猎杀", "围剿", "激战", "对决", "交战"]):
+        g = get_task_guide("combat")
+        if g:
+            guides.append(("战斗写法指南", g))
+    if any(k in text for k in ["人物塑造", "关系建立", "角色弧光", "感情"]):
+        g = get_task_guide("character")
+        if g:
+            guides.append(("角色写法指南", g))
+    if any(k in text for k in ["世界观铺陈", "设定传递", "开篇钩子"]):
+        g = get_task_guide("worldview")
+        if g:
+            guides.append(("世界观写法指南", g))
+    if any(k in text for k in ["势力", "谈判", "权谋", "博弈", "阵营"]):
+        g = get_task_guide("faction")
+        if g:
+            guides.append(("势力写法指南", g))
+    if not guides:
+        return ""
+    parts = []
+    for name, content in guides:
+        parts.append(f"【{name}】\n{content}")
+    return "\n\n".join(parts)
+
+
 async def write_chapter(state: ChapterGenState,
                         llm_client: LLMClient,
-                        repo: BibleRepository | None = None) -> dict:
+                        repo: BibleRepository | None = None,
+                        config: Config | None = None) -> dict:
     """节点 2：调 LLM 生成章节正文。"""
+    cancel = _check_cancelled(state, "write")
+    if cancel:
+        return cancel
     from novel_agent.templates.style_guide_loader import get_core_constraints
     core_constraints = get_core_constraints()
     # 读取大纲，构建章节约束清单 + 提取 beat_type + narrative_function
@@ -331,26 +591,54 @@ async def write_chapter(state: ChapterGenState,
         logger.info("write_chapter 第%d章 narrative_function=%s → temperature=%.2f", state["chapter"], narrative_function, dynamic_temp)
     few_shot = get_few_shot_for_beat(beat_type)
 
+    # Gap 3 修复：按 beat_type/narrative_function 动态注入 task-specific style guides
+    # combat_guide.txt / character_guide.txt / worldview_guide.txt / faction_guide.txt
+    # 这些是纯文本写法指南，没进 DB，需要按章节类型动态加载
+    task_guides = _style_guides_for_beat(beat_type, narrative_function)
+    if task_guides:
+        logger.info("write_chapter 第%d章：注入task-specific guides(beat=%s, nf=%s)",
+                    state["chapter"], beat_type, narrative_function)
+
+    # Gap 4 修复：字数阈值统一从 节奏阈值.csv 读取（单一真源，与 audit 共用）
+    from novel_agent.audit.validator import _get_threshold
+    word_min = int(_get_threshold("字数下限", 2200))
+    word_max = int(_get_threshold("字数上限", 3500))
+    word_min_important = int(_get_threshold("字数下限_重要章节", 2500))
+    is_important = state.get("chapter", 0) <= 3 or "高潮" in narrative_function or "转折" in narrative_function
+    target_min = word_min_important if is_important else word_min
+
     # 语感检索：如果开启kill-switch且有beat_type，从末日文库检索真实片段替换few-shot
     genre_rag_slices = ""
     try:
-        from novel_agent.config import load_config
-        _cfg = load_config()
-        if getattr(_cfg, "enable_genre_rag", False) and beat_type:
+        if config is None:
+            from novel_agent.config import load_config
+            config = load_config()
+        if getattr(config, "enable_genre_rag", False) and beat_type:
             import chromadb
             from novel_agent.memory.archival import _build_embedding_function
-            chroma_dir = _cfg.chroma_dir
+            chroma_dir = config.chroma_dir
             _client = chromadb.PersistentClient(path=str(chroma_dir))
-            _ef = _build_embedding_function(_cfg)
+            _ef = _build_embedding_function(config)
             _coll = _client.get_or_create_collection(
                 name="genre_archive_doomsday",
                 metadata={"hnsw:space": "cosine"},
                 embedding_function=_ef,
             )
             if _coll.count() > 0:
-                res = _coll.query(query_texts=[beat_type], n_results=5)
+                # 按方向过滤：只查 beat_type 对口的书
+                target_books = _books_for_beat(beat_type)
+                query_kwargs: dict = {"query_texts": [beat_type], "n_results": 5}
+                if target_books:
+                    query_kwargs["where"] = {"source_book": {"$in": target_books}}
+                res = _coll.query(**query_kwargs)
+                # 如果过滤后结果不足3条，降级查全部
                 docs = res.get("documents", [[]])[0]
                 dists = res.get("distances", [[]])[0]
+                if target_books and len(docs) < 3:
+                    logger.info("write_chapter 第%d章 过滤后仅%d条，降级查全部", state["chapter"], len(docs))
+                    res = _coll.query(query_texts=[beat_type], n_results=5)
+                    docs = res.get("documents", [[]])[0]
+                    dists = res.get("distances", [[]])[0]
                 slices = []
                 for doc, dist in zip(docs, dists):
                     # 阈值过滤：距离>0.7 = 相似度<0.3，跳过低质量结果
@@ -359,18 +647,39 @@ async def write_chapter(state: ChapterGenState,
                     # 截断到500字，总1500字封顶
                     slices.append(doc[:500])
                 genre_rag_slices = "\n\n---\n\n".join(slices)[:1500]
-                logger.info("write_chapter 第%d章 genre RAG命中 %d条 (beat=%s, 阈值0.7)", state["chapter"], len(slices), beat_type)
+                logger.info("write_chapter 第%d章 genre RAG命中 %d条 (beat=%s, 过滤=%s, 阈值0.7)",
+                            state["chapter"], len(slices), beat_type,
+                            ",".join(target_books) if target_books else "全部")
     except Exception as e:
         logger.warning("write_chapter 第%d章 genre RAG失败，降级few-shot: %s", state["chapter"], e)
 
     # 预算策略：RAG优先，few-shot降级兜底
     style_content = genre_rag_slices if genre_rag_slices else few_shot
+    # 章纲内容不足时是否允许 AI 自行扩充
+    auto_expand = bool(getattr(config, "allow_auto_expand_chapter", True)) if config else True
+    expand_hint = (
+        "如果章纲简略，可补充对话和冲突，但禁止堆砌环境描写和心理独白来凑字数。"
+    ) if auto_expand else ""
     prompt = (
         f"<task>请写第{state['chapter']}章《{state.get('title', '')}》正文。</task>\n\n"
+        f"<word_limit>【字数硬上限】正文{word_min}-{word_max}字，重要章节{word_min_important}-{word_max}字，"
+        f"{word_max}字是硬性天花板，超过即为废稿。"
+        f"宁可剧情紧凑字数偏少，也不要注水。写每个段落前都问自己：这段话推进剧情了吗？没有就删。</word_limit>\n\n"
         f"<context>\n{state.get('context', '')}\n</context>\n\n"
     )
+    # 注入人类样本写法分析（analyze_style 节点产出）
+    style_analysis = state.get("style_analysis", "")
+    if style_analysis:
+        prompt += (
+            f"<style_analysis>\n这是对人类网文样本的写法分析。"
+            f"写正文时必须运用这些技巧，尤其是'可复用技巧'部分。\n"
+            f"{style_analysis}\n</style_analysis>\n\n"
+        )
     if chapter_brief:
         prompt += f"<constraints>\n{chapter_brief}\n</constraints>\n\n"
+    # Gap 3：注入 task-specific style guides（战斗/角色/世界观/势力写法指南）
+    if task_guides:
+        prompt += f"<task_guides>\n{task_guides}\n</task_guides>\n\n"
     prompt += (
         f"<style_reference>\n{style_content}\n{core_constraints}\n</style_reference>\n\n"
         f"<scratchpad>写正文前，先核对以下事项：\n"
@@ -384,9 +693,11 @@ async def write_chapter(state: ChapterGenState,
         f"<rules>"
         f"【硬约束铁律】硬约束必须完成。爽点交付——如果大纲要求'打脸'，"
         f"必须写出完整打脸过程（嚣张→压制→不可置信→反抗→屈辱），不能一笔带过。"
-        f"字数：正文不少于2500字，重要章节不少于3000字。"
+        f"{expand_hint}"
         f"软约束尽量做到——宁可少做一个软约束，也不要把硬约束写成流水账。"
         f"</rules>\n\n"
+        f"<word_limit_reminder>再次强调：正文不超过{word_max}字。这是硬性上限，超过会被判定为废稿。"
+        f"网文要快、要脆、要爽，不要慢、不要涩、不要长。短句短段快节奏。</word_limit_reminder>\n\n"
         f"依据context和constraints写出本章正文。只输出正文，不要输出JSON或格式说明。"
     )
     try:
@@ -395,19 +706,27 @@ async def write_chapter(state: ChapterGenState,
         if _looks_like_json_not_prose(draft):
             logger.warning("write_chapter 第%d章：LLM 返回 JSON 而非正文", state["chapter"])
             return {"status": "failed", "error": "LLM 返回了 JSON 而非正文，可能模型理解错误"}
+        if not draft.strip():
+            logger.warning("write_chapter 第%d章：LLM 返回空正文", state["chapter"])
+            return {"status": "failed", "error": "LLM 返回空正文，可能是配额超限或模型异常，请重试"}
         ver = state.get("draft_version", 0) + 1
         return {"draft": draft, "status": "drafted",
                 "draft_version": ver,
                 "drafts": [{"version": ver, "text": draft, "score": 0}],
-                "word_count": len(re.findall(r'[\u4e00-\u9fff]', draft))}
+                "word_count": len(re.findall(r'[\u4e00-\u9fff]', draft)),
+                "_beat_type": beat_type}
     except Exception as e:
         logger.warning("write_chapter 第%d章失败：%s", state["chapter"], e)
         return {"status": "failed", "error": str(e)}
 
 
 async def audit_chapter(state: ChapterGenState, auditor: Auditor,
-                        repo: BibleRepository) -> dict:
+                        repo: BibleRepository,
+                        config: Config | None = None) -> dict:
     """节点：独立审校草稿，返回审计报告。写审分离铁律。"""
+    cancel = _check_cancelled(state, "audit")
+    if cancel:
+        return cancel
     # 草稿为空或生成失败时跳过 LLM 审计，直接返回失败报告
     if state.get("status") == "failed" or not state.get("draft", "").strip():
         logger.warning("audit_chapter 第%d章：草稿为空或生成失败，跳过审计", state["chapter"])
@@ -426,9 +745,10 @@ async def audit_chapter(state: ChapterGenState, auditor: Auditor,
     # 确定性硬检查：字数/限频词/伏笔描述关键词命中（字数阈值从CSV读取）
     from novel_agent.audit.validator import _get_threshold
     word_min = int(_get_threshold("字数下限", 2200))
+    word_max = int(_get_threshold("字数上限", 3500))
     to_plant = repo.get_foreshadows_to_plant(state["chapter"])
     foreshadows_data = [{"id": f.foreshadow_id, "description": f.description} for f in to_plant]
-    det_result = run_deterministic_checks(state["draft"], foreshadows_data, word_min=word_min)
+    det_result = run_deterministic_checks(state["draft"], foreshadows_data, word_min=word_min, word_max=word_max)
 
     # 确定性检查结果作为 issues 保留给 rewrite 参考，但不污染 auditor 输入（写审分离铁律）
     det_issues = [Issue(**i) for i in det_result["issues"]]
@@ -439,7 +759,13 @@ async def audit_chapter(state: ChapterGenState, auditor: Auditor,
             pleasure_issues = check_pleasure_gap(repo, state["chapter"])
             golden_issues = check_golden_three(repo, state["chapter"])
             climax_issues = check_volume_climax(repo, state["chapter"])
-            for pi in pleasure_issues + golden_issues + climax_issues:
+            # Gap 5：连续压抑章数 + 钩子连续重复检查
+            from novel_agent.audit.validator import (
+                check_suppression_streak, check_hook_repetition,
+            )
+            suppression_issues = check_suppression_streak(repo, state["chapter"])
+            hook_issues = check_hook_repetition(repo, state["chapter"])
+            for pi in pleasure_issues + golden_issues + climax_issues + suppression_issues + hook_issues:
                 det_issues.append(Issue(**pi))
         except Exception as e:
             logger.warning("audit_chapter 第%d章：爽点检查失败: %s", state["chapter"], e)
@@ -455,6 +781,23 @@ async def audit_chapter(state: ChapterGenState, auditor: Auditor,
                     det_issues.append(Issue(**ri))
         except Exception as e:
             logger.warning("audit_chapter 第%d章：伏笔回收检查失败: %s", state["chapter"], e)
+
+        # L0 角色一致性检查：角色名/位置/状态（零 token 消耗）
+        try:
+            from novel_agent.audit.validator import (
+                check_character_name_consistency,
+                check_character_location,
+                check_character_state_consistency,
+            )
+            char_issues = (
+                check_character_name_consistency(state["draft"], repo)
+                + check_character_location(state["draft"], repo)
+                + check_character_state_consistency(state["draft"], repo)
+            )
+            for ci in char_issues:
+                det_issues.append(Issue(**ci))
+        except Exception as e:
+            logger.warning("audit_chapter 第%d章：L0角色检查失败: %s", state["chapter"], e)
 
         # 阶段3.1：拆书分布形状校准——剧情功能/章纲质量/支线生命周期/信息密度
         try:
@@ -495,11 +838,11 @@ async def audit_chapter(state: ChapterGenState, auditor: Auditor,
     )
     iterations = state.get("review_iterations", 0) + 1
 
-    # 审查不通过时触发对抗性讨论（仅第1轮，避免无限循环）
-    if not report.passed and iterations == 1 and hasattr(auditor, 'debate'):
+    # 审查不通过时触发对抗性讨论（每次不通过都触发，可配置最大轮数）
+    if not report.passed and hasattr(auditor, 'debate'):
         try:
-            logger.info("audit_chapter 第%d章：审查不通过（%s），启动对抗性讨论",
-                        state["chapter"], report.summary)
+            logger.info("audit_chapter 第%d章：审查不通过（%s），启动对抗性讨论（第%d轮）",
+                        state["chapter"], report.summary, iterations)
             report = await auditor.debate(
                 chapter=state["chapter"], title=state.get("title", ""),
                 draft=state["draft"], report=report, max_rounds=2,
@@ -518,38 +861,122 @@ async def audit_chapter(state: ChapterGenState, auditor: Auditor,
             logger.warning("audit_chapter 第%d章：确定性检查发现critical问题，覆盖LLM审计结论为不通过",
                           state["chapter"])
 
+    # 置信度计算：高置信度跳过人审，低置信度强制人审
+    has_critical = any(i.severity == "critical" for i in det_issues)
+    has_important = any(i.severity == "important" for i in det_issues)
+    if report.passed and not has_critical and not has_important:
+        confidence = "high"
+    elif report.passed and not has_critical:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    # 回写当前草稿的 audit score 到 drafts（供 route_after_audit 降级时取最高分）
+    all_drafts = list(state.get("drafts", []))
+    current_ver = state.get("draft_version", 0)
+    for d in all_drafts:
+        if d.get("version") == current_ver:
+            d["score"] = report.overall_score
+            break
+
     return {
         "audit_report": report.model_dump(),
         "review_iterations": iterations,
         "status": "audited" if report.passed else "needs_rewrite",
+        "confidence_level": confidence,
+        "drafts": all_drafts,
     }
 
 
 def route_after_audit(state: ChapterGenState) -> str:
-    """条件边：审计达标→polish；不达标且未超3次→write 回环；超3次→降级接受并polish。"""
+    """条件边：审计达标→高置信度跳过人审/中低置信度人审；不达标→连续2轮无改善或超上限则降级。
+
+    降级策略（改进）：
+    - 不再用固定3轮硬上限
+    - 连续2轮 score 无改善 → 降级
+    - 超过可配置上限（默认4轮）→ 降级
+    - 降级时取 audit score 最高的草稿（不是字数最多）
+    """
     if state.get("status") == "failed":
         logger.warning("route_after_audit 进入 end_failed：status=%s", state.get("status"))
         return "end_failed"
     report = AuditReport(**state.get("audit_report", {}))
+    logger.warning("route_after_audit 第%d章：status=%s passed=%s confidence=%s iterations=%d",
+                   state.get("chapter"), state.get("status"), report.passed,
+                   state.get("confidence_level"), state.get("review_iterations", 0))
     if report.passed:
-        return "polish"
-    if state.get("review_iterations", 0) >= 3:
-        # 降级策略：3次重写仍不通过，取所有草稿中字数最多的（Self-Refine取最高分轮）
-        all_drafts = state.get("drafts", [])
+        logger.warning("route_after_audit 第%d章：走人审", state.get("chapter"))
+        return "style_refine"  # 走 human_review（所有通过审计的都人审）
+
+    # 不通过：检查是否应降级
+    iterations = state.get("review_iterations", 0)
+    max_iterations = 4  # 可配置上限（从 config 读取或硬编码）
+
+    # 字数 critical 问题不参与降级——超字数是硬约束，必须 rewrite 到达标
+    has_critical_word_count = any(
+        i.severity == "critical" and i.dimension == "字数"
+        for i in report.issues
+    )
+    if has_critical_word_count:
+        logger.warning("route_after_audit 第%d章：存在 critical 字数问题，强制 rewrite（不降级）",
+                       state.get("chapter"))
+        if iterations >= max_iterations:
+            # 超过上限仍超字数：硬截断保底，避免无限循环
+            logger.warning("route_after_audit 第%d章：rewrite 上限已到仍超字数，硬截断后降级",
+                           state.get("chapter"))
+            draft = state.get("draft", "")
+            from novel_agent.audit.validator import _get_threshold, count_chinese_chars
+            hard_max = int(_get_threshold("字数上限", 3500))
+            if count_chinese_chars(draft) > hard_max:
+                # 按句截断到硬上限（保留完整句子，不切断对话）
+                import re
+                chars = re.findall(r'[\u4e00-\u9fff]', draft)
+                kept = 0
+                cut_idx = len(draft)
+                for m in re.finditer(r'[\u4e00-\u9fff]', draft):
+                    kept += 1
+                    if kept >= hard_max:
+                        # 往后找到下一个句末标点
+                        rest = draft[m.end():]
+                        pm = re.search(r'[。！？…\n]', rest)
+                        cut_idx = m.end() + (pm.end() if pm else 0)
+                        break
+                truncated = draft[:cut_idx].rstrip()
+                logger.warning("route_after_audit 第%d章：硬截断 %d→%d 字（route 无法改 state，截断由 polish 节点兜底）",
+                               state.get("chapter"), count_chinese_chars(draft), count_chinese_chars(truncated))
+                return "skip_review"
+        return "rewrite"
+
+    # 检查连续2轮 score 无改善
+    all_drafts = state.get("drafts", [])
+    scores = [d.get("score", 0) for d in all_drafts if d.get("score", 0) > 0]
+    no_improvement = False
+    if len(scores) >= 2 and scores[-1] <= scores[-2]:
+        no_improvement = True
+        logger.warning("route_after_audit 第%d章：连续2轮 score 无改善（%d→%d），降级",
+                       state.get("chapter"), scores[-2], scores[-1])
+
+    if iterations >= max_iterations or no_improvement:
+        # 降级：取 audit score 最高的草稿
         if all_drafts:
-            best = max(all_drafts, key=lambda d: len(d.get("text", "")))
-            if best.get("text") and len(best["text"]) > len(state.get("draft", "")):
-                logger.warning("route_after_audit 降级：取草稿轮v%d（%d字）替换当前轮（%d字）",
-                               best["version"], len(best["text"]), len(state.get("draft", "")))
-                # 通过返回额外的状态更新提示（LangGraph条件边不能直接改state，但可以在polish节点处理）
-        logger.warning("route_after_audit 降级接受：重写超3次，score=%d，继续polish",
-                       report.overall_score)
-        return "polish"
+            best = max(all_drafts, key=lambda d: d.get("score", 0))
+            best_score = best.get("score", 0)
+            best_text = best.get("text", "")
+            current_text = state.get("draft", "")
+            if best_text and best_score > 0 and len(best_text) > len(current_text) * 0.8:
+                logger.warning("route_after_audit 降级：取草稿轮v%d（score=%d，%d字）",
+                               best.get("version"), best_score, len(best_text))
+        logger.warning("route_after_audit 降级接受：iterations=%d，score=%d，继续style_refine",
+                       iterations, report.overall_score)
+        return "skip_review"
     return "rewrite"
 
 
 async def rewrite_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict:
     """节点：基于审计建议重写（含对抗讨论修订建议）。"""
+    cancel = _check_cancelled(state, "rewrite")
+    if cancel:
+        return cancel
     from novel_agent.templates.style_guide_loader import get_core_constraints
     core_constraints = get_core_constraints()
     report = AuditReport(**state.get("audit_report", {}))
@@ -573,6 +1000,8 @@ async def rewrite_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict
     # A3修复：重写也必须注入硬约束清单+字数要求，防止重写后漏爽点/退文风/变短
     chapter_brief = ""
     few_shot = ""
+    beat_type_rw = ""
+    narrative_function_rw = ""
     try:
         repo = BibleRepository(state.get("project_id", 1))
         outline = repo.get_outline_by_chapter(state["chapter"])
@@ -580,27 +1009,43 @@ async def rewrite_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict
             chapter_brief = _build_chapter_brief(outline, repo)
             # 补few_shot（治A3残留：rewrite也需风格参考）
             beats = _safe_json_loads(outline.required_beats)
-            beat_type = beats[0].get("type", "") if beats and isinstance(beats, list) else ""
-            if beat_type:
-                few_shot = get_few_shot_for_beat(beat_type)
+            beat_type_rw = beats[0].get("type", "") if beats and isinstance(beats, list) else ""
+            if beat_type_rw:
+                few_shot = get_few_shot_for_beat(beat_type_rw)
+            cc = _safe_json_loads(outline.character_constraints)
+            if cc and isinstance(cc, dict):
+                narrative_function_rw = cc.get("narrative_function", "")
     except Exception:
         pass
 
+    # Gap 4 修复：字数阈值统一从 节奏阈值.csv 读取（与 write_chapter/audit 共用同一真源）
+    from novel_agent.audit.validator import _get_threshold
+    word_min = int(_get_threshold("字数下限", 2200))
+    word_max = int(_get_threshold("字数上限", 3500))
+    word_min_important = int(_get_threshold("字数下限_重要章节", 2500))
+
+    # Gap 3 修复：重写也注入 task-specific style guides
+    task_guides_rw = _style_guides_for_beat(beat_type_rw, narrative_function_rw)
+
     prompt = (
         f"重写第{state['chapter']}章《{state.get('title', '')}》。\n\n"
+        f"<word_limit>【字数硬上限】正文{word_min}-{word_max}字，重要章节{word_min_important}-{word_max}字，"
+        f"{word_max}字是硬性天花板，超过即为废稿。"
+        f"如果审计问题里提到超字数，必须大幅删减环境描写和心理独白，只保留推进剧情的内容。</word_limit>\n\n"
         f"【上下文】\n{state.get('context', '')}\n\n"
         f"{chapter_brief}\n\n"
         f"{'<style_reference>' + chr(10) + few_shot + chr(10) + '</style_reference>' + chr(10) + chr(10) if few_shot else ''}"
+        f"{('<task_guides>' + chr(10) + task_guides_rw + chr(10) + '</task_guides>' + chr(10) + chr(10)) if task_guides_rw else ''}"
         f"【上一版草稿】\n{state.get('draft', '')}\n\n"
         f"【审计问题】\n{issues}\n\n"
         f"【修订建议】\n{suggestions}\n\n"
         f"{debate_text}\n"
         f"{core_constraints}\n\n"
-        f"要求：针对问题重写，严格遵循上述核心写作约束（特别是段落节奏铁律和反AI味要求）。"
+        f"要求：针对问题重写，严格遵循上述核心写作约束（特别是网文语感铁律和反AI味要求）。"
         f"【硬约束铁律】硬约束必须完成，尤其是爽点交付——如果大纲要求'打脸'，"
         f"必须写出完整的打脸过程，不能一笔带过。"
-        f"字数要求：正文不少于2500字，重要章节不少于3000字。"
-        f"最重要：段落要有呼吸感——正常叙事段落3-6句一段，独句段只用于爆发点。不要把每句话都写成单独一段。"
+        f"最重要：网文语感——短句、口语、显性连接词、高信息量对话、标签化细节，追求'脆'和'响'，不要文学化的长句铺陈。"
+        f"\n<word_limit_reminder>再次强调：正文不超过{word_max}字。这是硬性上限，超过会被判定为废稿。</word_limit_reminder>"
         f"只输出正文，不要输出 JSON 或任何格式说明。"
     )
     try:
@@ -650,6 +1095,21 @@ async def polish_chapter(state: ChapterGenState, llm_client: LLMClient,
         "- '后背一阵发凉/后背发凉' → 用具体恐惧反应替代\n"
         "- '忽然/突然/猛地' → 一章不超过2次，多余的改为其他过渡\n"
         "- '竟然/不禁/不由得' → 尽量删掉或改写\n\n"
+        "【比喻过密——必须削减】\n"
+        "- 每千字比喻不超过1-2个，多余的必须删掉。\n"
+        "- 喻体必须是日常具象物（熊、水泥、铜铃），禁止华丽抒情性比喻。\n"
+        "- 删掉'如同...一般''宛若...似的''仿佛...一样'的密集铺陈。\n"
+        "- 比喻只为降低理解门槛，不是增加文学美感。\n\n"
+        "【抽象情绪词——必须替换为动作/生理反应】\n"
+        "- 禁止'他感到一阵悲伤/愤怒/绝望/恐惧/震惊涌上心头'这类表达。\n"
+        "- 悲伤→写具体动作：'摇摇头，长叹一口气''苦笑'\n"
+        "- 愤怒→写具体动作：'疯狂地拍着桌子''面皮抽搐'\n"
+        "- 恐惧→写生理反应：'汗毛倒立''心中漏了一拍'\n"
+        "- 得意→用反差细节：'露出笑容，银牙在血污里惹眼'\n\n"
+        "【关联词调整——口语化优先】\n"
+        "- '然而'→改为'但是/可是'。'因此'→改为'所以'。\n"
+        "- '与此同时''不仅如此'→删掉或改为'接着''而且'。\n"
+        "- 多用'却'做句中轻转折，不需要每次都停顿。\n\n"
         "【标点修复——必须执行】\n"
         "如果原文有连续40字以上无逗号句号的长句，必须在适当位置插入逗号断句。\n"
         "中文叙事句子的自然长度是10-25字，超过30字必须有标点停顿。\n\n"
@@ -659,13 +1119,18 @@ async def polish_chapter(state: ChapterGenState, llm_client: LLMClient,
         "排比是修辞手法不是叙事方式——2个够了，第3个开始就是AI味。\n\n"
         "【感叹号降级——必须执行】\n"
         "每段最多2个感叹号。多余的改为句号或省略号。\n"
+        "叙事描写中不用感叹号，感叹号仅限对话和内心独白。\n"
         "真正的冲击力来自内容而非标点。冷叙述比感叹号轰炸更有力量。\n\n"
         "【重复递进截断——必须执行】\n"
         "如果原文有'越来越X越来越Y越来越Z'这种连续递进，最多保留2个。\n"
         "如果原文有'放弃X！放弃Y！放弃Z！'这种连续排比感叹，最多保留2个。\n\n"
         "【段落节奏】\n"
         "如果原文每句都是单独一段（碎片化），请将相关句子合并为3-6句的正常叙事段落。"
-        "独句段只保留在强调和爆发点。\n\n"
+        "独句段只保留在强调和爆发点。\n"
+        "关键转折和反应可以用单句独立成段（如'试过了。''确实打不过。'），但不要过度使用。\n\n"
+        "【对话提示语精简】\n"
+        "- 删掉多余的对话提示语（'他微笑着说''她温柔地开口'），连续对话靠语气区分角色。\n"
+        "- 对话提示语后置或省略，不要每句话都配提示语。\n\n"
         "只输出润色后正文。不要输出任何说明。"
     )
     prompt = f"润色以下章节正文：\n\n{current_draft}"
@@ -704,11 +1169,46 @@ async def polish_chapter(state: ChapterGenState, llm_client: LLMClient,
         # polish 后硬指标闸门：字数/限频词不通过则回 rewrite（伏笔保持软信号）
         from novel_agent.audit.validator import count_chinese_chars, check_forbidden_words, _get_threshold
         word_min = int(_get_threshold("字数下限", 2200))
+        word_max = int(_get_threshold("字数上限", 3500))
         cn_count = count_chinese_chars(polished)
         hard_fail = False
         if cn_count < word_min:
             polish_issues.append(f"润色后字数不足：{cn_count}（及格线{word_min}）")
             hard_fail = True
+        # 超字数硬截断兜底：rewrite 多轮仍超字数时，按句截断到硬上限
+        # 这是最终输出前的最后闸门，确保用户拿到的正文绝不超过 word_max
+        if cn_count > word_max:
+            logger.warning("polish_chapter 第%d章：超字数 %d>%d，硬截断",
+                          state["chapter"], cn_count, word_max)
+            # 按句截断：找到第 word_max 个中文字后的下一个句末标点
+            kept = 0
+            cut_idx = len(polished)
+            for m in re.finditer(r'[\u4e00-\u9fff]', polished):
+                kept += 1
+                if kept >= word_max:
+                    rest = polished[m.end():]
+                    pm = re.search(r'[。！？…\n]', rest)
+                    if pm and pm.end() <= 50:  # 句末标点在50字内才接受
+                        cut_idx = m.end() + pm.end()
+                    else:
+                        cut_idx = m.end()  # 硬切
+                    break
+            before = cn_count
+            polished = polished[:cut_idx].rstrip()
+            cn_count = count_chinese_chars(polished)
+            # 二次验证：如果按句截断后仍超（句末标点太远），硬切到 word_max
+            if cn_count > word_max:
+                kept = 0
+                for i, ch in enumerate(polished):
+                    if '\u4e00' <= ch <= '\u9fff':
+                        kept += 1
+                        if kept >= word_max:
+                            polished = polished[:i+1]
+                            break
+                cn_count = count_chinese_chars(polished)
+            polish_issues.append(f"超字数硬截断：{before}→{cn_count}（上限{word_max}）")
+            logger.warning("polish_chapter 第%d章：硬截断完成 %d→%d 字",
+                          state["chapter"], before, cn_count)
         # 限频词检查
         freq_ok, freq_hits = check_forbidden_words(polished)
         if not freq_ok:
@@ -737,6 +1237,34 @@ async def polish_chapter(state: ChapterGenState, llm_client: LLMClient,
                         "word_count": cn_count,
                         "polish_review_issues": polish_issues}
 
+        # ── oh-story 7 Gate 去 AI 味后处理（完整版）──
+        # 在 polish 完成后、字数/限频词/伏笔检查通过后注入
+        # 跳过条件：无 blocking 且 advisory≤2 时 deslop 内部自动跳过 LLM 调用节省 token
+        try:
+            from novel_agent.audit.deslop_postprocessor import run_deslop_postprocess, get_deslop_summary
+            deslop_result = await run_deslop_postprocess(polished, llm_client)
+            if not deslop_result["skipped"]:
+                deslop_text = deslop_result["processed_text"]
+                # deslop 后再次校验字数（不应大幅缩短）
+                deslop_cn = len(re.findall(r'[\u4e00-\u9fff]', deslop_text))
+                orig_cn = len(re.findall(r'[\u4e00-\u9fff]', polished))
+                if orig_cn > 0 and deslop_cn >= int(orig_cn * 0.65):  # 至少保留 65%
+                    polished = deslop_text
+                    cn_count = deslop_cn
+                    logger.info("polish_chapter 第%d章：deslop 后处理完成 - %s",
+                               state["chapter"], get_deslop_summary(deslop_result))
+                    if deslop_result["rolled_back"]:
+                        polish_issues.append("deslop改写后blocking增多，已回退原版本")
+                else:
+                    logger.warning("polish_chapter 第%d章：deslop 后字数缩水过多 %d→%d，保留 polish 版本",
+                                  state["chapter"], orig_cn, deslop_cn)
+                    polish_issues.append(f"deslop后字数缩水：{orig_cn}→{deslop_cn}")
+            else:
+                logger.info("polish_chapter 第%d章：deslop 跳过（确定性检测通过）", state["chapter"])
+        except Exception as e:
+            logger.warning("polish_chapter 第%d章：deslop 后处理失败（不阻塞）: %s",
+                          state["chapter"], e)
+
         return {"polished": polished, "status": "polished",
                 "word_count": len(re.findall(r'[\u4e00-\u9fff]', polished)),
                 "polish_review_issues": polish_issues}
@@ -748,9 +1276,237 @@ async def polish_chapter(state: ChapterGenState, llm_client: LLMClient,
                 "polish_warning": str(e)}
 
 
+def _find_human_chapter_dir() -> Path | None:
+    """动态查找人类小说章节目录，兼容开发和打包模式。"""
+    import sys as _sys
+    candidates: list[Path] = []
+    if getattr(_sys, "frozen", False):
+        # PyInstaller 打包模式
+        exe_dir = Path(_sys.executable).parent
+        # _MEIPASS 是 PyInstaller 解压数据的临时目录
+        meipass = Path(getattr(_sys, "_MEIPASS", exe_dir))
+        candidates.extend([
+            meipass / "codex" / "novel_chapters",
+            meipass / "小说语料",
+            exe_dir / "codex" / "novel_chapters",
+            exe_dir / "小说语料",
+        ])
+    else:
+        # 开发模式：项目根目录
+        _root = Path(__file__).resolve().parent.parent.parent
+        candidates.extend([
+            _root / "codex" / "novel_chapters",
+            _root / "小说语料",
+        ])
+    for d in candidates:
+        if d.exists() and d.is_dir():
+            return d
+    return None
+
+
+def _load_random_human_chapter(max_chars: int = 3000, preferred_tags: list[str] | None = None) -> str | None:
+    """从人类作家小说目录随机抽取一章作为风格参考。
+
+    支持两种目录格式：
+    - 分章文件: 0001.txt, 0002.txt, ...
+    - 完整小说: 书名.txt（随机截取一段）
+
+    preferred_tags: 偏好的节奏标签（如 combat/politics/horror），用于过滤不匹配的章节。
+    """
+    chapter_dir = _find_human_chapter_dir()
+    if not chapter_dir:
+        logger.info("人类小说语料目录未找到，style_refine 将跳过风格模仿")
+        return None
+    # 分章文件（纯数字命名）
+    chapter_files = sorted(
+        f for f in chapter_dir.glob("*.txt")
+        if re.match(r"^\d+\.txt$", f.name)
+    )
+    if not chapter_files:
+        # 降级：从完整小说文件中随机抽取一段
+        all_novels = list(chapter_dir.glob("*.txt"))
+        if not all_novels:
+            logger.warning("人类小说语料目录为空: %s", chapter_dir)
+            return None
+        picked = random.choice(all_novels)
+        try:
+            text = picked.read_text(encoding="utf-8", errors="ignore").strip()
+            if len(text) > max_chars:
+                start = random.randint(0, max(0, len(text) - max_chars))
+                text = text[start:start + max_chars]
+            logger.info("风格参考：从 %s 随机截取 %d 字", picked.name, len(text))
+            return text
+        except Exception as e:
+            logger.warning("读取人类小说失败 %s: %s", picked.name, e)
+            return None
+
+    # 按节奏标签过滤：预映射章节区间到节奏类型
+    # 来源：book_analysis 拆书报告卷级分析
+    TAG_RANGES: dict[str, list[tuple[int, int]]] = {
+        "combat":     [(50, 120), (200, 280), (400, 480), (600, 700), (800, 900), (1100, 1200), (1400, 1506)],
+        "politics":   [(120, 200), (350, 400), (550, 600), (900, 1000), (1200, 1300)],
+        "horror":     [(1, 50), (280, 350), (480, 550), (700, 800)],
+        "humanity":   [(200, 250), (400, 450), (600, 650), (1000, 1100)],
+        "dark":       [(1300, 1400)],
+        "cthulhu":    [(1, 50), (280, 350), (700, 800), (1300, 1400)],
+        "power":      [(50, 120), (200, 300), (500, 600), (800, 900), (1100, 1200)],
+        "wasteland":  [(1, 100), (400, 500), (700, 800)],
+    }
+
+    candidates = chapter_files
+    if preferred_tags:
+        # 从偏好标签对应的章节区间中选候选
+        candidate_ranges = []
+        for tag in preferred_tags:
+            candidate_ranges.extend(TAG_RANGES.get(tag, []))
+        if candidate_ranges:
+            candidates = []
+            for f in chapter_files:
+                ch_num = int(re.match(r"(\d+)", f.name).group(1))
+                for lo, hi in candidate_ranges:
+                    if lo <= ch_num <= hi:
+                        candidates.append(f)
+                        break
+            if not candidates:
+                candidates = chapter_files  # 过滤后为空则降级为全量
+
+    picked = random.choice(candidates)
+    try:
+        text = picked.read_text(encoding="utf-8", errors="ignore").strip()
+        if len(text) > max_chars:
+            text = text[:max_chars] + "…"
+        logger.info("风格参考：随机抽取人类小说 %s（%d字，候选%d篇，tags=%s）",
+                    picked.name, len(text), len(candidates), preferred_tags or "无")
+        return text
+    except Exception as e:
+        logger.warning("读取人类小说章节失败 %s: %s", picked.name, e)
+        return None
+
+
+async def style_refine_chapter(state: ChapterGenState, llm_client: LLMClient) -> dict:
+    """节点：随机抽取一篇人类小说章节，模仿其写作手法润色正文。
+
+    在 polish 之后、save_text 之前执行。
+    不改变剧情/设定/伏笔，只学习人类作家的叙事节奏、句式变化、对话处理、场景转换手法。
+    """
+    cancel = _check_cancelled(state, "style_refine")
+    if cancel:
+        return cancel
+    # 降级策略：如果 drafts 中有比当前 draft 分数更高的，取最高分草稿
+    all_drafts = state.get("drafts", [])
+    current_draft = state.get("draft", "")
+    if all_drafts:
+        best = max(all_drafts, key=lambda d: d.get("score", 0))
+        if best.get("score", 0) > 0 and best.get("text"):
+            current_cn = len(re.findall(r'[\u4e00-\u9fff]', current_draft))
+            best_cn = len(re.findall(r'[\u4e00-\u9fff]', best["text"]))
+            if best_cn > current_cn * 0.8:
+                logger.info("style_refine 第%d章：使用最高分草稿v%d（score=%d）",
+                            state["chapter"], best.get("version"), best.get("score"))
+                current_draft = best["text"]
+    polished = state.get("polished") or current_draft
+    if not polished:
+        return {"polished": polished}
+
+    # 从大纲提取 beat_type，推断偏好标签
+    preferred_tags: list[str] = []
+    beat_type = state.get("_beat_type", "")
+    if beat_type:
+        tags = set()
+        for tag, keywords in BEAT_TAG_MAP.items():
+            if any(kw in beat_type.lower() for kw in keywords):
+                tags.add(tag)
+        preferred_tags = list(tags) if tags else []
+
+    human_chapter = _load_random_human_chapter(max_chars=3000, preferred_tags=preferred_tags or None)
+    if not human_chapter:
+        logger.info("style_refine 第%d章：未获取到人类小说参考，跳过", state["chapter"])
+        return {"polished": polished}
+
+    STYLE_REFINE_SYSTEM = (
+        "你是一位精通模仿的网文写手。你会研读人类作家的章节，"
+        "学习其语言表达技巧和叙事手法，然后将这些手法运用到目标正文的润色中。\n\n"
+        "【绝对铁律——不得违反】\n"
+        "1. 不得改变剧情、设定、伏笔、角色关系、角色台词含义。\n"
+        "2. 只学习人类作家的'写法'（怎么写），不抄它的'内容'（写什么）。\n"
+        "3. 不得新增角色、场景、道具、事件。\n"
+        "4. 保持原文的信息量和字数规模，不得大幅缩减或膨胀。\n\n"
+        "【语言特征——必须从人类作品中学习并运用】\n\n"
+        "一、关联词使用：\n"
+        "- 多用'但/但是/可是/却'做转折，少用'然而/因此'。'却'常在句中做轻转折，不停顿。\n"
+        "- '所以'远多于'因此'。口语化的'于是'也常用。\n"
+        "- 转折词可以独立成段（如'但是。'单独一行），制造节奏停顿。\n"
+        "- 几乎不用'与此同时''不仅如此'等书面连接词。\n\n"
+        "二、句式特征：\n"
+        "- 短句为主。关键转折、反应、判断用单句甚至单词独立成段（如'试过了。''确实打不过。''什么？！'）。\n"
+        "- 长句仅用于信息铺陈，且用句号断开，不用逗号连到底。\n"
+        "- 大量使用无主语句（'终于到了''试过了'），省略主语增强节奏感。\n"
+        "- 主动句为主，极少用'被'字被动句。\n\n"
+        "三、修辞克制：\n"
+        "- 排比极罕见：最多二项对偶（'无数物种灭绝，无数物种诞生'），禁止三句以上排比。\n"
+        "- 比喻低密度：每千字不超过1-2个，喻体必须是日常具象物（熊、水泥、铜铃、杨树叶子），禁止抒情性比喻。\n"
+        "- 比喻功能是降低理解门槛，不是增加文学美感。\n"
+        "- 禁止'如同...一般''宛若...似的''仿佛...一样'密集铺陈。\n\n"
+        "四、情绪表达——核心差异：\n"
+        "- 禁止使用抽象情绪词（悲伤、愤怒、绝望、喜悦、恐惧、震惊）。\n"
+        "- 情绪必须用外部动作/生理反应/反差细节外化：\n"
+        "  紧张→'心中漏了一拍''汗毛倒立'\n"
+        "  愤怒→'疯狂地拍着桌子''面皮抽搐'\n"
+        "  得意→'露出了笑容，两排银牙在血污里惹眼'（反差细节）\n"
+        "  厌恶→'嫌弃地绕开，仿佛绕开一坨狗屎'\n"
+        "- 禁止'他感到一阵悲伤涌上心头'这类内心独白式情绪描写。\n\n"
+        "五、对话处理：\n"
+        "- 对话提示语后置或完全省略。连续对话不加任何提示语，靠语气区分角色。\n"
+        "- 允许打断：'滚。'/秦思洋没等他说完——对话被动作截断。\n"
+        "- 潜台词：台词字面意义与实际意图形成反差（如边扎刀边说'不用谢'）。\n"
+        "- 对话中有博弈感，不是单纯交换信息。\n\n"
+        "六、环境与动作：\n"
+        "- 环境描写不超过2句，必须绑定人物动作或感知，禁止独立抒情段落。\n"
+        "- 动作描写极简，动词驱动，不加修饰（'一脚踹在它身上'而非'用力地一脚踹在它身上'）。\n"
+        "- 模糊量词增加生动感：'十刀八刀''像个熊一样''一巴掌'。\n\n"
+        "七、语气与口语：\n"
+        "- 允许粗话和口语进入叙事：'他娘的''滚''一肚子坏水''冤种'。\n"
+        "- 感叹号仅限对话和内心独白，叙事描写保持平叙。\n"
+        "- 反问句是重要修辞手段：'核弹都杀不死神明，他的左轮手枪有什么用？'\n\n"
+        "八、留白技巧：\n"
+        "- 主动悬置部分信息，用'不知道为什么''出于某种原因'跳过解释。\n"
+        "- 不解释所有因果关系，让读者自行推断。\n"
+        "- 过程可以跳过，直接呈现结果。\n\n"
+        "只输出润色后的正文。不要输出任何说明。"
+    )
+
+    prompt = (
+        f"【人类作家参考章节——学习其写作手法】\n{human_chapter}\n\n"
+        f"【需要润色的正文——运用学到的手法改写】\n{polished}\n\n"
+        "请研读上方人类作家章节的写作手法（叙事节奏、句式、对话、场景转换、情绪、画面感），"
+        "将这些手法运用到下方正文的润色中。不改变剧情和设定，只提升写法。"
+    )
+
+    try:
+        refined = await llm_client.generate(prompt, system=STYLE_REFINE_SYSTEM)
+        refined = clean_chapter_text(refined, state["chapter"], state.get("title", ""))
+        cn_count = len(re.findall(r'[\u4e00-\u9fff]', refined))
+        original_count = len(re.findall(r'[\u4e00-\u9fff]', polished))
+        if cn_count < original_count * 0.6:
+            logger.warning("style_refine 第%d章：润色后字数降幅过大（%d→%d），保留原文",
+                          state["chapter"], original_count, cn_count)
+            return {"polished": polished}
+        logger.info("style_refine 第%d章：风格模仿完成（%d→%d字）",
+                    state["chapter"], original_count, cn_count)
+        return {"polished": refined}
+    except Exception as e:
+        logger.warning("style_refine 第%d章失败: %s", state["chapter"], e)
+        return {"polished": polished}
+
+
 def save_text_polished(state: ChapterGenState, recall: RecallMemory) -> dict:
     """节点：保存润色后正文到文件。"""
     content = state.get("polished") or state.get("draft", "")
+    logger.warning("save_text_polished 第%d章：polished_len=%d draft_len=%d content_len=%d",
+                   state["chapter"],
+                   len(state.get("polished", "") or ""),
+                   len(state.get("draft", "") or ""),
+                   len(content or ""))
     recall.save_chapter_text(
         chapter=state["chapter"], title=state.get("title", ""),
         content=content,
@@ -766,6 +1522,10 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
     阶段0核心改变：summarize 不再从正文抽12个字段。
     改为：读本章 Outline 约束载荷 → LLM 核对正文是否满足 → 回写5字段。
     """
+    cancel = _check_cancelled(state, "summarize")
+    if cancel:
+        return cancel
+
     content = state.get("polished") or state.get("draft", "")
     chapter = state["chapter"]
 
@@ -962,10 +1722,26 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
 def human_review(state: ChapterGenState) -> dict:
     """人审节点：审计通过后、润色前的人工 checkpoint。
 
-    在 SSE 流式模式下，前端会暂停在此节点，等待用户确认。
-    用户可以：通过→继续 polish；驳回→回到 rewrite；直接修改 draft。
+    使用 LangGraph interrupt() 暂停执行，等待用户通过 /resume API 传入决策。
+    用户可以：approve→继续 style_refine；reject→回到 rewrite。
     """
-    return {"status": "pending_review"}
+    from langgraph.types import interrupt
+
+    report = state.get("audit_report", {})
+    overall_score = report.get("overall_score", 0) if isinstance(report, dict) else 0
+    summary = report.get("summary", "") if isinstance(report, dict) else ""
+    issues = report.get("issues", []) if isinstance(report, dict) else []
+
+    # interrupt 暂停执行，等待 Command(resume=decision) 恢复
+    decision = interrupt({
+        "chapter": state.get("chapter"),
+        "title": state.get("title"),
+        "overall_score": overall_score,
+        "summary": summary,
+        "issues": issues[:10] if issues else [],  # 最多传10条，避免payload过大
+        "draft_preview": (state.get("draft", "") or "")[:2000],
+    })
+    return {"review_decision": decision, "status": "reviewed"}
 
 
 # ---- M2 保留的兼容节点（旧 graph 测试仍用） ----
