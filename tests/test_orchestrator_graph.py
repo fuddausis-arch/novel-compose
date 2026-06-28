@@ -21,4 +21,4 @@ def test_graph_has_all_nodes():
 
 
 def test_node_names_complete():
-    assert NODE_NAMES == ["assemble", "write", "audit", "rewrite", "human_review", "polish", "save_text", "summarize"]
+    assert NODE_NAMES == ["assemble", "analyze_style", "write", "audit", "rewrite", "human_review", "style_refine", "save_text", "summarize"]

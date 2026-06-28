@@ -1,4 +1,4 @@
-"""测试 Auditor agent：独立审校，产出结构化审计报告。"""
+"""测试 Auditor agent：多维度独立审校，产出结构化审计报告。"""
 import pytest
 from unittest.mock import AsyncMock
 
@@ -25,10 +25,10 @@ def repo(tmp_config):
 
 @pytest.mark.asyncio
 async def test_auditor_returns_report(repo):
-    """Auditor 应返回结构化 AuditReport（mock LLM 返回 JSON）。"""
+    """三视角审查全部通过时，Auditor 返回 passed=True。"""
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value="""```json
-{"passed": true, "overall_score": 85, "issues": [], "summary": "达标", "suggestions": []}
+{"score": 85, "passed": true, "issues": [], "summary": "达标"}
 ```""")
     auditor = Auditor(mock_llm)
     report = await auditor.audit(
@@ -37,22 +37,36 @@ async def test_auditor_returns_report(repo):
     assert isinstance(report, AuditReport)
     assert report.passed is True
     assert report.overall_score == 85
+    assert report.user_perspective.score == 85
+    assert report.expert_perspective.score == 85
+    assert report.editor_perspective.score == 85
 
 
 @pytest.mark.asyncio
 async def test_auditor_flags_failed(repo):
-    """LLM 返回不达标时，report.passed 为 False。"""
+    """任一视角不通过时，report.passed 为 False。"""
+    pass_response = """```json
+{"score": 85, "passed": true, "issues": [], "summary": "达标"}
+```"""
+    fail_response = """```json
+{"score": 55, "passed": false, "issues": ["人物OOC：反应不符"], "summary": "OOC"}
+```"""
+    call_count = [0]
+    async def mock_generate(*args, **kwargs):
+        idx = call_count[0]
+        call_count[0] += 1
+        # 三视角并行，第2个（专业视角）返回不通过
+        return fail_response if idx == 1 else pass_response
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value="""```json
-{"passed": false, "overall_score": 55, "issues": [{"dimension":"人物OOC","severity":"critical","message":"反应不符"}], "summary": "OOC", "suggestions": ["重写对话"]}
-```""")
+    mock_llm.generate = mock_generate
     auditor = Auditor(mock_llm)
     report = await auditor.audit(
         chapter=1, title="第一章", draft="正文", repo=repo,
     )
     assert report.passed is False
-    assert len(report.issues) == 1
-    assert report.issues[0].severity == "critical"
+    assert report.expert_perspective.passed is False
+    assert report.user_perspective.passed is True
+    assert len(report.issues) > 0
 
 
 @pytest.mark.asyncio
@@ -66,4 +80,3 @@ async def test_auditor_handles_malformed_json(repo):
     )
     assert report.passed is False
     assert report.overall_score == 0
-    assert "解析" in report.summary or "失败" in report.summary

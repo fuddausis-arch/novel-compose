@@ -21,6 +21,11 @@ def executor(tmp_path, monkeypatch):
     repo = BibleRepository(db, project_id=1)
     yield ActionExecutor(repo, cfg)
     db.close()
+    # 重置全局 DB 状态：恢复 engine 到默认配置，避免 force=True 污染后续测试
+    db_mod._initialized = False
+    db_mod._config = None
+    db_mod.engine = db_mod._create_engine()
+    db_mod.migrate_db(db_mod.engine)
 
 
 @pytest.mark.asyncio
@@ -34,4 +39,4 @@ async def test_add_feedback(executor):
 async def test_query_status(executor):
     res = await executor.execute({"type": "query_status"})
     assert res["ok"] is True
-    assert "chapter_count" in res
+    assert "generated_count" in res

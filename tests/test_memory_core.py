@@ -62,7 +62,11 @@ def test_core_memory_no_foreshadows_when_none(repo):
 
 
 def test_core_memory_includes_archival_retrieval(repo):
-    """core 装配时应调用 archival 检索相关历史切片并注入。"""
+    """archival 已从热路径移出（阶段Embedding重定位）。
+
+    core 装配时不再调用 archival 检索——archival 是冷路径工具，
+    供 DedupScanner/auditor 按需使用，不进写作热路径。
+    """
     mock_archival = MagicMock()
     mock_archival.retrieve.return_value = [
         {"content": "第1章：刘洋被征召到火种基地", "chapter": 1, "distance": 0.3},
@@ -70,10 +74,11 @@ def test_core_memory_includes_archival_retrieval(repo):
     ]
     assembler = CoreMemoryAssembler(repo, archival=mock_archival)
     ctx = assembler.assemble(chapter=2, query="刘洋的征召经历")
-    # 应包含召回的历史切片
-    assert "刘洋被征召到火种基地" in ctx
-    assert "奇点是异能核心" in ctx
-    mock_archival.retrieve.assert_called_once()
+    # archival 已从热路径移出，不应在 core memory 中出现
+    assert "刘洋被征召到火种基地" not in ctx
+    assert "奇点是异能核心" not in ctx
+    # archival.retrieve 不应被调用（冷路径工具，不进 assemble）
+    mock_archival.retrieve.assert_not_called()
 
 
 def test_core_memory_without_archival(repo):

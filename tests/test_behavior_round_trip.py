@@ -51,12 +51,13 @@ class TestValidatorBehavior:
         assert ok is False
         assert len(missing) == 1
 
-    def test_no_critical_severity(self):
-        """确定性检查不应产生 critical 严重度。"""
+    def test_critical_severity_for_hard_violations(self):
+        """确定性检查应对硬指标违规产生 critical 严重度。"""
         from novel_agent.audit.validator import run_deterministic_checks
+        # 字数极低（<60%目标）+ 伏笔未植入 → 应有 critical
         result = run_deterministic_checks("短", [{"id": "S-001", "description": "某物"}])
-        for issue in result["issues"]:
-            assert issue["severity"] != "critical"
+        severities = [i["severity"] for i in result["issues"]]
+        assert "critical" in severities  # 伏笔未植入 + 字数极低
 
 
 class TestGraphRouting:
