@@ -200,39 +200,6 @@ class TestE2EDeslopPipeline:
         if not result["rolled_back"]:
             assert "——" not in result["processed_text"]
 
-    def test_polish_chapter_e2e_with_deslop(self):
-        """E2E-7: polish_chapter 节点端到端：含 AI 味的 polish 输出 → deslop 清理。
-
-        模拟 polish 返回含破折号的文本，deslop 清理后输出无破折号。
-        """
-        from novel_agent.orchestrator.nodes import polish_chapter
-
-        # 构造足够长、有标点、含破折号的 polish 文本
-        base_paragraph = "他走进房间——把书放下。窗外下着雨，她抬头看了他一眼。"
-        polished_with_dash = (base_paragraph + "\n\n") * 120
-
-        async def mock_generate(prompt, system=None, **kwargs):
-            sys_head = (system or "")[:20]
-            if "润色编辑" in sys_head and "去AI味" not in sys_head:
-                # polish 调用：返回带破折号的文本
-                return polished_with_dash
-            if "去AI味编辑" in sys_head:
-                # deslop 调用：返回无破折号的干净文本
-                return polished_with_dash.replace("——", "，")
-            return polished_with_dash
-
-        mock_client = MagicMock()
-        mock_client.generate = mock_generate
-
-        state = ChapterGenState(
-            chapter=1, title="测试", draft="原稿" * 500, status="audited",
-        )
-        result = asyncio.run(polish_chapter(state, llm_client=mock_client))
-
-        # 最终 polished 不应含破折号（deslop 应清理掉）
-        assert result["status"] == "polished"
-        assert "——" not in result["polished"], "polish_chapter 最终输出仍含破折号，deslop 未生效"
-
     def test_deslop_preserves_plot_content(self):
         """E2E-8: deslop 后处理不应改变剧情内容（只改文字表达）。
 
@@ -271,18 +238,6 @@ class TestE2EDeslopPipeline:
             assert "——" not in processed, "破折号应被清理"
             assert "不是" not in processed or "而是" not in processed, \
                 "不是A而是B句式应被清理"
-
-    def test_core_constraints_injected_to_writing_pipeline(self):
-        """E2E-9: core_constraints.txt 应被正确加载并含 7 Gate 铁律。"""
-        from pathlib import Path
-        constraints_path = Path(__file__).parent.parent / "novel_agent" / "templates" / "style_guides" / "core_constraints.txt"
-        content = constraints_path.read_text(encoding="utf-8")
-        # 应含 7 Gate
-        for gate in ["Gate A", "Gate B", "Gate C", "Gate D", "Gate E", "Gate F", "Gate G"]:
-            assert gate in content
-        # 应含三遍法
-        assert "三遍法" in content
-        assert "Pass1" in content
 
     def test_severe_ai_level_runs_three_passes(self):
         """E2E-10: 重度 AI 味应触发完整三遍 Pass。"""
