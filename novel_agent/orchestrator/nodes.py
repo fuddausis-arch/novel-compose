@@ -901,11 +901,11 @@ def route_after_audit(state: ChapterGenState) -> str:
         logger.warning("route_after_audit 进入 end_failed：status=%s", state.get("status"))
         return "end_failed"
     report = AuditReport(**state.get("audit_report", {}))
-    logger.warning("route_after_audit 第%d章：status=%s passed=%s confidence=%s iterations=%d",
+    logger.warning("route_after_audit 第%s章：status=%s passed=%s confidence=%s iterations=%s",
                    state.get("chapter"), state.get("status"), report.passed,
                    state.get("confidence_level"), state.get("review_iterations", 0))
     if report.passed:
-        logger.warning("route_after_audit 第%d章：走人审", state.get("chapter"))
+        logger.warning("route_after_audit 第%s章：走人审", state.get("chapter"))
         return "style_refine"  # 走 human_review（所有通过审计的都人审）
 
     # 不通过：检查是否应降级
@@ -918,11 +918,11 @@ def route_after_audit(state: ChapterGenState) -> str:
         for i in report.issues
     )
     if has_critical_word_count:
-        logger.warning("route_after_audit 第%d章：存在 critical 字数问题，强制 rewrite（不降级）",
+        logger.warning("route_after_audit 第%s章：存在 critical 字数问题，强制 rewrite（不降级）",
                        state.get("chapter"))
         if iterations >= max_iterations:
             # 超过上限仍超字数：硬截断保底，避免无限循环
-            logger.warning("route_after_audit 第%d章：rewrite 上限已到仍超字数，硬截断后降级",
+            logger.warning("route_after_audit 第%s章：rewrite 上限已到仍超字数，硬截断后降级",
                            state.get("chapter"))
             draft = state.get("draft", "")
             from novel_agent.audit.validator import _get_threshold, count_chinese_chars
@@ -942,7 +942,7 @@ def route_after_audit(state: ChapterGenState) -> str:
                         cut_idx = m.end() + (pm.end() if pm else 0)
                         break
                 truncated = draft[:cut_idx].rstrip()
-                logger.warning("route_after_audit 第%d章：硬截断 %d→%d 字（route 无法改 state，截断由 polish 节点兜底）",
+                logger.warning("route_after_audit 第%s章：硬截断 %d→%d 字（route 无法改 state，截断由 polish 节点兜底）",
                                state.get("chapter"), count_chinese_chars(draft), count_chinese_chars(truncated))
                 return "skip_review"
         return "rewrite"
@@ -953,7 +953,7 @@ def route_after_audit(state: ChapterGenState) -> str:
     no_improvement = False
     if len(scores) >= 2 and scores[-1] <= scores[-2]:
         no_improvement = True
-        logger.warning("route_after_audit 第%d章：连续2轮 score 无改善（%d→%d），降级",
+        logger.warning("route_after_audit 第%s章：连续2轮 score 无改善（%d→%d），降级",
                        state.get("chapter"), scores[-2], scores[-1])
 
     if iterations >= max_iterations or no_improvement:
@@ -964,7 +964,7 @@ def route_after_audit(state: ChapterGenState) -> str:
             best_text = best.get("text", "")
             current_text = state.get("draft", "")
             if best_text and best_score > 0 and len(best_text) > len(current_text) * 0.8:
-                logger.warning("route_after_audit 降级：取草稿轮v%d（score=%d，%d字）",
+                logger.warning("route_after_audit 降级：取草稿轮v%s（score=%d，%d字）",
                                best.get("version"), best_score, len(best_text))
         logger.warning("route_after_audit 降级接受：iterations=%d，score=%d，继续style_refine",
                        iterations, report.overall_score)
@@ -1475,9 +1475,14 @@ async def style_refine_chapter(state: ChapterGenState, llm_client: LLMClient) ->
         "只输出润色后的正文。不要输出任何说明。"
     )
 
+    # 注入核心约束（7 Gate 铁律 + 网文语感铁律），确保风格模仿阶段不弱化反 AI 味约束
+    from novel_agent.templates.style_guide_loader import get_core_constraints
+    core_constraints = get_core_constraints()
+
     prompt = (
         f"【人类作家参考章节——学习其写作手法】\n{human_chapter}\n\n"
         f"【需要润色的正文——运用学到的手法改写】\n{polished}\n\n"
+        f"【核心写作约束——润色时必须遵守】\n{core_constraints}\n\n"
         "请研读上方人类作家章节的写作手法（叙事节奏、句式、对话、场景转换、情绪、画面感），"
         "将这些手法运用到下方正文的润色中。不改变剧情和设定，只提升写法。"
     )

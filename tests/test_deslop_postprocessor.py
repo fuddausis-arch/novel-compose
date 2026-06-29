@@ -45,6 +45,7 @@ from novel_agent.audit.deslop_postprocessor import (
     _metric_repetition_density,
     _select_passes,
     get_deslop_summary,
+    normalize_punctuation,
     run_deslop_postprocess,
     score_ai_level,
     should_run_deslop,
@@ -502,17 +503,20 @@ class TestRunDeslopPostprocess:
         assert result["post_check"] is not None
 
     def test_llm_failure_does_not_block(self):
-        """LLM 调用失败时不阻塞流程，返回原文本。"""
+        """LLM 调用失败时不阻塞流程，确定性标点兜底仍运行。"""
         text = "他走进房间——把书放下。"
         llm_client = MagicMock()
         llm_client.generate = AsyncMock(side_effect=Exception("LLM error"))
 
         result = asyncio.run(run_deslop_postprocess(text, llm_client))
 
-        # 不阻塞，passes_executed 为空（因为失败）
+        # 不阻塞，passes_executed 为空（因为 LLM 失败）
         assert result["skipped"] is False
-        # processed_text 仍是原文
-        assert result["processed_text"] == text
+        assert result["passes_executed"] == []
+        # 确定性标点兜底仍然运行：—— 被机械清理为 ，
+        # （对齐 oh-story Phase 3.5：LLM 失败后机械兜底仍保证标点残留为 0）
+        assert "——" not in result["processed_text"]
+        assert result["processed_text"] == "他走进房间，把书放下。"
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -614,3 +618,89 @@ class TestDeslopSystemPrompt:
         assert "不改编情" in DESLOP_SYSTEM_PROMPT
         assert "不增删角色" in DESLOP_SYSTEM_PROMPT
         assert "删除比例" in DESLOP_SYSTEM_PROMPT
+
+
+# ════════════════════════════════════════════════════════════════════
+# 确定性标点兜底测试（normalize_punctuation，移植 oh-story）
+# ════════════════════════════════════════════════════════════════════
+
+
+class TestNormalizePunctuation:
+    """normalize_punctuation 机械标点兜底。"""
+
+    def test_em_dash_replaced_with_comma(self):
+        """—— 在普通位置替换为逗号。"""
+        text = "他走进房间——把书放下。"
+        result = normalize_punctuation(text)
+        assert "——" not in result
+        assert result == "他走进房间，把书放下。"
+
+    def test_ellipsis_before_sentence_end_deleted(self):
+        """…… 在句末标点前删除。"""
+        text = "他走了过来……。"
+        result = normalize_punctuation(text)
+        assert "……" not in result
+        assert result == "他走了过来。"
+
+    def test_ellipsis_after_punct_deleted(self):
+        """…… 在标点后删除。"""
+        text = "他走了过来。……"
+        result = normalize_punctuation(text)
+        assert "……" not in result
+
+    def test_pause_before_close_quote_becomes_period(self):
+        """—— 在闭引号前改句号（对话截断收尾）。"""
+        text = "他说：“你走吧——”"
+        result = normalize_punctuation(text)
+        assert "——" not in result
+        # —— 在闭引号 ” 前应改为 。
+        assert "。" in result
+
+    def test_pause_between_digits_becomes_dao(self):
+        """—— 在数字间改"到"。"""
+        text = "5——10 人"
+        result = normalize_punctuation(text)
+        assert "——" not in result
+        assert "到" in result
+
+    def test_pause_before_causal_prefix_becomes_colon(self):
+        """—— 在因果连词前改冒号。"""
+        text = "他停住了——因为前方有人。"
+        result = normalize_punctuation(text)
+        assert "——" not in result
+        assert "：" in result
+
+    def test_markdown_divider_removed(self):
+        """独立行 --- 删除。"""
+        text = "第一段。\n---\n第二段。"
+        result = normalize_punctuation(text)
+        assert "---" not in result
+        assert "第一段。" in result
+        assert "第二段。" in result
+
+    def test_ascii_double_hyphen_replaced(self):
+        """-- ASCII 双连字符替换。"""
+        text = "他走过来--坐下。"
+        result = normalize_punctuation(text)
+        assert "--" not in result
+
+    def test_single_ellipsis_char_replaced(self):
+        """单个 … 字符也清理。"""
+        text = "他走了…"
+        result = normalize_punctuation(text)
+        assert "…" not in result
+
+    def test_no_change_for_clean_text(self):
+        """干净文本不变。"""
+        text = "他走进房间，把书放下。窗外下着雨。"
+        assert normalize_punctuation(text) == text
+
+    def test_empty_text_handled(self):
+        """空文本不报错。"""
+        assert normalize_punctuation("") == ""
+
+    def test_consecutive_commas_collapsed(self):
+        """连续逗号合并。"""
+        text = "他走了，，，停下来。"
+        result = normalize_punctuation(text)
+        assert "，，" not in result

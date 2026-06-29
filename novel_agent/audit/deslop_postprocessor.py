@@ -362,8 +362,9 @@ GATE_B_RULES = """【Gate B：句式去套路】
 - "不仅X，更是Y" 递进堆砌 → 删一个，保留直接表达
 """
 
-# ── Gate C：心理外化 ──
-GATE_C_RULES = """【Gate C：心理外化（"告诉"改"展示"）】
+# ── Gate C：心理外化（含重复描写去重） ──
+# 对齐 oh-story SKILL.md:241-278（补重复描写去重 + 重复语义四类 + 多余场景删除）
+GATE_C_RULES = """【Gate C：心理外化（"告诉"改"展示"）+ 重复描写去重】
 心理词占比 >10% 必须外化：
 - "他感到愤怒" → "攥紧拳头""青筋暴起"
 - "她感到恐惧" → "退后一步""呼吸急促"
@@ -372,11 +373,27 @@ GATE_C_RULES = """【Gate C：心理外化（"告诉"改"展示"）】
 - "心中涌起一股暖流" → 写具体身体反应"胸口热了一下"
 - "心头一震" → "手抖了一下""愣了半秒"
 
+重复描写去重（合并同一瞬间）：
+- 同一瞬间被拆成多段描写的（如先写眼神再写嘴角再写呼吸），合并成 1-2 句动作链
+- 同一动作/情绪在千字内重复 2 次以上的，第 2 次起删掉或换不同身体反应
+
+重复语义四类必须去重：
+- 形容词重复："冰冷的目光""冰冷的声音" → 保留一个，另一个换具体描写
+- 近义词重复："愤怒""暴怒""怒火" 同段出现 → 只留最强一个
+- 含义重复："他笑了""他露出笑容" → 删一个
+- 上下文主语重复：连续多段以"他"开头 → 改换视角或省略主语
+
+多余场景/人物/物品描写直接删：
+- 与当前剧情无关的环境描写（出场后不再用到的道具/路人）
+- 重复交代已建立的人物外貌/穿着
+- 不推动剧情的内心独白段落
+
 铁律：能用动作/对话/身体反应展示的，禁止直接告诉读者情绪名词。
 """
 
-# ── Gate D：节奏打碎 ──
-GATE_D_RULES = """【Gate D：节奏打碎（拆长段+插短句）】
+# ── Gate D：节奏打碎（含标点节奏） ──
+# 对齐 oh-story SKILL.md:280-288（补标点节奏 + 偶尔用不完整句）
+GATE_D_RULES = """【Gate D：节奏打碎（拆长段+插短句+标点节奏）】
 长段落（>200 字）必须拆成 1-3 句短段。
 平均段落句数 >5 必须打散——网文以 1-3 句短段为主。
 
@@ -386,9 +403,20 @@ GATE_D_RULES = """【Gate D：节奏打碎（拆长段+插短句）】
 
 排比段（相同句式段连续 ≥3）必须打散：
 - 第 1 段保留，第 2 段改写句式，第 3 段换角度或删
+
+偶尔用不完整句增加口语感：
+- 关键反应可单独成段（"试过了。""确实打不过。""什么？！"）
+- 但不要连续 4 个以上不完整句，否则变机械感
+
+标点节奏跟语气走：
+- 保留问号？增强悬念
+- 保留少量感叹号！增强冲击（每千字不超过 2-3 个）
+- 省略号……改逗号或句号（除非真的表示话未说完被截断）
+- 破折号——一律改逗号/句号/换行（机械兜底会再清一次）
 """
 
-# ── Gate E：对话去腔调 ──
+# ── Gate E：对话去腔调（补 5 项规则） ──
+# 对齐 oh-story SKILL.md:290-299（补口语化/打断/动作穿插/删解释性/保留？！）
 GATE_E_RULES = """【Gate E：对话去腔调】
 对话标签密度 >30% 必须精简：
 - 连续对话靠语气区分角色，删掉多余提示语
@@ -396,9 +424,15 @@ GATE_E_RULES = """【Gate E：对话去腔调】
 - 普通"说"可保留，但"说道/问道/答道"高频时改用动作
 - "道：" / "说：" 模板化标签 → 删一半，用动作替代
 
-对话内容腔调：
-- AI 角色台词太书面化时，改口语（"我无法继续" → "我写不下去了"）
-- 但系统流题材 AI 角色机械感台词是合法的，豁免
+对话内容腔调 5 项：
+1. 加口语化：适当插入"嗯/哦/行吧/得了/算了"等语气词，让台词像真人说的
+2. 适当打断对话：角色可以答非所问、被动作截断、半句话被打断
+3. 用动作穿插对话：连续对白间插入人物动作（点烟/站起来/看向窗外），打破纯对话堆砌
+4. 删解释性对话：角色不会把内心动机直接说出来解释给对方听（除非角色性格就是话痨）
+5. 不把所有对话末尾改句号：保留问号？/感叹号！/省略号的自然语气，不要为了"规范"全改句号
+
+AI 角色台词太书面化时，改口语（"我无法继续" → "我写不下去了"）。
+但系统流题材 AI 角色机械感台词是合法的，豁免。
 """
 
 # ── Gate F：结尾去升华 ──
@@ -416,34 +450,63 @@ GATE_F_RULES = """【Gate F：结尾去升华】
 - 不要总结感慨，不要空泛预告"他不知道的是，更大的风暴即将来临"
 """
 
-# ── Gate G：去解释腔/上帝感/安排感 ──
+# ── Gate G：去解释腔/上帝感/安排感（补替读者定性 + 隐蔽软评判） ──
+# 对齐 oh-story SKILL.md:310-319（补之所以/原来 + 替读者定性 + 隐蔽软评判 + 注意事项）
 GATE_G_RULES = """【Gate G：去解释腔/上帝感/安排感】
 解释腔（作者跳出来解释）：
 - "也就是说……" / "换句话说……" → 删
 - "这意味着……" / "这预示着……" → 删
 - "事实上……" / "实际上……" → 删（除非对话角色口语）
+- "之所以……是因为……" → 删因果解释，让事件自己呈现
+- "原来……" → 删（除非是对话角色恍然大悟的台词）
 
 上帝感（全知视角剧透）：
 - "他不知道的是……" → 删（限知视角铁律）
 - "此时的他还不知道……" → 删
+- "殊不知……" → 删
+- "多年以后……" → 删（除非是刻意倒叙结构）
+- "仿佛预示着……" → 删
 - "命运齿轮开始转动" → 删
 - "更大的风暴即将来临" → 删
+
+替读者定性（最难察觉的 AI 味，作者替读者下判断）：
+- "演得真好" / "这出戏她看过一遍" → 删，让读者自己感受
+- "他就是这样薄情" / "她就是这样的人" → 删定性，用具体行为展示
+
+隐蔽软评判（伪装成细节的作者评判）：
+- "关切得恰到好处" → 删"恰到好处"的评判
+- "那点笑她看得分明" → 删"看得分明"的全知感
+- "像在宣判一件早已定好的事" → 删"早已定好"的宿命感
 
 安排感（剧情推进过于刻意）：
 - "就在这时" / "恰在此时" 高频时改用具体动作过渡
 - "果不其然" / "不出所料" → 删，让事件自己发生
 - "这正是个好机会" → 删心理活动，用动作体现
+
+注意：Gate G 删的是"非故事性作者旁白"——不要删情节本身。
+如果某句是角色台词或推动剧情的叙述，保留；只删作者跳出来评论/剧透/定性的部分。
 """
 
 
 # ── 三遍法：每遍的 Gate 覆盖关系 ──
 # Pass1 去泛化：覆盖 Gate A / C / D / E / G
 # Pass2 去书面化：覆盖 Gate A 书面腔 / Gate B 深化
-# Pass3 回自然感：覆盖 Gate D / E / F
+# Pass3 回自然感：覆盖 Gate D / E / F + 补具体感官细节
 
 PASS1_GATES = GATE_A_RULES + "\n" + GATE_C_RULES + "\n" + GATE_D_RULES + "\n" + GATE_E_RULES + "\n" + GATE_G_RULES
 PASS2_GATES = GATE_A_RULES + "\n" + GATE_B_RULES
-PASS3_GATES = GATE_D_RULES + "\n" + GATE_E_RULES + "\n" + GATE_F_RULES
+# Pass3 末尾追加"补具体感官细节"规则（对齐 oh-story SKILL.md:146）
+PASS3_GATES = GATE_D_RULES + "\n" + GATE_E_RULES + "\n" + GATE_F_RULES + """
+
+【Pass3 专属：补具体感官细节】
+去AI味后文本可能变干瘪，需补回具体感官细节让画面立体：
+- 视觉：颜色/形状/光影（"红色的锈迹""斜斜的光柱"）
+- 听觉：声音特征（"金属撞击的脆响""布料摩擦的窸窣"）
+- 触觉：温度/质感（"掌心发烫""粗糙的水泥地"）
+- 嗅觉：气味（"机油味""血腥味""潮湿的霉味"）
+- 每千字补 2-3 处感官细节，不要堆砌（每段最多 1 处）
+- 感官细节必须绑定人物动作或感知，禁止独立抒情段落
+"""
 
 
 def _build_pass_prompt(pass_name: str, gates_rules: str, text: str,
@@ -643,6 +706,18 @@ async def run_deslop_postprocess(
 
     result["processed_text"] = current_text
 
+    # ── Step 4.5: 确定性标点兜底（机械清理 ……/——/—/-- 残留） ──
+    # 对齐 oh-story SKILL.md Phase 3.5（行 323-339）：LLM 改写后机械兜底
+    # 保证 em-dash blocking 检测在 post_check 中通过
+    try:
+        before_norm = current_text
+        current_text = normalize_punctuation(current_text)
+        if current_text != before_norm:
+            result["processed_text"] = current_text
+            logger.info("deslop_postprocess: 标点兜底清理完成")
+    except Exception as e:
+        logger.warning("deslop_postprocess: 标点兜底失败（忽略）: %s", e)
+
     # ── Step 5: 二次验证 ──
     post_check = run_deslop_checks(current_text)
     result["post_check"] = {
@@ -669,6 +744,129 @@ async def run_deslop_postprocess(
 # ════════════════════════════════════════════════════════════════════
 # 第四部分：便捷工具函数
 # ════════════════════════════════════════════════════════════════════
+
+
+# ── 确定性标点兜底（移植 oh-story normalize-punctuation.js） ──
+# 对齐 oh-story scripts/normalize-punctuation.js:1-277
+# LLM 改写后机械清理残留 ……/——/—/--/---，保证标点残留为 0
+
+# 因果连词前的省略号/破折号改冒号（对齐 oh-story choosePauseReplacement:202-219）
+_CAUSAL_PREFIXES = (
+    "因为", "原来", "这是", "那是", "也就是", "换句话", "说白了",
+    "所谓", "答案", "原因", "结果", "真相", "问题在于",
+)
+
+# 句末标点集（省略号/破折号在句末标点前应删除）
+_SENTENCE_END_PUNCT = set("。！？!?；;")
+
+# 引号闭字符（省略号/破折号在闭引号前改句号）
+# 用 Unicode 码点明确指定，避免字符串解析歧义
+_CLOSE_QUOTE_CHARS = {
+    '\u300D',  # 」 日中右单角引号
+    '\u300F',  # 』 日中右双角引号
+    '\u201D',  # " 中文右双引号
+    '\u2019',  # ' 中文右单引号
+    '"',       # ASCII 双引号（开闭同）
+    "'",       # ASCII 单引号（开闭同）
+    '）',       # 中文右括号
+    '】',       # 中文右方括号
+}
+
+
+def normalize_punctuation(text: str) -> str:
+    """确定性标点兜底：机械清理残留的 ……/——/—/--/---。
+
+    移植 oh-story normalize-punctuation.js 的核心规则：
+    1. 独立行 ---（markdown 分隔线）→ 删除整行
+    2. ……/——/—/-- 智能替换：
+       - 数字间 → "到"（如"5——10" → "5到10"）
+       - 闭引号前 → "。"（对话被截断收尾）
+       - 因果连词前 → "："（引出解释）
+       - 句末标点前 → 删除（"……。" → "。"）
+       - 标点后 → 删除（"。……" → "。"）
+       - 其他 → "，"（默认节奏停顿）
+
+    保证 LLM 改写后 ……/—— 残留为 0，是 deslop 的最后一道机械防线。
+    """
+    if not text:
+        return text
+
+    # 1. 删除独立行 ---（markdown 分隔线）
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        if line.strip() == "---" or line.strip() == "***" or line.strip() == "___":
+            continue
+        cleaned_lines.append(line)
+    text = "\n".join(cleaned_lines)
+
+    # 2. 智能替换 ……/——/—/--/---
+    # 先处理 ---（3+ 连字符），再 ——，再 单 —，再 ……，再 --+
+    # 用占位符避免重复替换
+
+    # ---（3+ 连字符，markdown 分隔线残留）→ 删除
+    text = re.sub(r'-{3,}', '', text)
+
+    # —— （中文双破折号）
+    text = _replace_pause(text, r'——')
+    # —（单个 em dash，非数字范围）
+    text = re.sub(r'(?<![\d—])—(?![\d—])', lambda m: _choose_replacement(text, m.start(), m.end()), text)
+    # ……（中文省略号）
+    text = _replace_pause(text, r'……')
+    # …（单个省略号字符）
+    text = re.sub(r'…', lambda m: _choose_replacement(text, m.start(), m.end()), text)
+    # --+（ASCII 连字符 2+）
+    text = _replace_pause(text, r'-{2,}')
+
+    # 清理可能产生的连续逗号/句号
+    text = re.sub(r'，\s*，+', '，', text)
+    text = re.sub(r'。\s*。+', '。', text)
+
+    return text
+
+
+def _replace_pause(text: str, pattern: str) -> str:
+    """对指定 pause 模式（如 —— / …… / --+）逐处智能替换。"""
+    def _sub(m):
+        return _choose_replacement(text, m.start(), m.end())
+    return re.sub(pattern, _sub, text)
+
+
+def _choose_replacement(text: str, start: int, end: int) -> str:
+    """根据上下文选择省略号/破折号的替换字符串。
+
+    对齐 oh-story normalize-punctuation.js choosePauseReplacement:159-219。
+    """
+    # 前后字符（边界外）
+    prev_char = text[start - 1] if start > 0 else ""
+    next_char = text[end] if end < len(text) else ""
+
+    # 数字间 → "到"（如 5——10）
+    if prev_char.isdigit() and next_char.isdigit():
+        return "到"
+
+    # 闭引号前 → "。"（对话被截断收尾）
+    if next_char in _CLOSE_QUOTE_CHARS:
+        return "。"
+
+    # 因果连词前 → "："（引出解释）
+    remaining = text[end:end + 6]
+    if any(remaining.startswith(p) for p in _CAUSAL_PREFIXES):
+        return "："
+
+    # 句末标点前 → 删除（……。 → 。）
+    if next_char in _SENTENCE_END_PUNCT:
+        return ""
+
+    # 标点后 → 删除（。…… → 。）
+    if prev_char in _SENTENCE_END_PUNCT or prev_char in _CLOSE_QUOTE_CHARS:
+        return ""
+
+    # 其他 → 逗号（默认节奏停顿）
+    return "，"
+
+
+
 
 
 def should_run_deslop(text: str) -> tuple[bool, str]:

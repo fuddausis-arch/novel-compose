@@ -121,7 +121,7 @@ def detect_not_is_comparison(text: str) -> list[dict]:
 _EM_DASH_PATTERNS = [
     re.compile(r'——'),  # 中文双破折号
     re.compile(r'(?<![\d—])—(?![\d—])'),  # 单个 em dash（非数字范围）
-    re.compile(r'--'),  # ASCII 双连字符
+    re.compile(r'--+'),  # ASCII 连字符（2 个及以上，对齐 oh-story check-ai-patterns.js:165）
 ]
 
 
@@ -280,9 +280,10 @@ def detect_long_sentence_repetition(text: str) -> list[dict]:
 
 # ── 7. truncation（截断）──
 
-# 终止标点集：句末合法收尾字符（含中英文引号/括号/句末标点）
+# 终止标点集：句末合法收尾字符（含中英文引号/括号/句末标点/省略号）
+# 对齐 oh-story check-degeneration.js:233-247（含 … 省略号收尾）
 _TERMINAL_PUNCT = set([
-    '。', '！', '？', '!', '?', '…',
+    '。', '！', '？', '!', '?', '…', '…',
     '"', "'",  # ASCII 引号
     '\u201c', '\u201d',  # 中文双引号 “”
     '\u2018', '\u2019',  # 中文单引号 ‘’
@@ -324,8 +325,11 @@ def detect_truncation(text: str) -> list[dict]:
 _AI_SELF_PATTERNS = [
     re.compile(r'作为(?:一个)?(?:AI|人工智能|语言模型|大模型)'),
     re.compile(r'我是(?:一个)?(?:AI|人工智能|语言模型|大模型)'),
+    # 对齐 oh-story check-degeneration.js:37（补 Here's / am unable / apologize）
     re.compile(r'As an AI', re.IGNORECASE),
     re.compile(r'I am an AI', re.IGNORECASE),
+    re.compile(r"I (?:cannot|can't|am unable|apologize)", re.IGNORECASE),
+    re.compile(r"Here'?s", re.IGNORECASE),
     re.compile(r'I cannot (?:continue|generate|create)', re.IGNORECASE),
     re.compile(r'\bSure,', re.IGNORECASE),
     re.compile(r'\bCertainly,', re.IGNORECASE),
@@ -402,10 +406,16 @@ _TIER1_WORDS = [
 ]
 
 # tier2：章节结构/歧义词，恒 advisory（正文里应是具体人名/场景，不是元叙述）
+# 对齐 oh-story check-degeneration.js:48（补 第X章/这一章/上章/下章/前一章/后一章/前文/后文）
 _TIER2_WORDS = [
-    "本章", "上一章", "下一章", "伏笔", "读者", "任务描述",
+    "本章", "这一章", "上一章", "上章", "下一章", "下章",
+    "前一章", "后一章", "前文", "后文",
+    "伏笔", "读者", "任务描述",
     "主角", "反派", "配角",
 ]
+
+# 首行章节标题豁免：oh-story check-degeneration.js:281 对首行 "第N章" 标题降级豁免
+_CHAPTER_TITLE_RE = re.compile(r'^\s*第[一二三四五六七八九十百千零0-9]+[章节回卷]')
 
 
 def detect_engineering_word_leakage(text: str) -> list[dict]:
@@ -413,10 +423,18 @@ def detect_engineering_word_leakage(text: str) -> list[dict]:
 
     tier1：非对话行 blocking，对话行 advisory
     tier2：恒 advisory
+
+    首行章节标题（第N章）豁免 tier2 的"本章/这一章"类误报——
+    对齐 oh-story check-degeneration.js:281。
     """
     results: list[dict] = []
     lines = text.split('\n')
+    first_content_line = True
     for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        is_chapter_title = first_content_line and bool(_CHAPTER_TITLE_RE.match(stripped))
         is_dialog = _is_dialogue_line(line)
         # tier1
         for word in _TIER1_WORDS:
@@ -428,16 +446,18 @@ def detect_engineering_word_leakage(text: str) -> list[dict]:
                     "position": -1,
                     "message": f"工程词/剧透泄漏'{word}'：{'对话行advisory' if is_dialog else '正文blocking'}",
                 })
-        # tier2
-        for word in _TIER2_WORDS:
-            if word in line:
-                results.append({
-                    "pattern": "engineering-word-leakage",
-                    "severity": SEVERITY_ADVISORY,
-                    "matched": word,
-                    "position": -1,
-                    "message": f"工程词'{word}'：advisory（检查是否应替换为具体表述）",
-                })
+        # tier2（首行章节标题豁免）
+        if not is_chapter_title:
+            for word in _TIER2_WORDS:
+                if word in line:
+                    results.append({
+                        "pattern": "engineering-word-leakage",
+                        "severity": SEVERITY_ADVISORY,
+                        "matched": word,
+                        "position": -1,
+                        "message": f"工程词'{word}'：advisory（检查是否应替换为具体表述）",
+                    })
+        first_content_line = False
     return results
 
 
@@ -450,7 +470,12 @@ _PLACEHOLDER_PATTERNS = [
     re.compile(r'placeholder', re.IGNORECASE),
     re.compile(r'此处省略'),
     re.compile(r'以下省略'),
-    re.compile(r'[？?]{2,}'),  # 多个替换字符
+    # 括号省略精确正则：对齐 oh-story check-degeneration.js:38
+    # 覆盖 "（此处省略）"/"(这里略)"/"（下文略过）" 等所有变体
+    re.compile(r'[（(](?:此处|以下|这里|下文|后续)?\s*(?:省略|略)(?:去|过)?[^）)]{0,10}[）)]'),
+    # 乱码替换字符 U+FFFD：对齐 oh-story check-degeneration.js:36
+    re.compile(r'\uFFFD'),
+    re.compile(r'[？?]{2,}'),  # 多个问号（疑似替换字符）
 ]
 
 
