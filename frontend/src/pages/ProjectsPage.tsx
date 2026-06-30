@@ -6,15 +6,27 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { ProjectCard } from "@/components/projects/ProjectCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/useToast";
 import { useAppStore } from "@/store";
+import { api } from "@/api";
 
 export default function ProjectsPage() {
   const navigate = useNavigate();
-  const { showError } = useToast();
+  const { showSuccess, showError } = useToast();
   const projects = useAppStore((state) => state.projects);
   const refreshProjects = useAppStore((state) => state.refreshProjects);
+  const setCurrentProject = useAppStore((state) => state.setCurrentProject);
   const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ title: "", genre: "", summary: "" });
 
   useEffect(() => {
     refreshProjects().catch((err) => {
@@ -37,7 +49,7 @@ export default function ProjectsPage() {
             <p className="text-sm text-muted">共 {projects.length} 个项目</p>
           </div>
 
-          <Button variant="primary" onClick={() => {}}>
+          <Button variant="primary" onClick={() => setOpen(true)}>
             <Plus className="mr-1 h-4 w-4" />
             新建项目
           </Button>
@@ -70,13 +82,92 @@ export default function ProjectsPage() {
               />
             ))}
 
-            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border-strong p-4 text-muted hover:bg-surface-elevated cursor-pointer">
+            <div
+              onClick={() => setOpen(true)}
+              className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border-strong p-4 text-muted hover:bg-surface-elevated cursor-pointer"
+            >
               <Plus className="h-6 w-6" />
               <span className="mt-2 text-sm font-medium">创建新项目</span>
             </div>
           </div>
         </div>
       </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>新建项目</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!form.title.trim()) {
+                showError("请输入作品标题");
+                return;
+              }
+              setCreating(true);
+              try {
+                const p = await api.createProject({
+                  title: form.title.trim(),
+                  genre: form.genre.trim() || "未分类",
+                  summary: form.summary.trim(),
+                });
+                await refreshProjects();
+                setCurrentProject(p);
+                showSuccess("项目创建成功");
+                setOpen(false);
+                setForm({ title: "", genre: "", summary: "" });
+                navigate(`/projects/${p.id}/dashboard`);
+              } catch (err: any) {
+                showError("创建失败：" + (err.message || "未知错误"));
+              } finally {
+                setCreating(false);
+              }
+            }}
+            className="space-y-4"
+          >
+            <div className="space-y-1.5">
+              <span className="text-sm font-medium">作品标题</span>
+              <Input
+                placeholder="请输入作品标题"
+                value={form.title}
+                onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1.5">
+              <span className="text-sm font-medium">类型</span>
+              <Input
+                placeholder="如：玄幻 / 科幻 / 都市"
+                value={form.genre}
+                onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <span className="text-sm font-medium">一句话简介</span>
+              <Textarea
+                placeholder="简单描述一下作品..."
+                value={form.summary}
+                onChange={(e) => setForm((f) => ({ ...f, summary: e.target.value }))}
+                rows={3}
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setOpen(false)}
+                disabled={creating}
+              >
+                取消
+              </Button>
+              <Button type="submit" variant="primary" disabled={creating || !form.title.trim()}>
+                {creating ? "创建中..." : "创建"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </AppLayout>
   );
 }
