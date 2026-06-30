@@ -10,7 +10,12 @@ const NAV_ITEMS = [
   { path: "settings", label: "设置" },
 ] as const;
 
-export function ProjectNav() {
+export interface ProjectNavProps {
+  leftSlot?: React.ReactNode;
+  rightSlot?: React.ReactNode;
+}
+
+export function ProjectNav({ leftSlot, rightSlot }: ProjectNavProps = {}) {
   const navigate = useNavigate();
   const { projectId } = useParams<{ projectId: string }>();
   const location = useLocation();
@@ -26,6 +31,7 @@ export function ProjectNav() {
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface-elevated px-4">
       <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+        {leftSlot}
         <span className="text-base">📖</span>
         <span className="max-w-[12rem] truncate">{project?.title || "未选择作品"}</span>
       </div>
@@ -43,6 +49,7 @@ export function ProjectNav() {
       </nav>
 
       <div className="flex items-center gap-3 text-sm text-muted">
+        {rightSlot}
         <div className="flex items-center gap-1.5">
           <span>🔍</span>
           <span>搜索</span>

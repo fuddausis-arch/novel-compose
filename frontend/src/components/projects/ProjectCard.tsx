@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { cn } from "@/lib/utils";
 import type { Project } from "@/types";
 
@@ -7,7 +8,11 @@ export interface ProjectCardProps {
   onClick: () => void;
 }
 
-export function ProjectCard({ project, active, onClick }: ProjectCardProps) {
+export const ProjectCard = memo(function ProjectCard({
+  project,
+  active,
+  onClick,
+}: ProjectCardProps) {
   return (
     <div
       data-testid="project-card"
@@ -36,4 +41,4 @@ export function ProjectCard({ project, active, onClick }: ProjectCardProps) {
       </div>
     </div>
   );
-}
+});

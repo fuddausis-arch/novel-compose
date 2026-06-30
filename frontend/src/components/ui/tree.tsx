@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { cn } from "@/lib/utils";
 
 export interface TreeItemProps {
@@ -9,7 +10,7 @@ export interface TreeItemProps {
   depth?: number;
 }
 
-export function TreeItem({
+export const TreeItem = memo(function TreeItem({
   label,
   expanded,
   onToggle,
@@ -57,4 +58,4 @@ export function TreeItem({
       <span className="truncate">{label}</span>
     </div>
   );
-}
+});
