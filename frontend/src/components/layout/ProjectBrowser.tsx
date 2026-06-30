@@ -2,6 +2,10 @@ import { useState } from "react";
 import { useAppStore } from "@/store";
 import { TreeItem } from "@/components/ui/tree";
 
+export interface ProjectBrowserProps {
+  onOpenChapter?: (chapterId: number, title: string) => void;
+}
+
 const CATEGORIES = [
   { key: "outline", label: "大纲", icon: "📁" },
   { key: "characters", label: "角色", icon: "👤" },
@@ -12,7 +16,7 @@ const CATEGORIES = [
 
 type CategoryKey = (typeof CATEGORIES)[number]["key"];
 
-export function ProjectBrowser() {
+export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
   const [expanded, setExpanded] = useState<Record<CategoryKey, boolean>>({
     outline: true,
     characters: false,
@@ -21,7 +25,7 @@ export function ProjectBrowser() {
     factions: false,
   });
 
-  const outlines = useAppStore((s) => s.outlines);
+  const chapters = useAppStore((s) => s.chapters);
   const characters = useAppStore((s) => s.characters);
 
   const toggle = (key: CategoryKey) => {
@@ -50,14 +54,19 @@ export function ProjectBrowser() {
 
           {expanded[category.key] && category.key === "outline" && (
             <div className="mt-0.5">
-              {outlines.length === 0 ? (
-                <TreeItem label="暂无大纲" depth={1} />
+              {chapters.length === 0 ? (
+                <TreeItem label="暂无章节" depth={1} />
               ) : (
-                outlines.map((outline) => (
+                chapters.map((chapter) => (
                   <TreeItem
-                    key={outline.id}
-                    label={outline.title || `大纲 #${outline.id}`}
+                    key={chapter.chapter}
+                    label={chapter.title || `第${chapter.chapter}章`}
                     depth={1}
+                    onClick={
+                      onOpenChapter
+                        ? () => onOpenChapter(chapter.chapter, chapter.title)
+                        : undefined
+                    }
                   />
                 ))
               )}
