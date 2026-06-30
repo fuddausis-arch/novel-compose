@@ -10,6 +10,7 @@ export interface ProjectCardProps {
 export function ProjectCard({ project, active, onClick }: ProjectCardProps) {
   return (
     <div
+      data-testid="project-card"
       onClick={onClick}
       className={cn(
         "p-4 rounded-xl border bg-surface-elevated cursor-pointer transition-all",
