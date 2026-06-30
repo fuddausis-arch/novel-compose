@@ -28,24 +28,24 @@ export function useOpenTabs(): UseOpenTabsReturn {
     setActiveTabId(tab.id);
   }, []);
 
-  const close = useCallback((id: string) => {
-    setTabs((prev) => {
-      const index = prev.findIndex((t) => t.id === id);
-      if (index === -1) return prev;
+  const close = useCallback(
+    (id: string) => {
+      const index = tabs.findIndex((t) => t.id === id);
+      if (index === -1) return;
 
-      const next = prev.filter((t) => t.id !== id);
+      const next = tabs.filter((t) => t.id !== id);
+      setTabs(next);
 
-      setActiveTabId((currentActiveId) => {
-        if (currentActiveId !== id) return currentActiveId;
-        if (next.length === 0) return null;
-
-        const adjacentIndex = Math.min(index, next.length - 1);
-        return next[adjacentIndex]?.id ?? null;
-      });
-
-      return next;
-    });
-  }, []);
+      if (activeTabId === id) {
+        setActiveTabId(
+          next.length === 0
+            ? null
+            : next[Math.min(index, next.length - 1)]?.id ?? null
+        );
+      }
+    },
+    [tabs, activeTabId]
+  );
 
   return { tabs, activeTabId, open, close, setActiveTabId };
 }
