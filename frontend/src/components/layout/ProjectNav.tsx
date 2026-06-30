@@ -1,6 +1,8 @@
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
 import { useAppStore } from "@/store";
 import { Pill } from "@/components/ui/pill";
+import { Button } from "@/components/ui/button";
 
 const NAV_ITEMS = [
   { path: "dashboard", label: "工作台" },
@@ -21,6 +23,8 @@ export function ProjectNav({ leftSlot, rightSlot }: ProjectNavProps = {}) {
   const location = useLocation();
   const project = useAppStore((s) => s.currentProject);
 
+  const canGoBack = location.key !== "default";
+
   const handleNavigate = (path: string) => {
     if (!projectId) return;
     navigate(`/projects/${projectId}/${path}`);
@@ -32,6 +36,16 @@ export function ProjectNav({ leftSlot, rightSlot }: ProjectNavProps = {}) {
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface-elevated px-4">
       <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
         {leftSlot}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 w-8 px-0"
+          onClick={() => navigate(-1)}
+          disabled={!canGoBack}
+          title="返回"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
         <span className="text-base">📖</span>
         <span className="max-w-[12rem] truncate">{project?.title || "未选择作品"}</span>
       </div>

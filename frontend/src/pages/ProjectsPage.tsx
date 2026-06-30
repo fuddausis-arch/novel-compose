@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Plus, Search, ArrowUpDown } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Plus, Search, ArrowUpDown, ArrowLeft } from "lucide-react";
 
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ProjectCard } from "@/components/projects/ProjectCard";
@@ -19,7 +19,9 @@ import { api } from "@/api";
 
 export default function ProjectsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { showSuccess, showError } = useToast();
+  const canGoBack = location.key !== "default";
   const projects = useAppStore((state) => state.projects);
   const refreshProjects = useAppStore((state) => state.refreshProjects);
   const setCurrentProject = useAppStore((state) => state.setCurrentProject);
@@ -44,9 +46,21 @@ export default function ProjectsPage() {
     <AppLayout hideNav>
       <div className="flex h-full flex-col overflow-hidden bg-background">
         <header className="flex items-center justify-between border-b border-border px-6 py-4">
-          <div>
-            <h1 className="text-xl font-bold text-foreground">我的作品</h1>
-            <p className="text-sm text-muted">共 {projects.length} 个项目</p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 px-0"
+              onClick={() => navigate(-1)}
+              disabled={!canGoBack}
+              title="返回"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <div>
+              <h1 className="text-xl font-bold text-foreground">我的作品</h1>
+              <p className="text-sm text-muted">共 {projects.length} 个项目</p>
+            </div>
           </div>
 
           <Button variant="primary" onClick={() => setOpen(true)}>
