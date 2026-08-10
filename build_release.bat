@@ -3,7 +3,7 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo ============================================
-echo  NovelAgent Release Builder
+echo  NovelCompose Release Builder
 echo ============================================
 echo.
 
@@ -76,7 +76,7 @@ echo  Installer location: release5\
 echo ============================================
 echo.
 echo  Usage for your friend:
-echo  1. Install release5\NovelAgent Setup *.exe
+echo  1. Install release5\NovelCompose Setup *.exe
 echo  2. Launch from desktop shortcut
 echo  3. API key is built-in, no extra config
 echo.
