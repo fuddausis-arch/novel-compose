@@ -86,14 +86,6 @@ export function PlanningView({ setLoading: setGlobalLoading }: { setLoading?: (l
     } catch { /* ignore */ }
   }, [project?.id]);
 
-  if (!project) {
-    return (
-      <div className="flex h-full items-center justify-center text-muted">
-        请先选择一个项目
-      </div>
-    );
-  }
-
   const handleTemplateChange = async (key: string) => {
     setTemplateKey(key);
     if (!key || !project) return;
@@ -232,6 +224,14 @@ export function PlanningView({ setLoading: setGlobalLoading }: { setLoading?: (l
       runDetect(result);
     }
   }, [result]);
+
+  if (!project) {
+    return (
+      <div className="flex h-full items-center justify-center text-muted">
+        请先选择一个项目
+      </div>
+    );
+  }
 
   const handleReview = async (approved: boolean) => {
     if (!result?.thread_id) return;

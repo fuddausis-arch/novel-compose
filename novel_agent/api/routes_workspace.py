@@ -302,8 +302,9 @@ async def list_workspace_files(
 
     files: list[dict[str, Any]] = []
     for f in sorted(target.iterdir()):
+        rel = f.relative_to(base_dir).as_posix()
         if f.is_dir():
-            files.append({"name": f.name, "type": "dir", "size": 0})
+            files.append({"name": f.name, "type": "dir", "size": 0, "path": rel})
         elif f.is_file():
             ext = f.suffix.lower()
             if ext in _ALLOWED_EXTENSIONS:
@@ -312,6 +313,7 @@ async def list_workspace_files(
                     "type": "file",
                     "size": f.stat().st_size,
                     "ext": ext,
+                    "path": rel,
                 })
     return {"files": files, "path": str(subpath), "base": str(base_dir)}
 
