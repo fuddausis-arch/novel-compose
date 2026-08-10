@@ -197,10 +197,14 @@ def delete_project(project_id: int, purge_data: bool = True):
             repo = BibleRepository(db, project_id=project_id)
             deleted = repo.delete_all_project_data()
         db.delete(p); db.commit()
+        # 先关闭该项目的 chroma 向量库连接，释放 sqlite 文件锁，
+        # 否则 Windows 上 rmtree 报 PermissionError（chroma.sqlite3 被占用）
+        from novel_agent.memory.archival import close_project_memories
+        close_project_memories(project_id)
         # 删除项目专属目录
         project_dir = cfg.project_dir(project_id)
         if project_dir.exists():
-            shutil.rmtree(project_dir)
+            shutil.rmtree(project_dir, ignore_errors=True)
         return {"deleted": True, "project_id": project_id,
                 "data_purged": deleted if purge_data else 0}
     finally:
@@ -232,6 +236,12 @@ def batch_delete_projects(req: BatchDeleteRequest):
                 db.rollback()
                 failed_ids.append({"project_id": pid, "error": str(e)})
                 continue
+            # 释放该项目的 chroma 文件锁后删除目录（Windows 上锁文件导致 rmtree 失败）
+            try:
+                from novel_agent.memory.archival import close_project_memories
+                close_project_memories(pid)
+            except Exception:
+                pass
             project_dir = cfg.project_dir(pid)
             if project_dir.exists():
                 shutil.rmtree(project_dir, ignore_errors=True)

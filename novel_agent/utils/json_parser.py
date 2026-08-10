@@ -116,13 +116,19 @@ def parse_json_strict(text: str, *, default: dict | None = None) -> dict:
 def _strip_code_fence(text: str) -> str:
     """剥离 ```json...``` 围栏和常见前言/尾注。"""
     text = text.strip()
-    # 剥离代码块：优先匹配 ```json ... ```，也兼容只有开头 ``` 没有结尾的情况
-    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if m:
-        return m.group(1).strip()
+    # 剥离代码块：优先匹配 ```json ... ```（结束围栏取最后一个 ```，
+    # 避免 JSON 字符串内部出现 ``` 导致截断），也兼容只有开头 ``` 没有结尾的情况
     if text.startswith("```"):
-        # 只有开头围栏，移除第一行后返回剩余内容
-        return re.sub(r"^```(?:json)?\s*\n?", "", text, flags=re.IGNORECASE).strip()
+        end = text.rfind("```")
+        if end > 3:
+            inner = text[3:end]
+            inner = re.sub(r"^\s*(?:json|JSON)?\s*", "", inner, count=1)
+            body = inner.strip()
+            if body.startswith("{") or body.startswith("["):
+                return body
+    # 只有开头围栏或无 { [ 开头：移除围栏行
+    if text.startswith("```") or "```" in text[:30]:
+        return re.sub(r"^```(?:json|JSON)?\s*\n?", "", text, flags=re.IGNORECASE).strip()
     # 剥离前言（"好的，以下是..." / "以下是..."）
     text = re.sub(r'^(好的[，,]?\s*|以下是|这是|输出如下[：:])', '', text)
     # 剥离尾注（"希望您喜欢" / "以上是..."）

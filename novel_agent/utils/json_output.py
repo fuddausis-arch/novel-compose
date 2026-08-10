@@ -31,13 +31,21 @@ def strip_fence(text: str) -> str:
     """策略1：去除 ```json ... ``` 围栏。
 
     兼容只有开头围栏没有结尾、以及散落 ``` 行的情况。
+    结束围栏取文本中最后一个 ```（JSON 字符串内部可能包含 ```，用首个会截断）。
     """
     stripped = text.strip()
-    # 完整围栏：```json\n...\n```
-    match = re.fullmatch(r"```(?:json|JSON)?\s*\n?(.*?)\n?```", stripped, flags=re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # 散落的 ``` 行（开头围栏但无结尾）：逐行移除 ``` 标记行
+    # 完整围栏：```json\n...\n```（结尾取最后一个 ```，避免 JSON 内部 ``` 截断）
+    if stripped.startswith("```"):
+        end = stripped.rfind("```")
+        if end > 3:
+            inner = stripped[3:end]
+            # 剥离首行语言标签（同行 ```json {...} 或异行 ```json\n{...} 均兼容）
+            inner = re.sub(r"^\s*(?:json|JSON)?\s*", "", inner, count=1)
+            body = inner.strip()
+            # 仅当剥离后确实是 JSON 主体（{ 或 [ 开头）才采用，否则落到散落 ``` 分支
+            if body.startswith("{") or body.startswith("["):
+                return body
+    # 散落的 ``` 行（开头围栏但无结尾，或首行非 ```json）：逐行移除 ``` 标记行
     if "```" in stripped:
         lines = [line for line in stripped.splitlines() if not line.strip().startswith("```")]
         return "\n".join(lines).strip()
@@ -45,19 +53,65 @@ def strip_fence(text: str) -> str:
 
 
 def normalize_quotes(text: str) -> str:
-    """策略2：中文引号 -> ASCII 直引号。
+    """策略2：中文引号 -> ASCII 直引号（仅结构位置）。
 
     中文 LLM 常在 JSON 结构中误用全角引号，导致 json.loads 失败。
-    只替换结构性引号字符，保留字符串内部内容语义。
+    但 JSON 字符串值内部的 “” 是合法内容字符，必须保留原样——
+    无脑 replace 会把字符串边界搞坏（"长老说“快到了”" → "长老说"快到了""），
+    反而让原本合法的 JSON 解析失败。
+    因此用状态机维护字符串边界：仅当全角引号出现在字符串外部（结构位置）
+    时才替换为 ASCII 直引号并同步切换字符串状态。
     """
-    return (
-        text.replace("\u201c", '"')  # “
-        .replace("\u201d", '"')  # ”
-        .replace("\uff02", '"')  # ＂
-        .replace("\u2018", "'")  # ‘
-        .replace("\u2019", "'")  # ’
-        .replace("\uff07", "'")  # ＇
-    )
+    result: list[str] = []
+    in_string = False
+    escape = False
+    i = 0
+    n = len(text)
+    # 全角引号：仅字符串外部替换为 "（JSON 定界符），字符串内部保留原文
+    # 全角单引号：非 JSON 定界符，统一保留原文，避免破坏状态机
+    fullwidth_double = {"\u201c", "\u201d", "\uff02"}  # “ ” ＂
+    while i < n:
+        ch = text[i]
+        if escape:
+            escape = False
+            result.append(ch)
+            i += 1
+            continue
+        if ch == "\\":
+            escape = True
+            result.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            i += 1
+            continue
+        if ch in fullwidth_double:
+            if not in_string:
+                # 字符串外部：当作 JSON 字符串定界符，替换并切换状态
+                in_string = not in_string
+                result.append('"')
+                i += 1
+                continue
+            # 字符串内部：全角右引号若后跟 : , } ]（key 边界特征），
+            # 视为全角引号包裹的 key 结束，替换为 " 并退出字符串；
+            # 否则（正文里的“”）是内容字符，保留原样。
+            if ch == "\u201d" or ch == "\uff02":
+                j = i + 1
+                while j < n and text[j] in " \t\r\n":
+                    j += 1
+                if j < n and text[j] in ":,}]":
+                    in_string = not in_string
+                    result.append('"')
+                    i += 1
+                    continue
+            result.append(ch)
+            i += 1
+            continue
+        result.append(ch)
+        i += 1
+    return "".join(result)
 
 
 def extract_body(text: str) -> str:

@@ -52,13 +52,17 @@ async def run_planning(req: PlanRequest):
     db, repo = _get_repo(req.project_id)
     runner = VolumeRunner(load_config(), repo=repo)
     try:
-        result = await runner.run(
-            volume=req.volume, chapter_count=req.chapter_count,
-            thread_id=req.thread_id, custom_prompt=req.custom_prompt,
-            target_volumes=req.target_volumes,
-            golden_finger=req.golden_finger,
-            protagonist=req.protagonist,
-            constitution=req.constitution)
+        try:
+            result = await runner.run(
+                volume=req.volume, chapter_count=req.chapter_count,
+                thread_id=req.thread_id, custom_prompt=req.custom_prompt,
+                target_volumes=req.target_volumes,
+                golden_finger=req.golden_finger,
+                protagonist=req.protagonist,
+                constitution=req.constitution)
+        except ValueError as e:
+            # 项目缺必填字段（标题/类型）等业务校验错误 → 400 友好提示而非 500
+            raise HTTPException(400, str(e))
         await runner.aclose()
         result["thread_id"] = req.thread_id
         return result
