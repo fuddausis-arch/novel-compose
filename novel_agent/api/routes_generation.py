@@ -1340,7 +1340,8 @@ async def generate_volumes(request: Request, req: GenerateVolumesRequest):
                 warning += f"（跳过 {skipped} 个与已有重复的）"
         return GenerateOutlinesResponse(created=len(items), items=items, warning=warning)
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
         db.close()
 
 
@@ -1585,6 +1586,7 @@ JSON：{{"blueprint": [{{"order": 1, "act": "开端", "title_hint": "", "plot_hi
 @limiter.limit("10/minute")
 async def generate_chapters(request: Request, req: GenerateChaptersRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
+    client = None
     try:
         arc = repo.get_outline(req.parent_id)
         if not arc or arc.level != "arc":
@@ -1759,7 +1761,8 @@ async def generate_chapters(request: Request, req: GenerateChaptersRequest):
             warning = f"目标 {req.count} 章，实际生成 {len(items)} 章。可再次点击生成补充剩余章节（序号会自动填补空缺）。"
         return GenerateOutlinesResponse(created=len(items), items=items, warning=warning)
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
         db.close()
 
 
@@ -1904,6 +1907,7 @@ async def generate_chapters_by_volume(request: Request, req: GenerateChaptersByV
     - 单细纲失败不中断整卷，记录 warning 继续下一细纲
     """
     db, repo, project, cfg = _get_repo(req.project_id)
+    client = None
     try:
         volume = repo.get_outline(req.volume_id)
         if not volume or volume.level != "volume":

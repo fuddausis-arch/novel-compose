@@ -403,6 +403,13 @@ export interface DeepAiStyleReport {
   error: string | null;
 }
 
+/** 深度检测模型就绪状态 */
+export interface AiModelStatus {
+  ready: boolean;                  // 深度模型是否可用
+  source: string | null;           // finetuned（微调版）/ zhv3（原版）/ null
+  dirs: { name: string; ready: boolean }[];
+}
+
 export interface PipelineNodeEvent {
   node: string;
   output: Record<string, unknown>;

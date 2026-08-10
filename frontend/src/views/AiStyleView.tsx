@@ -1,10 +1,11 @@
 // AI 味检测窗口：选章节 → 检测 → 报告 → 润色（规则/LLM 流式）→ 复检对比 → 应用到章节。
-// 数据走 /api/audit/ai-style/*，达标线 AI 率 ≤20%（passed）。
+// 数据走 /api/audit/ai-style/*，达标线 AI 率 ≤30%（后端 ai_pass_ai_rate 可配置，前端读 report.pass_line）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   Copy,
+  Download,
   Loader2,
   Save,
   ScanSearch,
@@ -15,7 +16,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { api } from "@/api";
-import type { AiStyleReport, AiStyleRepairResult, ChapterListItem, DeepAiStyleReport } from "@/types";
+import type { AiModelStatus, AiStyleReport, AiStyleRepairResult, ChapterListItem, DeepAiStyleReport } from "@/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -68,6 +69,53 @@ export default function AiStyleView() {
   // 深度检测（roberta 中文模型，最准但慢）
   const [deepReport, setDeepReport] = useState<DeepAiStyleReport | null>(null);
   const [deepChecking, setDeepChecking] = useState(false);
+
+  // 深度检测模型：状态 + 一键下载（选装）
+  const [modelStatus, setModelStatus] = useState<AiModelStatus | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProg, setDownloadProg] = useState({ file: "", index: 0, total: 0 });
+  const downloadAbortRef = useRef<AbortController | null>(null);
+
+  const refreshModelStatus = useCallback(() => {
+    api
+      .getAiModelStatus()
+      .then(setModelStatus)
+      .catch(() => setModelStatus(null));
+  }, []);
+
+  useEffect(() => {
+    refreshModelStatus();
+  }, [refreshModelStatus]);
+
+  const handleDownloadModel = useCallback(() => {
+    setDownloading(true);
+    setDownloadProg({ file: "", index: 0, total: 0 });
+    downloadAbortRef.current = api.downloadAiModelStream(
+      (file, index, total) => setDownloadProg({ file, index, total }),
+      (ok) => {
+        setDownloading(false);
+        downloadAbortRef.current = null;
+        if (ok) {
+          showSuccess("深度检测模型下载完成");
+          refreshModelStatus();
+        } else {
+          showError("模型下载完成但校验未通过，请重试");
+        }
+      },
+      (msg) => {
+        setDownloading(false);
+        downloadAbortRef.current = null;
+        showError(msg);
+      },
+    );
+  }, [showSuccess, showError, refreshModelStatus]);
+
+  const handleStopDownload = useCallback(() => {
+    downloadAbortRef.current?.abort();
+    downloadAbortRef.current = null;
+    setDownloading(false);
+    showError("已中断下载");
+  }, [showError]);
 
   // 误判白名单：用户标记为误判的词（角色名/设定词等），检测报告里不再显示
   const [ignoreWords, setIgnoreWords] = useState<Set<string>>(new Set());
@@ -327,6 +375,50 @@ export default function AiStyleView() {
           </Button>
         </div>
       </div>
+
+      {/* 深度检测模型：选装下载 */}
+      {modelStatus && !modelStatus.ready && (
+        <Card className="mb-4 border-warning/30">
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <CardTitle>深度检测模型未安装</CardTitle>
+            <Badge variant="warning">选装 · 约 390MB</Badge>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted">
+              深度检测使用开源「AI 文本检测模型」（ModelScope 国内源），检测更准、能定位可疑段落。
+              下载一次即可永久使用；不下载也能用基础检测（规则 + 统计）。
+            </p>
+            {downloading ? (
+              <div className="space-y-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted">正在下载 {downloadProg.file || "..."}</span>
+                  {downloadProg.total > 0 && (
+                    <span className="tabular-nums">
+                      {downloadProg.index}/{downloadProg.total}
+                    </span>
+                  )}
+                </div>
+                <Progress value={downloadProg.total > 0 ? (downloadProg.index / downloadProg.total) * 100 : 10} />
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted">文件较大，请耐心等待</p>
+                  <Button variant="danger" size="sm" onClick={handleStopDownload}>
+                    <Square className="h-3.5 w-3.5" /> 中断
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button variant="primary" onClick={handleDownloadModel}>
+                <Download className="h-4 w-4" /> 下载深度检测模型
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+      {modelStatus?.ready && (
+        <p className="mb-2 text-right text-xs text-muted">
+          深度检测模型已就绪{modelStatus.source === "finetuned" ? "（微调版，更贴合网文）" : "（原版）"}
+        </p>
+      )}
 
       {/* 无报告引导 */}
       {!report && !checking && (

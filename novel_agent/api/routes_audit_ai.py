@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -271,3 +272,100 @@ def check_chapter(req: CheckChapterRequest):
         raise HTTPException(404, f"章节 {req.chapter} 无正文")
     ignore = _role_ignore_words(req.project_id)
     return ai_detect_run(text, ignore_words=ignore)
+
+
+# ── 深度检测模型：状态查询 + 一键下载（选装）──────────────
+
+_MODEL_REPO = "YuchuanTian/AIGC_text_detector_zhv3"
+# zhv3 模型仓库中的文件清单（跳过 .gitattributes）
+_MODEL_FILES = [
+    "config.json",
+    "configuration.json",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+    "vocab.txt",
+    "pytorch_model.bin",
+]
+_download_lock = __import__("threading").Lock()
+
+
+def _has_weights(d: Path) -> bool:
+    """判断模型目录是否含权重（兼容 pytorch_model.bin 与 model.safetensors）。"""
+    return (d / "pytorch_model.bin").exists() or (d / "model.safetensors").exists()
+
+
+def _model_dirs_info() -> dict:
+    """检查深度检测模型就绪状态（微调版 > 原版 zhv3）。"""
+    from novel_agent.config import load_config
+    base = load_config().project_data_dir / "models"
+
+    def complete(name: str) -> bool:
+        d = base / name
+        return (d / "config.json").exists() and _has_weights(d)
+
+    dirs = []
+    if base.exists():
+        for p in base.iterdir():
+            if p.is_dir():
+                dirs.append({
+                    "name": p.name,
+                    "ready": _has_weights(p),
+                })
+    if complete("AIGC_detector_zhv3_finetuned"):
+        return {"ready": True, "source": "finetuned", "dirs": dirs}
+    if complete("AIGC_detector_zhv3"):
+        return {"ready": True, "source": "zhv3", "dirs": dirs}
+    return {"ready": False, "source": None, "dirs": dirs}
+
+
+@router.get("/ai-style/model-status")
+def model_status():
+    """查询深度检测模型是否就绪、当前使用哪个版本。"""
+    return _model_dirs_info()
+
+
+@router.post("/ai-style/model-download")
+async def model_download():
+    """SSE 流式下载深度检测模型（zhv3，约 390MB，ModelScope 国内源）。
+
+    事件：
+    - file   {file, index, total}  正在下载第 index/total 个文件
+    - done   {ok, model_dir}       下载完成（ok 为完整性校验结果）
+    - error  {message}             失败
+    """
+    async def event_gen():
+        if not _download_lock.acquire(blocking=False):
+            yield {
+                "event": "error",
+                "data": json.dumps({"message": "已有模型下载任务进行中，请稍候"}, ensure_ascii=False),
+            }
+            return
+        try:
+            from modelscope.hub.file_download import model_file_download
+            from novel_agent.config import load_config
+            target = load_config().project_data_dir / "models" / "AIGC_detector_zhv3"
+            target.mkdir(parents=True, exist_ok=True)
+            n = len(_MODEL_FILES)
+            for i, fname in enumerate(_MODEL_FILES, 1):
+                yield {
+                    "event": "file",
+                    "data": json.dumps({"file": fname, "index": i, "total": n}, ensure_ascii=False),
+                }
+                await asyncio.to_thread(
+                    model_file_download, _MODEL_REPO, fname, local_dir=str(target)
+                )
+            ok = (target / "config.json").exists() and (target / "pytorch_model.bin").exists()
+            yield {
+                "event": "done",
+                "data": json.dumps({"ok": ok, "model_dir": str(target)}, ensure_ascii=False),
+            }
+        except Exception as e:  # noqa: BLE001 - 下载异常统一转 error 事件
+            logger.warning("模型下载失败: %s", e)
+            yield {
+                "event": "error",
+                "data": json.dumps({"message": f"模型下载失败：{e}"}, ensure_ascii=False),
+            }
+        finally:
+            _download_lock.release()
+
+    return EventSourceResponse(event_gen())

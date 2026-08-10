@@ -1,4 +1,4 @@
-import type { Project, Character, Foreshadow, Outline, WorldSetting, ChapterListItem, ChapterText, ReviewResult, ChapterBrief, Summary, GenreContext, PlanningResult, PlanningIssue, Faction, FactionRelationship, CharacterRelationship, Monster, Instance, ImportPreviewData, ImportCounts, EntityAppearance, EntityType, LLMConfig, AgentLLMConfig, EmbeddingConfig, SuggestionItem, StateChange, TruthEvent, ChapterCommitResult, ChatHistoryMsg, InteractiveChatResponse, RedLine, Gag, ImportedChapter, ImportedChapterDetail, PlotDebt, RelationshipChange, AiStyleReport, AiStyleRepairResult, DeepAiStyleReport, Storyline, StorylineMeta, StorylineDetail, StorylineNode, StorylineRelation, ScanAlert } from "./types";
+import type { Project, Character, Foreshadow, Outline, WorldSetting, ChapterListItem, ChapterText, ReviewResult, ChapterBrief, Summary, GenreContext, PlanningResult, PlanningIssue, Faction, FactionRelationship, CharacterRelationship, Monster, Instance, ImportPreviewData, ImportCounts, EntityAppearance, EntityType, LLMConfig, AgentLLMConfig, EmbeddingConfig, SuggestionItem, StateChange, TruthEvent, ChapterCommitResult, ChatHistoryMsg, InteractiveChatResponse, RedLine, Gag, ImportedChapter, ImportedChapterDetail, PlotDebt, RelationshipChange, AiStyleReport, AiStyleRepairResult, DeepAiStyleReport, AiModelStatus, Storyline, StorylineMeta, StorylineDetail, StorylineNode, StorylineRelation, ScanAlert } from "./types";
 import type { ChatSession, ChatMessageItem, ChatSendPayload, ChatChunkEvent, ChatActionEvent } from "./types/chat";
 
 // 后端 API 地址。默认同源（浏览器走 vite 代理 / 后端静态托管）。
@@ -446,6 +446,49 @@ export const api = {
   checkAiStyle: (text: string, projectId?: number) => request<AiStyleReport>("/api/audit/ai-style/check", { method: "POST", body: JSON.stringify({ text, project_id: projectId }) }),
   /** 深度检测：roberta 中文模型判别 AI 概率（最准，CPU 推理较慢） */
   checkAiStyleDeep: (text: string) => request<DeepAiStyleReport>("/api/audit/ai-style/check-deep", { method: "POST", body: JSON.stringify({ text }) }),
+  getAiModelStatus: () => request<AiModelStatus>("/api/audit/ai-style/model-status"),
+  downloadAiModelStream: (
+    onFile: (file: string, index: number, total: number) => void,
+    onDone: (ok: boolean) => void,
+    onError: (message: string) => void,
+  ): AbortController => {
+    const controller = new AbortController();
+    fetch("/api/audit/ai-style/model-download", { method: "POST", signal: controller.signal })
+      .then(async (res) => {
+        if (!res.ok) {
+          const t = await res.text().catch(() => "");
+          throw new Error(extractErrorMessage(res.status, t));
+        }
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) return;
+        let buffer = "";
+        let currentEvent = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) currentEvent = line.slice(7).trim();
+            else if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (currentEvent === "file") onFile(data.file || "", data.index || 0, data.total || 0);
+                else if (currentEvent === "done") onDone(!!data.ok);
+                else if (currentEvent === "error") onError(data.message || "下载失败");
+              } catch { /* ignore malformed */ }
+            }
+          }
+        }
+      })
+      .catch((e: any) => {
+        if (e?.name === "AbortError") return; // 用户主动中断
+        onError(e?.message || "请求失败");
+      });
+    return controller;
+  },
   checkChapterAiStyle: (projectId: number, chapter: number) => request<AiStyleReport>("/api/audit/ai-style/check-chapter", { method: "POST", body: JSON.stringify({ project_id: projectId, chapter }) }),
   repairAiStyleRule: (text: string, projectId?: number) => request<AiStyleRepairResult>("/api/audit/ai-style/repair-rule", { method: "POST", body: JSON.stringify({ text, project_id: projectId }) }),
   /** 误判白名单：列出/添加/撤销某项目标记为误判的词 */
