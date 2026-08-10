@@ -241,6 +241,19 @@ export interface ChapterCommit {
   committed_at: string | null;
 }
 
+export type PlotDebtStatus = "open" | "resolved" | "abandoned";
+
+export interface PlotDebt {
+  id: number;
+  debt_type: string;
+  description: string;
+  pressure: number;
+  term: string;
+  status: PlotDebtStatus;
+  created_chapter: number;
+  resolved_chapter: number;
+}
+
 export interface ReviewIssue {
   severity: "critical" | "high" | "medium" | "low";
   category: "setting" | "timeline" | "continuity" | "character" | "logic";
@@ -333,9 +346,127 @@ export interface ChapterText {
   text: string;
 }
 
+// ── AI 味检测与去味（audit/ai-style）─────────────────────────
+
+export interface AiStyleHit {
+  level?: string;
+  pattern?: string;
+  word?: string;
+  count?: number;
+  sentence?: string;
+  matched?: string;
+  paragraph?: string;
+  snippet?: string;
+  issue: string;
+  fix: string;
+}
+
+export interface AiStyleReport {
+  overall_score: number;      // 综合分 0-100（越高越自然）
+  rule_score: number;         // 规则层分
+  stat_score: number;         // 统计层分
+  ai_rate: number;            // AI 率 %
+  pass_line: number;          // 达标线（AI 率上限 %）
+  passed: boolean;            // AI 率 ≤ 达标线
+  verdict_hint: string;       // 给作者的判定提示（含人工判断建议）
+  dimensions: Record<string, number>;  // 7 个统计信号 0-100
+  ai_level: string;           // 自然 / 轻度AI味 / 明显AI味
+  word_hits: AiStyleHit[];
+  sentence_hits: AiStyleHit[];
+  paragraph_hits: AiStyleHit[];
+  stat_hits: AiStyleHit[];
+  total_hits: number;
+  suggestions: string[];
+  chars: number;
+  summary: string;
+}
+
+export interface AiStyleRepairResult {
+  repaired_text: string;
+  before: AiStyleReport;
+  after: AiStyleReport;
+  score_delta: number;
+  passed: boolean;
+  rounds?: number;
+  method?: "rule" | "llm";
+}
+
+/** 深度检测报告（roberta 中文模型） */
+export interface DeepAiStyleReport {
+  available: boolean;
+  ai_probability: number | null;   // 0-1，越高越像 AI
+  verdict: string;                 // AI / Mixed / Human / unavailable
+  ai_level: string;                // 明显AI味 / 疑似AI味 / 自然 / 模型未就绪
+  segments: { text: string; ai_probability: number; chars: number }[];
+  summary: string;
+  model: string;
+  error: string | null;
+}
+
 export interface PipelineNodeEvent {
   node: string;
   output: Record<string, unknown>;
+}
+
+// ── 叙事线系统 ─────────────────────────────
+export interface Storyline {
+  id: number;
+  project_id: number;
+  name: string;
+  line_type: string;
+  tags: string[];
+  status: string;
+  progress: number;
+  summary: string;
+  notes: string;
+  planned_resolve_chapter: number;
+  volume: string;
+  last_active_chapter: number;
+  node_count: number;
+  relation_count: number;
+}
+
+export interface StorylineNode {
+  id: number;
+  storyline_id: number;
+  node_type: string;
+  foreshadow_id: string;
+  chapter: number;
+  title: string;
+  description: string;
+  order_index: number;
+}
+
+export interface StorylineRelation {
+  id: number;
+  project_id: number;
+  source_storyline_id: number;
+  target_storyline_id: number;
+  relation_type: string;
+  chapter: number;
+  description: string;
+}
+
+export interface StorylineDetail {
+  line: Storyline;
+  nodes: StorylineNode[];
+  relations: StorylineRelation[];
+}
+
+export interface StorylineMeta {
+  tags: string[];
+  statuses: string[];
+  relation_types: string[];
+  node_types: string[];
+}
+
+export interface ScanAlert {
+  type: string;
+  severity: string;
+  storyline_id?: number;
+  foreshadow_id?: string;
+  chapter?: number;
+  message: string;
 }
 
 export interface Summary {

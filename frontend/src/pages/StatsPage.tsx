@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useCurrentProject } from "@/hooks/useCurrentProject";
+import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { useAppStore } from "@/store";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
@@ -31,17 +32,22 @@ export default function StatsPage() {
   const [, setRefreshing] = useState(false);
   const { showError } = useToast();
 
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!project) return;
     setRefreshing(true);
-    api
-      .getConsistencyDashboard(project.id)
-      .then((d) => setDashboard(d))
-      .catch((e) => {
-        showError("一致性看板加载失败：" + (e instanceof Error ? e.message : String(e)));
-      })
-      .finally(() => setRefreshing(false));
+    try {
+      const d = await api.getConsistencyDashboard(project.id);
+      setDashboard(d);
+    } catch (e) {
+      showError("一致性看板加载失败：" + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setRefreshing(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id]);
+
+  // 页面挂载 / 窗口 focus / bible·chapters 数据版本变化时自动重新拉取
+  useAutoRefresh(["bible", "chapters"], load, [load]);
 
   if (!project) return null;
 
@@ -65,14 +71,7 @@ export default function StatsPage() {
           <h1 className="text-xl font-bold text-foreground">统计与一致性</h1>
           <Button
             variant="outline"
-            onClick={() => {
-              if (!project) return;
-              setRefreshing(true);
-              api
-                .getConsistencyDashboard(project.id)
-                .then(setDashboard)
-                .finally(() => setRefreshing(false));
-            }}
+            onClick={() => void load()}
           >
             刷新
           </Button>

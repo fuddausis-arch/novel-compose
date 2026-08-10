@@ -30,6 +30,7 @@ import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Markdown } from "@/components/markdown";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
 
@@ -393,6 +394,19 @@ export default function DistillationPage() {
   const [fusionName, setFusionName] = useState("");
   const [fusionDesc, setFusionDesc] = useState("");
   const [fusing, setFusing] = useState(false);
+  const [deleteOriginals, setDeleteOriginals] = useState(false); // 融合成功后删除原 Skill
+  // 融合实时进度（SSE 事件驱动）
+  const [fusionStage, setFusionStage] = useState("");
+  const [fusionBatch, setFusionBatch] = useState<{ batch: number; total: number } | null>(null);
+  // 融合产物查看弹窗
+  const [viewFusion, setViewFusion] = useState<{
+    name: string;
+    description: string;
+    tags: string[];
+    distilled: boolean;
+    content: string;
+  } | null>(null);
+  const [viewFusionLoading, setViewFusionLoading] = useState(false);
 
   // 效果对比
   const [comparePrompt, setComparePrompt] = useState("");
@@ -490,22 +504,38 @@ export default function DistillationPage() {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [liveLog]);
 
-  // 卸载时中断蒸馏流
+  // 卸载时断开蒸馏流。注意：后端任务不再随连接断开而取消（后台继续跑），
+  // 切回页面时通过 loadWorkDetail / status 拉取实时进度。
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const appendLog = useCallback((msg: string) => {
     setLiveLog((prev) => [...prev.slice(-49), msg]);
   }, []);
 
-  const abortDistill = useCallback(() => {
+  const abortDistill = useCallback(async () => {
     abortRef.current?.abort();
     abortRef.current = null;
+    // 显式请求后端取消：已完成的片段/轮次保留，后续不再启动新的 LLM 调用
+    const workId = selectedWorkRef.current;
+    if (workId != null) {
+      try {
+        await fetchJson<{ cancelled: boolean }>(
+          `/api/distillation/works/${workId}/cancel`,
+          { method: "POST" },
+        );
+        showSuccess("已请求中断蒸馏，已完成的部分会保留");
+      } catch (e) {
+        showError(errorMessage(e, "中断请求失败"));
+      }
+    }
     setDistilling(false);
-  }, []);
+  }, [showSuccess, showError]);
 
   const handleSelectWork = (id: number) => {
     if (id === selectedWorkId) return;
-    abortDistill();
+    // 切换作品：只断开当前 SSE 流，不取消后台蒸馏任务（任务继续跑，切回可看进度）
+    abortRef.current?.abort();
+    abortRef.current = null;
     setSelectedWorkId(id);
     setLiveLog([]);
     setLiveProgress(null);
@@ -767,6 +797,19 @@ export default function DistillationPage() {
     });
   };
 
+  const requestDeleteFusion = (f: FusionPlan) => {
+    setConfirmState({
+      title: "删除融合方案",
+      description: `确定删除「${f.name}」吗？其产物 Skill 文件也会被移除，不可恢复。`,
+      actionLabel: "删除",
+      onConfirm: async () => {
+        await fetchJson(`/api/distillation/fusions/${f.id}`, { method: "DELETE" });
+        showSuccess("融合方案已删除");
+        await load();
+      },
+    });
+  };
+
   // ------------------------------------------------------------------
   // Skill 编辑 / 启停
   // ------------------------------------------------------------------
@@ -840,12 +883,12 @@ export default function DistillationPage() {
     setFusionSelected((prev) => ({ ...prev, [id]: Number.isNaN(v) || v < 0 ? 0 : v }));
   };
 
-  /** 「九合一」快捷选择：选中所有 Skill，等权重融合 */
+  /** 「全选」快捷选择：选中所有 Skill（任意数量），等权重融合 */
   const handleNineInOne = () => {
     const all: Record<number, number> = {};
     for (const s of allSkills) all[s.id] = 1;
     setFusionSelected(all);
-    if (!fusionName.trim()) setFusionName(`九合一融合（${allSkills.length} 个 Skill）`);
+    if (!fusionName.trim()) setFusionName(`Skill融合（${allSkills.length} 个 Skill）`);
   };
 
   const handleFuse = async () => {
@@ -880,26 +923,109 @@ export default function DistillationPage() {
     }
 
     setFusing(true);
+    setFusionStage("准备中...");
+    setFusionBatch(null);
     try {
-      await fetchJson("/api/distillation/fuse", {
+      // SSE 流式：实时展示 AI 提炼批次进度，最后收到 fuse_done 得到融合结果
+      const res = await fetch("/api/distillation/fuse", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: fusionName.trim(),
           description: fusionDesc.trim(),
           skill_ids: dbIds,
           skill_files: fileNames,
           weights,
+          delete_originals: deleteOriginals,
+          ...modelConfigFields(modelConfig),
         }),
       });
-      showSuccess("融合方案已创建，融合 Skill 已写入 Skills 系统");
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let msg = `请求失败（HTTP ${res.status}）`;
+        try {
+          const j = JSON.parse(text);
+          if (j.detail) msg = String(j.detail);
+        } catch {
+          /* 非 JSON，忽略 */
+        }
+        throw new Error(msg);
+      }
+      if (!res.body) throw new Error("无法建立流式连接");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let doneFusion: { refined?: boolean; deleted_count?: number } | null = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let evt: Record<string, unknown>;
+          try {
+            evt = JSON.parse(line.slice(6)) as Record<string, unknown>;
+          } catch {
+            continue; // ping 等无法解析的帧，忽略
+          }
+          switch (evt.type) {
+            case "fuse_start":
+              setFusionStage(`开始融合 ${evt.skill_count ?? "?"} 个 Skill`);
+              break;
+            case "fuse_batch_start":
+              setFusionBatch({ batch: Number(evt.batch ?? 1), total: Number(evt.total ?? 1) });
+              setFusionStage(`AI 提炼中（批次 ${evt.batch}/${evt.total}）`);
+              break;
+            case "fuse_batch_done":
+              setFusionStage(`批次 ${evt.batch}/${evt.total} 提炼完成`);
+              break;
+            case "fuse_done":
+              doneFusion = evt.fusion as { refined?: boolean; deleted_count?: number };
+              break;
+            case "error":
+              throw new Error(String(evt.error ?? "融合失败"));
+          }
+        }
+      }
+      if (!doneFusion) throw new Error("融合未返回结果");
+      const tip = doneFusion.refined
+        ? "融合方案已创建：多个 Skill 已提炼为一份精炼总纲"
+        : "融合方案已创建（模型不可用，已回退为拼接）";
+      const deleted = doneFusion.deleted_count ?? 0;
+      showSuccess(deleted > 0 ? `${tip}，已删除 ${deleted} 个原 Skill` : tip);
       setFusionSelected({});
       setFusionName("");
       setFusionDesc("");
+      setDeleteOriginals(false);
       await load();
     } catch (e) {
       showError(errorMessage(e, "融合失败"));
     } finally {
       setFusing(false);
+      setFusionStage("");
+      setFusionBatch(null);
+    }
+  };
+
+  /** 查看融合产物的 Skill 内容 */
+  const handleViewFusion = async (f: FusionPlan) => {
+    setViewFusionLoading(true);
+    try {
+      const data = await fetchJson<{
+        name: string;
+        description: string;
+        tags: string[];
+        distilled: boolean;
+        content: string;
+      }>(`/api/distillation/fusions/${f.id}/skill`);
+      setViewFusion(data);
+    } catch (e) {
+      showError(errorMessage(e, "查看融合 Skill 失败"));
+    } finally {
+      setViewFusionLoading(false);
     }
   };
 
@@ -1546,15 +1672,33 @@ export default function DistillationPage() {
               aria-label="融合方案描述"
             />
           </div>
+          <label className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-xs">
+            <span className="flex items-center gap-1.5 text-muted">
+              <Trash2 className="h-3.5 w-3.5" />
+              融合成功后删除原 Skill
+            </span>
+            <Switch checked={deleteOriginals} onCheckedChange={setDeleteOriginals} />
+          </label>
           <div className="flex items-center gap-2">
             <Button variant="primary" size="sm" onClick={() => void handleFuse()} disabled={fusing}>
               {fusing ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
-              创建融合方案{fusionCount > 0 ? `（已选 ${fusionCount}）` : ""}
+              {fusing ? "提炼融合中..." : `创建融合方案${fusionCount > 0 ? `（已选 ${fusionCount}）` : ""}`}
             </Button>
             <Button variant="outline" size="sm" onClick={handleNineInOne}>
-              九合一（全选等权）
+              Skill融合（全选）
             </Button>
           </div>
+          {fusing && (
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted">
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+              <span className="min-w-0 truncate">{fusionStage || "融合中..."}</span>
+              {fusionBatch && (
+                <span className="shrink-0 font-mono">
+                  {fusionBatch.batch}/{fusionBatch.total}
+                </span>
+              )}
+            </div>
+          )}
         </>
       )}
       {fusions.length > 0 && (
@@ -1567,11 +1711,31 @@ export default function DistillationPage() {
                 className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-xs"
               >
                 <div className="min-w-0">
-                  <div className="font-medium">{f.name}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium">{f.name}</span>
+                    {f.status === "done" ? (
+                      <Badge variant="success">已完成</Badge>
+                    ) : (
+                      <Badge variant="warning">融合中</Badge>
+                    )}
+                  </div>
                   {f.description && <div className="truncate text-muted">{f.description}</div>}
                   {f.skill_file && <div className="truncate font-mono text-muted">{f.skill_file}</div>}
                 </div>
-                <Badge variant="primary">{f.skill_ids.length} 合一</Badge>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Badge variant="primary">{f.skill_ids.length} 合一</Badge>
+                  <Button variant="ghost" size="sm" onClick={() => void handleViewFusion(f)} disabled={f.status !== "done"}>
+                    查看
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-danger hover:bg-danger-muted"
+                    onClick={() => requestDeleteFusion(f)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
@@ -1897,6 +2061,29 @@ export default function DistillationPage() {
                 完成
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 融合产物查看对话框 */}
+      <Dialog open={viewFusion !== null} onOpenChange={(open) => !open && setViewFusion(null)}>
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <span className="truncate">{viewFusion?.name}</span>
+              {viewFusion?.distilled && <Badge variant="primary">AI提炼</Badge>}
+              {!viewFusion?.distilled && viewFusion && <Badge variant="warning">拼接回退</Badge>}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[65vh] overflow-y-auto pr-1">
+            {viewFusionLoading ? (
+              <div className="flex items-center gap-2 py-4 text-xs text-muted">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                加载融合 Skill 内容...
+              </div>
+            ) : (
+              <Markdown content={viewFusion?.content ?? ""} />
+            )}
           </div>
         </DialogContent>
       </Dialog>

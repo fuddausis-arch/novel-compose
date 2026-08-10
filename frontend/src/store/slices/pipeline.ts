@@ -1,5 +1,6 @@
 import { api } from "../../api";
 import type { GenerationEvent, SliceCreator } from "../types";
+import { bumpDataVersion } from "./dataVersion";
 
 /** 管线/生成域：流水线状态、风格分析、章节生成 SSE 流（旧章节生成路径）。 */
 export const pipelineSlice: SliceCreator = (set, get) => ({
@@ -65,6 +66,10 @@ export const pipelineSlice: SliceCreator = (set, get) => ({
     es.addEventListener("done", (e) => {
       let data: any;
       try { data = JSON.parse((e as MessageEvent).data || "{}"); } catch { data = { status: "failed", error: String((e as MessageEvent).data || "完成事件解析失败") }; }
+      if (data.status !== "failed") {
+        bumpDataVersion("chapters");
+        bumpDataVersion("bible");
+      }
       finish({ type: "done", data });
       set({ activeGeneration: null });
     });
@@ -109,6 +114,10 @@ export const pipelineSlice: SliceCreator = (set, get) => ({
     es.addEventListener("done", (e) => {
       let data: any;
       try { data = JSON.parse((e as MessageEvent).data || "{}"); } catch { data = { status: "failed", error: String((e as MessageEvent).data || "完成事件解析失败") }; }
+      if (data.status !== "failed") {
+        bumpDataVersion("chapters");
+        bumpDataVersion("bible");
+      }
       finish({ type: "done", data });
       set({ activeGeneration: null });
     });

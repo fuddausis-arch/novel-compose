@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from novel_agent.planning.agents import Planner, Architect, Outliner
+from novel_agent.planning.agents import Planner, Architect
 from novel_agent.bible.database import SessionLocal, set_config
 from novel_agent.bible.models import Base, Project
 from novel_agent.bible.repository import BibleRepository
@@ -43,15 +43,3 @@ async def test_architect_produces_settings(repo):
     settings = await architect.design(project=repo.get_project(), volume_plan={"volumes":[{"name":"卷一"}]})
     assert "characters" in settings
     assert len(settings["characters"]) >= 1
-
-
-@pytest.mark.asyncio
-async def test_outliner_produces_chapter_outline(repo):
-    mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value="""```json
-{"chapters":[{"chapter":1,"title":"无声征召","summary":"征召事件","foreshadows":[{"id":"S-001","description":"文物箱","plant_chapter":1,"resolve_chapter":3}]}]}
-```""")
-    outliner = Outliner(mock_llm)
-    outline = await outliner.outline(project=repo.get_project(), volume="卷一", chapter_count=5)
-    assert "chapters" in outline
-    assert len(outline["chapters"]) >= 1

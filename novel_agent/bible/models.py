@@ -10,7 +10,7 @@ from sqlalchemy import (
     Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, relationship
 
 
 class Base(DeclarativeBase):
@@ -230,6 +230,10 @@ class Outline(Base):
     required_hooks = Column(Text, default="")      # JSON: {"type":"悬念","target_strength":7}
     character_constraints = Column(Text, default="")  # JSON: {"陆辰":{"location":"基地","emotion":"愤怒"}}
     phase = Column(String(20), default="regular")  # opening/shangjia/regular（黄金三章/上架/常规）
+    # LLM 结构化输出落库（B1/B3：卷纲 key_events、细纲 key_characters/emotional_arc 不再丢弃）
+    key_events = Column(Text, default="")            # JSON: [{"title":"...","description":"...","chapter":1}]
+    key_characters = Column(Text, default="")        # JSON: [{"name":"...","role":"...","arc":"..."}]
+    emotional_arc = Column(Text, default="")         # JSON: [{"chapter":1,"emotion":"...","trigger":"..."}]
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -605,12 +609,72 @@ class WorldEvent(Base):
     __table_args__ = (UniqueConstraint("project_id", "chapter", name="uq_world_event_project_chapter"),)
 
 
+# ── 叙事线系统（P0）──────────────────────────────────
+# 线：一条完整剧情脉络。标签固定维度：主线/支线 × 明线/暗线；line_type 自定义（复仇线/时间线…）。
+
+class Storyline(Base):
+    """叙事线。"""
+    __tablename__ = "storylines"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    line_type = Column(String(100), default="")          # 自定义类型（可空）
+    tags = Column(JSON, default=list)                     # ["主线"/"支线", "明线"/"暗线"]
+    status = Column(String(20), default="active")         # active/paused/resolved/abandoned
+    progress = Column(Integer, default=0)                 # 0-100
+    summary = Column(String(500), default="")
+    notes = Column(Text, default="")
+    planned_resolve_chapter = Column(Integer, default=0)
+    volume = Column(String(100), default="")
+    last_active_chapter = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    nodes = relationship("StorylineNode", back_populates="storyline",
+                         cascade="all, delete-orphan")
+
+
+class StorylineNode(Base):
+    """线上的节点：伏笔（引用）/ 事件 / 里程碑。"""
+    __tablename__ = "storyline_nodes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    storyline_id = Column(Integer, ForeignKey("storylines.id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    node_type = Column(String(20), default="event")       # foreshadow/event/milestone
+    foreshadow_id = Column(String(50), default="")        # 可空；关联 foreshadows.foreshadow_id
+    chapter = Column(Integer, default=0)
+    title = Column(String(200), default="")
+    description = Column(Text, default="")
+    order_index = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    storyline = relationship("Storyline", back_populates="nodes")
+
+
+class StorylineRelation(Base):
+    """线-线交汇关系。"""
+    __tablename__ = "storyline_relations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_storyline_id = Column(Integer, ForeignKey("storylines.id", ondelete="CASCADE"), nullable=False)
+    target_storyline_id = Column(Integer, ForeignKey("storylines.id", ondelete="CASCADE"), nullable=False)
+    relation_type = Column(String(20), default="merge")   # merge/intersect/parallel/conflict
+    chapter = Column(Integer, default=0)
+    description = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Location(Base):
     """小说地理地点：用于地图图谱。
 
-    地点可以是城市/区域/地标/秘境等，通过 location_relationships 表定义连接关系。
-    tier 表示层级（kingdom/continent/region/city/town/site/dungeon/landmark/other），
+    地点按层级组织（大陆→城市→附属城→街区/街道→建筑/地标），
+    通过 parent_name 指向父级形成树，location_relationships 表定义道路/传送等平级关系。
+    tier 表示层级（continent/kingdom/region/city/town/district/site/dungeon/landmark/other），
     layer 表示空间领域（surface/celestial/underworld/underwater/realm/other）。
+    ruler 为城主/掌管者（角色名），plot_role 为剧情作用，unlocked_chapter 为剧情解锁章节。
     """
     __tablename__ = "locations"
 
@@ -623,8 +687,11 @@ class Location(Base):
     coord_x = Column(Integer, default=0)                 # 地图坐标 X（用于初始布局）
     coord_y = Column(Integer, default=0)                 # 地图坐标 Y
     importance = Column(String(50), default="")          # 主城/枢纽/边陲/秘境
-    tier = Column(String(50), default="")                # 层级: kingdom/continent/region/city/town/site/dungeon/landmark/other
+    tier = Column(String(50), default="")                # 层级: continent/kingdom/region/city/town/district/site/dungeon/landmark/other
     layer = Column(String(50), default="surface")        # 空间领域: surface/celestial/underworld/underwater/realm/other
+    ruler = Column(String(200), default="")              # 城主/掌管者（角色名，多个用顿号分隔）
+    plot_role = Column(Text, default="")                 # 剧情作用：该地点在剧情中的定位（如"主角重生点/最终决战地"）
+    unlocked_chapter = Column(Integer, default=0)        # 剧情解锁章节：0=未解锁，>0=第 N 章起已解锁
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

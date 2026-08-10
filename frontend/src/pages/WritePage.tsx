@@ -13,6 +13,7 @@ import { useConfirmDialog } from "@/hooks/useConfirmDialog";
 import { useAppStore } from "@/store";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
+import { bumpDataVersion } from "@/store/slices/dataVersion";
 import { Button } from "@/components/ui/button";
 import type { ChapterText } from "@/types";
 
@@ -104,6 +105,9 @@ export default function WritePage() {
         .then(() => {
           setDirty(false);
           setSaveState("saved");
+          // 断链④：写章保存后 bump 版本号，让时间线/统计等页面感知到数据变化
+          bumpDataVersion("chapters");
+          bumpDataVersion("bible");
         })
         .catch((e) => {
           setSaveState("idle");
@@ -133,6 +137,8 @@ export default function WritePage() {
       await api.saveChapterText(project.id, chapterId, title, content);
       setDirty(false);
       setSaveState("saved");
+      bumpDataVersion("chapters");
+      bumpDataVersion("bible");
       showSuccess("已保存");
     } catch (e: any) {
       showError("保存失败：" + e.message);

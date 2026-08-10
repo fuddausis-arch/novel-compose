@@ -9,9 +9,7 @@ lerna-debug.log*
 
 node_modules
 dist
-# 前端构建产物（需要跟踪，新人 clone 即可用）
-!dist/
-!dist/**
+# 前端构建产物：与根 .gitignore 一致（frontend/dist/），开源后 clone 自行构建，不提交产物
 dist-ssr
 *.local
 

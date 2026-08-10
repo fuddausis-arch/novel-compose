@@ -92,3 +92,68 @@ class TestLayoutEngine:
         """layer 带应有不同垂直基准：天界基准在幽冥之上"""
         assert LAYER_BAND["celestial"] < LAYER_BAND["underworld"]
         assert LAYER_BAND["underworld"] < LAYER_BAND["underwater"]
+
+
+# ── 深度测试 d4: 布局边界场景 ─────────────────────────
+
+
+def _many_isolated(n: int):
+    """构造 n 个无父子关系的孤立地点。"""
+    return [
+        {"id": i, "name": f"地点{i}", "type": "city", "layer": "surface",
+         "parent_name": "", "importance": "普通"}
+        for i in range(1, n + 1)
+    ]
+
+
+class TestLayoutBoundary:
+    def test_empty(self):
+        assert layout_map([], []) == {}
+
+    def test_single(self):
+        pos = layout_map(_many_isolated(1), [])
+        assert len(pos) == 1
+        assert pos[1]["x"] > 0 and pos[1]["y"] > 0
+
+    def test_two_spread(self):
+        pos = layout_map(_many_isolated(2), [])
+        p1, p2 = pos[1], pos[2]
+        d = ((p1["x"] - p2["x"]) ** 2 + (p1["y"] - p2["y"]) ** 2) ** 0.5
+        assert d > 200, f"两个孤立地点应分散: {d:.0f}"
+
+    def test_61_isolated_no_overlap(self):
+        """61 个孤立地点（对应打包版真实数据规模）：碰撞消除后无重叠。"""
+        pos = layout_map(_many_isolated(61), [], width=2560, height=1400)
+        items = list(pos.items())
+        min_d = 1e9
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                (_, a), (_, b) = items[i], items[j]
+                d = ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5
+                min_d = min(min_d, d)
+        assert min_d >= 200, f"61 地点最小间距应 ≥200（物理空间上限约242）: {min_d:.0f}"
+
+    def test_parent_edges_keep_children_close(self):
+        """有父子关系的子地点应环绕父地点（间距在合理范围）。"""
+        locs = [
+            {"id": 1, "name": "主城", "type": "city", "layer": "surface",
+             "parent_name": "", "importance": "核心"},
+            {"id": 2, "name": "东区", "type": "city", "layer": "surface",
+             "parent_name": "主城", "importance": "普通"},
+            {"id": 3, "name": "西区", "type": "city", "layer": "surface",
+             "parent_name": "主城", "importance": "普通"},
+        ]
+        rels = [{"source": "东区", "target": "主城", "relation_type": "contains"},
+                {"source": "西区", "target": "主城", "relation_type": "contains"}]
+        pos = layout_map(locs, rels)
+        for child in (2, 3):
+            d = ((pos[child]["x"] - pos[1]["x"]) ** 2 + (pos[child]["y"] - pos[1]["y"]) ** 2) ** 0.5
+            assert 150 < d < 700, f"子地点距父地点应适中: {d:.0f}"
+        d_cc = ((pos[2]["x"] - pos[3]["x"]) ** 2 + (pos[2]["y"] - pos[3]["y"]) ** 2) ** 0.5
+        assert d_cc > 200, f"两个子地点应分开: {d_cc:.0f}"
+
+    def test_iterations_tolerant(self):
+        """迭代次数过少/过多都不应崩溃。"""
+        for it in (1, 5, 300):
+            pos = layout_map(_many_isolated(10), [], iterations=it)
+            assert len(pos) == 10

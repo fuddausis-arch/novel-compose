@@ -335,13 +335,23 @@ function ForeshadowCardBody({ data }: { data: EntityCardData }) {
 
 function LocationCardBody({ data, onJump }: { data: EntityCardData; onJump?: (ch: number) => void }) {
   const e = data.entity;
+  const unlocked = e.unlocked_chapter || 0;
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {e.tier && <Badge className="bg-cyan-100 text-cyan-700 dark:bg-cyan-950/50 dark:text-cyan-400">{e.tier}</Badge>}
         {e.layer && <Badge className="bg-secondary text-muted">{e.layer}</Badge>}
         {e.importance && <Badge className="bg-secondary text-muted">{e.importance}</Badge>}
+        {unlocked > 0 ? (
+          <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400">
+            第{unlocked}章解锁
+          </Badge>
+        ) : (
+          <Badge className="bg-secondary text-muted">未解锁</Badge>
+        )}
       </div>
+      <Field label="城主/掌管者" value={e.ruler} />
+      <Field label="剧情作用" value={e.plot_role} />
       <Field label="描述" value={e.description} />
       <div className="grid grid-cols-2 gap-2">
         <Field label="上级地点" value={e.parent_name} />

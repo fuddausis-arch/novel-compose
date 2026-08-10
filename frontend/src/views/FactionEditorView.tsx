@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { Save, Trash2, Shield, Plus, ArrowRight, Sparkles, BookOpen } from "lucide-react";
+import { Save, Trash2, Shield, Plus, ArrowRight, Sparkles } from "lucide-react";
 import { api } from "@/api";
 import { useAppStore } from "@/store";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog";
+import { AppearanceManager } from "@/components/entity/appearance-manager";
 import type { Faction, FactionRelationship } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,20 +15,12 @@ import { Badge } from "@/components/ui/badge";
 interface FactionEditorViewProps {
   factionId: number;
   onBack?: () => void;
-  onGenerateFaction?: () => void;
-  generatingFaction?: boolean;
 }
 
 const RELATION_TYPES = ["同盟", "敌对", "中立", "附属", "竞争", "秘密合作", "其他"];
 const FACTION_TIERS = ["顶级势力", "一流势力", "二流势力", "三流势力", "隐世势力"];
-const ROLE_LABELS: Record<string, string> = {
-  lead: "主角",
-  participant: "参与者",
-  mention: "提及",
-  background: "背景",
-};
 
-export function FactionEditorView({ factionId, onBack, onGenerateFaction, generatingFaction }: FactionEditorViewProps) {
+export function FactionEditorView({ factionId, onBack }: FactionEditorViewProps) {
   const store = useAppStore();
   const { showSuccess, showError } = useToast();
   const { confirm: confirmDelete, dialog: deleteDialog } = useConfirmDialog();
@@ -37,9 +30,9 @@ export function FactionEditorView({ factionId, onBack, onGenerateFaction, genera
     () => store.factionRelationships.filter((r) => r.source_faction_id === factionId || r.target_faction_id === factionId),
     [store.factionRelationships, factionId]
   );
-  const appearances = useMemo(() => store.getEntityAppearances("faction", String(factionId)), [store, factionId]);
 
   const [form, setForm] = useState<Partial<Faction>>(() => faction || {});
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     setForm(faction || {});
@@ -58,6 +51,25 @@ export function FactionEditorView({ factionId, onBack, onGenerateFaction, genera
       <div className="flex-1 flex items-center justify-center text-muted text-sm">势力不存在或已被删除</div>
     );
   }
+
+  const handleAiGenerate = async () => {
+    if (!store.currentProject) return;
+    setGenerating(true);
+    try {
+      const created = await api.generateFaction(store.currentProject.id, {
+        name_hint: form.name || "",
+        type: form.type || "",
+        alignment: form.alignment || "",
+      });
+      setForm(created);
+      await store.refreshFactions();
+      showSuccess("AI 已生成势力设定，已填入表单，点击「保存」生效");
+    } catch (e: any) {
+      showError("AI 生成失败：" + e.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!store.currentProject) return;
@@ -143,12 +155,10 @@ export function FactionEditorView({ factionId, onBack, onGenerateFaction, genera
               势力编辑
             </CardTitle>
             <div className="flex gap-2">
-              {onGenerateFaction && (
-                <Button size="sm" variant="primary" onClick={onGenerateFaction} disabled={generatingFaction}>
-                  <Sparkles className="h-3.5 w-3.5 mr-1" />
-                  {generatingFaction ? "生成中…" : "AI 生成势力"}
-                </Button>
-              )}
+              <Button size="sm" variant="primary" onClick={handleAiGenerate} disabled={generating}>
+                <Sparkles className="h-3.5 w-3.5 mr-1" />
+                {generating ? "生成中…" : "AI 生成势力"}
+              </Button>
               <Button size="sm" onClick={handleSave}><Save className="h-3.5 w-3.5 mr-1" /> 保存</Button>
               <Button size="sm" variant="danger" onClick={handleDelete}><Trash2 className="h-3.5 w-3.5 mr-1" /> 删除</Button>
             </div>
@@ -248,22 +258,9 @@ export function FactionEditorView({ factionId, onBack, onGenerateFaction, genera
           </div>
 
           <div className="border border-border rounded-xl p-3 space-y-3">
-            <div className="flex items-center gap-2">
-              <BookOpen className="h-4 w-4 text-muted" />
-              <h4 className="font-medium text-sm">出场记录</h4>
-            </div>
-            {appearances.length === 0 && <div className="text-sm text-muted">暂无出场记录</div>}
-            <div className="space-y-2">
-              {appearances.map((a) => (
-                <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-border p-2 text-sm">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Badge variant="primary">第{a.chapter}章</Badge>
-                    <Badge variant="default">{ROLE_LABELS[a.role_in_chapter] || a.role_in_chapter}</Badge>
-                    <span className="text-muted truncate">{a.context_snippet || "无上下文"}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            {store.currentProject && (
+              <AppearanceManager projectId={store.currentProject.id} entityType="faction" entityId={String(factionId)} />
+            )}
           </div>
         </CardContent>
       </Card>

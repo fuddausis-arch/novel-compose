@@ -502,6 +502,12 @@ async def post_hoc(state: ChapterGenState, *,
                 summary=arbiter.get("summary", {}) or {},
             ))
             repo.db.commit()
+
+            # ---- P0#6：裁决真正落库（不再只停留在结果表等人看） ----
+            try:
+                _apply_post_hoc_adjudication(repo, chapter, observer_data, arbiter_data or {})
+            except Exception as e:
+                logger.warning("post_hoc 第%d章：裁决落库失败（不阻塞）: %s", chapter, e)
         except Exception as db_exc:
             # 写入失败不阻塞流水线
             logger.warning("post_hoc 第%d章：写入 PostHocResult 失败（不阻塞流水线）: %s", chapter, db_exc)
@@ -525,6 +531,64 @@ async def post_hoc(state: ChapterGenState, *,
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
+
+def _apply_post_hoc_adjudication(repo, chapter: int, observer: dict, arbiter: dict) -> None:
+    """P0#6：post_hoc 裁决真正落库——adopt→写世界观、debt→建欠账、hook→建伏笔（pending）。
+
+    幂等：世界观/欠账/伏笔按标题/描述去重，重跑 post_hoc 不会重复建。
+    """
+    from novel_agent.bible.models import Foreshadow, PlotDebt, WorldSetting
+
+    # 1) 计划外事件分类：debt → 建欠账；hook → 建伏笔（pending，正文埋设时自动转 planted）
+    event_classification = arbiter.get("event_classification") or []
+    for ec in event_classification:
+        verdict = str(ec.get("verdict") or "").strip().lower()
+        event_text = str(ec.get("event") or "").strip()
+        if not event_text:
+            continue
+        if verdict == "debt":
+            dup = repo.db.query(PlotDebt).filter(
+                PlotDebt.project_id == repo.project_id,
+                PlotDebt.status == "open",
+                PlotDebt.description.contains(event_text[:40]),
+            ).first()
+            if dup:
+                continue
+            repo.create_plot_debt(
+                debt_type="因果", description=event_text,
+                pressure=3, term="short", status="open", created_chapter=chapter,
+            )
+        elif verdict == "hook":
+            fid = event_text[:20]
+            if repo.get_foreshadow(fid):
+                continue
+            repo.create_foreshadow(
+                foreshadow_id=fid, tier="c", plant_chapter=0,
+                description=event_text, planned_resolve_chapter=0, status="pending",
+            )
+
+    # 2) 世界差异 adopt → 写世界观设定
+    world_adjudication = arbiter.get("world_adjudication") or []
+    world_diff_by_item = {}
+    for wd in (observer.get("world_diff") or []):
+        item = str(wd.get("item") or "").strip()
+        if item:
+            world_diff_by_item[item] = wd
+    for wa in world_adjudication:
+        verdict = str(wa.get("verdict") or "").strip().lower()
+        if verdict != "adopt":
+            continue
+        item = str(wa.get("item") or "").strip()
+        title = item or "新增设定"
+        dup = repo.db.query(WorldSetting).filter(
+            WorldSetting.project_id == repo.project_id,
+            WorldSetting.title == title,
+        ).first()
+        if dup:
+            continue
+        actual = str((world_diff_by_item.get(item, {}) or {}).get("actual") or "").strip()
+        repo.create_world_setting(category="其他", title=title, content=actual)
+
 
 def _format_world_settings(world_settings) -> str:
     """格式化世界设定列表为文本摘要。"""

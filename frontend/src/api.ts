@@ -1,4 +1,4 @@
-import type { Project, Character, Foreshadow, Outline, WorldSetting, ChapterListItem, ChapterText, ReviewResult, ChapterBrief, Summary, GenreContext, PlanningResult, PlanningIssue, Faction, FactionRelationship, CharacterRelationship, Monster, Instance, ImportPreviewData, ImportCounts, EntityAppearance, EntityType, LLMConfig, AgentLLMConfig, EmbeddingConfig, SuggestionItem, StateChange, TruthEvent, ChapterCommitResult, ChatHistoryMsg, InteractiveChatResponse, RedLine, Gag, ImportedChapter, ImportedChapterDetail } from "./types";
+import type { Project, Character, Foreshadow, Outline, WorldSetting, ChapterListItem, ChapterText, ReviewResult, ChapterBrief, Summary, GenreContext, PlanningResult, PlanningIssue, Faction, FactionRelationship, CharacterRelationship, Monster, Instance, ImportPreviewData, ImportCounts, EntityAppearance, EntityType, LLMConfig, AgentLLMConfig, EmbeddingConfig, SuggestionItem, StateChange, TruthEvent, ChapterCommitResult, ChatHistoryMsg, InteractiveChatResponse, RedLine, Gag, ImportedChapter, ImportedChapterDetail, PlotDebt, RelationshipChange, AiStyleReport, AiStyleRepairResult, DeepAiStyleReport, Storyline, StorylineMeta, StorylineDetail, StorylineNode, StorylineRelation, ScanAlert } from "./types";
 import type { ChatSession, ChatMessageItem, ChatSendPayload, ChatChunkEvent, ChatActionEvent } from "./types/chat";
 
 // 后端 API 地址。默认同源（浏览器走 vite 代理 / 后端静态托管）。
@@ -19,12 +19,16 @@ function extractErrorMessage(status: number, text: string): string {
 
 async function request<T>(path: string, options: RequestInit = {}, timeoutMs?: number): Promise<T> {
   const isFormData = options.body instanceof FormData;
+  // 鉴权：服务端设置 NOVEL_API_TOKEN 后，客户端从 localStorage 读同一 token 附在 X-API-Token
+  const apiToken = localStorage.getItem("novel_api_token");
+  const authHeaders: Record<string, string> = {};
+  if (apiToken) authHeaders["X-API-Token"] = apiToken;
   // 超时保护：防止 HTTP 连接断开后 fetch 永久挂起导致 UI 卡死
   const controller = new AbortController();
   const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
     const res = await fetch(`${API_BASE}${path}`, {
-      headers: isFormData ? undefined : { "Content-Type": "application/json" },
+      headers: isFormData ? undefined : { "Content-Type": "application/json", ...authHeaders },
       signal: controller.signal,
       ...options,
     });
@@ -145,6 +149,65 @@ export const api = {
   // State changes & events
   listStates: (projectId: number) => request<StateChange[]>(`/api/bible/${projectId}/states`),
   listEvents: (projectId: number) => request<TruthEvent[]>(`/api/bible/${projectId}/events`),
+
+  // Bible: plot debts（剧情债）
+  listPlotDebts: (projectId: number, status?: string) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return request<PlotDebt[]>(`/api/bible/${projectId}/plot-debts${qs}`);
+  },
+  createPlotDebt: (projectId: number, data: Partial<PlotDebt>) => request<PlotDebt>(`/api/bible/${projectId}/plot-debts`, { method: "POST", body: JSON.stringify(data) }),
+  updatePlotDebt: (projectId: number, debtId: number, data: Partial<PlotDebt>) => request<PlotDebt>(`/api/bible/${projectId}/plot-debts/${debtId}`, { method: "PUT", body: JSON.stringify(data) }),
+  deletePlotDebt: (projectId: number, debtId: number) => request<{ deleted: boolean }>(`/api/bible/${projectId}/plot-debts/${debtId}`, { method: "DELETE" }),
+
+  // Bible: relationship changes（关系变更）
+  listRelationshipChanges: (projectId: number) => request<RelationshipChange[]>(`/api/bible/${projectId}/relationship-changes`),
+
+  // Bible: 单条 AI 生成（architect 模型）
+  generateFaction: (projectId: number, req: { name_hint?: string; type?: string; alignment?: string }) =>
+    request<Faction>(`/api/bible/${projectId}/generate-faction`, { method: "POST", body: JSON.stringify(req) }, GEN_TIMEOUT),
+  generateMonster: (projectId: number, req: { name_hint?: string; rank?: string; species?: string }) =>
+    request<Monster>(`/api/bible/${projectId}/generate-monster`, { method: "POST", body: JSON.stringify(req) }, GEN_TIMEOUT),
+  generateCharacter: (projectId: number, req: { name_hint?: string; role_hint?: string; importance_hint?: string }) =>
+    request<Character>(`/api/bible/${projectId}/generate-character`, { method: "POST", body: JSON.stringify(req) }, GEN_TIMEOUT),
+  generateCharacterRelationship: (projectId: number, req: { source_character?: string; target_character?: string; relation_type_hint?: string }) =>
+    request<CharacterRelationship>(`/api/bible/${projectId}/generate-character-relationship`, { method: "POST", body: JSON.stringify(req) }, GEN_TIMEOUT),
+
+  // Cron 定时任务
+  listCronJobs: () => request<{ jobs: any[]; total: number }>("/api/cron"),
+  createCronJob: (data: { id: string; name: string; schedule: string; workflow_type: string; parameters?: Record<string, unknown>; enabled: boolean }) =>
+    request<{ success: boolean; job: any }>("/api/cron", { method: "POST", body: JSON.stringify(data) }),
+  updateCronJob: (jobId: string, data: { name?: string; schedule?: string; workflow_type?: string; parameters?: Record<string, unknown>; enabled?: boolean }) =>
+    request<{ success: boolean; job: any }>(`/api/cron/${encodeURIComponent(jobId)}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteCronJob: (jobId: string) => request<{ success: boolean }>(`/api/cron/${encodeURIComponent(jobId)}`, { method: "DELETE" }),
+  triggerCronJob: (jobId: string) => request<any>(`/api/cron/${encodeURIComponent(jobId)}/trigger`, { method: "POST" }),
+  toggleCronJob: (jobId: string, enabled: boolean) => request<{ success: boolean; enabled: boolean }>(`/api/cron/${encodeURIComponent(jobId)}/toggle?enabled=${enabled}`, { method: "POST" }),
+
+  // Chapters: 批量删除
+  batchDeleteChapters: (projectId: number, chapters: number[]) =>
+    request<{ deleted: number[]; failed: number[]; deleted_count: number }>(`/api/chapters/batch-delete?project_id=${projectId}`, { method: "POST", body: JSON.stringify(chapters) }),
+
+  // Workspace: 会话树 / 分支 / 附件
+  getSessionTree: (projectId: number) => request<{ sessions: any[] }>(`/api/workspace/sessions/${projectId}/tree`),
+  branchSession: (sessionId: string, projectId: number, title: string) =>
+    request<{ session_id: string; parent_session_id: string; title: string }>(
+      `/api/workspace/sessions/${encodeURIComponent(sessionId)}/branch`,
+      { method: "POST", body: JSON.stringify({ project_id: projectId, parent_session_id: sessionId, title }) },
+    ),
+  listWorkspaceAttachments: (projectId: number, sessionId: string) =>
+    request<{ attachments: { filename: string; size: number; modified_at: string }[] }>(
+      `/api/workspace/attachments/${encodeURIComponent(sessionId)}?project_id=${projectId}`,
+    ),
+
+  // Plugins: 资产导入导出（skills/rules/preset_phrases → .naassets）
+  exportPluginAssets: (outputPath: string, include: string[] = ["skills", "rules", "preset_phrases"]) =>
+    request<{ status: string; path: string; counts: Record<string, number> }>("/api/plugins/assets/export", { method: "POST", body: JSON.stringify({ output_path: outputPath, include }) }),
+  inspectPluginAssets: (packagePath: string) =>
+    request<{ status: string; manifest?: any; files?: string[] }>("/api/plugins/assets/inspect", { method: "POST", body: JSON.stringify({ package_path: packagePath }) }),
+  importPluginAssets: (packagePath: string, strategy: "merge" | "overwrite" = "merge") =>
+    request<{ status: string; imported: Record<string, number>; skipped: Record<string, number> }>("/api/plugins/assets/import", { method: "POST", body: JSON.stringify({ package_path: packagePath, strategy }) }),
+
+  // Agents: 删除 Agent 定义
+  deleteAgent: (agentType: string) => request<{ deleted: boolean; agent_type: string }>(`/api/agents/${encodeURIComponent(agentType)}`, { method: "DELETE" }),
 
   // Import
   importStructured: (projectId: number, data: Partial<ImportPreviewData>) => request<{ imported: ImportCounts }>(`/api/bible/${projectId}/import`, { method: "POST", body: JSON.stringify(data) }),
@@ -378,6 +441,145 @@ export const api = {
   listChapters: (projectId: number) => request<ChapterListItem[]>(`/api/chapters/list?project_id=${projectId}`),
   getChapterText: (projectId: number, chapter: number) => request<ChapterText>(`/api/chapters/${chapter}/text?project_id=${projectId}`),
   saveChapterText: (projectId: number, chapter: number, title: string, content: string) => request<void>(`/api/chapters/${chapter}/text?project_id=${projectId}`, { method: "PUT", body: JSON.stringify({ title, content }) }),
+
+  // AI 味检测与去味
+  checkAiStyle: (text: string, projectId?: number) => request<AiStyleReport>("/api/audit/ai-style/check", { method: "POST", body: JSON.stringify({ text, project_id: projectId }) }),
+  /** 深度检测：roberta 中文模型判别 AI 概率（最准，CPU 推理较慢） */
+  checkAiStyleDeep: (text: string) => request<DeepAiStyleReport>("/api/audit/ai-style/check-deep", { method: "POST", body: JSON.stringify({ text }) }),
+  checkChapterAiStyle: (projectId: number, chapter: number) => request<AiStyleReport>("/api/audit/ai-style/check-chapter", { method: "POST", body: JSON.stringify({ project_id: projectId, chapter }) }),
+  repairAiStyleRule: (text: string, projectId?: number) => request<AiStyleRepairResult>("/api/audit/ai-style/repair-rule", { method: "POST", body: JSON.stringify({ text, project_id: projectId }) }),
+  /** 误判白名单：列出/添加/撤销某项目标记为误判的词 */
+  listAiIgnoreWords: (projectId: number) => request<{ words: Record<string, string> }>(`/api/audit/ai-style/ignore-words?project_id=${projectId}`),
+  addAiIgnoreWord: (projectId: number, word: string) => request<{ added: boolean; word: string }>("/api/audit/ai-style/ignore-words", { method: "POST", body: JSON.stringify({ project_id: projectId, word }) }),
+  removeAiIgnoreWord: (projectId: number, word: string) => request<{ removed: boolean; word: string }>(`/api/audit/ai-style/ignore-words/${projectId}/${encodeURIComponent(word)}`, { method: "DELETE" }),
+  /** LLM 流式润色（SSE）。返回 AbortController 用于中断。 */
+  repairAiStyleStream: (
+    text: string,
+    onChunk: (delta: string) => void,
+    onRoundStart: (round: number) => void,
+    onRoundDone: (after: AiStyleReport) => void,
+    onDone: (result: AiStyleRepairResult) => void,
+    onError: (message: string) => void,
+  ): AbortController => {
+    const controller = new AbortController();
+    fetch("/api/audit/ai-style/repair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const t = await res.text().catch(() => "");
+          throw new Error(extractErrorMessage(res.status, t));
+        }
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) return;
+        let buffer = "";
+        let currentEvent = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) currentEvent = line.slice(7).trim();
+            else if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (currentEvent === "chunk") onChunk(data.text || "");
+                else if (currentEvent === "round_start") onRoundStart(data.round || 1);
+                else if (currentEvent === "round_done") onRoundDone(data.after);
+                else if (currentEvent === "done") onDone(data as AiStyleRepairResult);
+                else if (currentEvent === "error") onError(data.message || "润色失败");
+              } catch { /* ignore malformed */ }
+            }
+          }
+        }
+      })
+      .catch((e: any) => {
+        if (e?.name === "AbortError") return; // 用户主动中断
+        onError(e?.message || "请求失败");
+      });
+    return controller;
+  },
+  // ── 叙事线系统 ─────────────────────────────
+  storylineMeta: () => request<StorylineMeta>("/api/storylines/meta"),
+  listStorylines: (projectId: number, params?: { tag?: string; status?: string; volume?: string; search?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.tag) qs.set("tag", params.tag);
+    if (params?.status) qs.set("status", params.status);
+    if (params?.volume) qs.set("volume", params.volume);
+    if (params?.search) qs.set("search", params.search);
+    return request<{ items: Storyline[] }>(`/api/storylines/${projectId}/storylines?${qs.toString()}`);
+  },
+  createStoryline: (projectId: number, data: Partial<Storyline>) =>
+    request<Storyline>(`/api/storylines/${projectId}/storylines`, { method: "POST", body: JSON.stringify(data) }),
+  updateStoryline: (projectId: number, id: number, data: Partial<Storyline>) =>
+    request<Storyline>(`/api/storylines/${projectId}/storylines/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteStoryline: (projectId: number, id: number) =>
+    request<void>(`/api/storylines/${projectId}/storylines/${id}`, { method: "DELETE" }),
+  getStorylineDetail: (projectId: number, id: number) =>
+    request<StorylineDetail>(`/api/storylines/${projectId}/storylines/${id}/detail`),
+  createStorylineNode: (projectId: number, lineId: number, data: Partial<StorylineNode>) =>
+    request<StorylineNode>(`/api/storylines/${projectId}/storylines/${lineId}/nodes`, { method: "POST", body: JSON.stringify(data) }),
+  deleteStorylineNode: (nodeId: number) =>
+    request<void>(`/api/storylines/storyline-nodes/${nodeId}`, { method: "DELETE" }),
+  createStorylineRelation: (projectId: number, data: Partial<StorylineRelation>) =>
+    request<StorylineRelation>(`/api/storylines/${projectId}/storylines/relations`, { method: "POST", body: JSON.stringify(data) }),
+  deleteStorylineRelation: (relId: number) =>
+    request<void>(`/api/storylines/storyline-relations/${relId}`, { method: "DELETE" }),
+  /** 双通道健康度扫描（SSE），返回 AbortController 可中断 */
+  scanStorylines: (
+    projectId: number,
+    chapter: number | null,
+    onLineResult: (d: any) => void,
+    onAlerts: (d: { items: ScanAlert[] }) => void,
+    onDone: () => void,
+    onError: (msg: string) => void,
+  ): AbortController => {
+    const controller = new AbortController();
+    fetch("/api/storylines/" + projectId + "/storylines/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chapter, start_chapter: 0, end_chapter: 0 }),
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const t = await res.text().catch(() => "");
+          throw new Error(extractErrorMessage(res.status, t));
+        }
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) return;
+        let buffer = "", currentEvent = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) currentEvent = line.slice(7).trim();
+            else if (line.startsWith("data: ")) {
+              try {
+                const d = JSON.parse(line.slice(6));
+                if (currentEvent === "line_result") onLineResult(d);
+                else if (currentEvent === "alerts") onAlerts(d);
+                else if (currentEvent === "done") onDone();
+                else if (currentEvent === "error") onError(d.message || "扫描失败");
+              } catch { /* ignore */ }
+            }
+          }
+        }
+      })
+      .catch((e: any) => { if (e?.name !== "AbortError") onError(e?.message || "扫描失败"); });
+    return controller;
+  },
+
   deleteChapter: (projectId: number, chapter: number) => request<void>(`/api/chapters/${chapter}?project_id=${projectId}`, { method: "DELETE" }),
   exportTxt: (projectId: number) => `${API_BASE}/api/chapters/export/txt?project_id=${projectId}`,
   exportBible: (projectId: number) =>

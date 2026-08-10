@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Activity, Heart, Link2, MapPin, RefreshCw, Sparkles, User, Users } from "lucide-react";
 import { useAppStore } from "@/store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/useToast";
+import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 
 // ==================== 类型定义 ====================
 
@@ -268,9 +269,8 @@ export function TimelineView() {
     }
   }, [project, showError]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // 页面挂载 / 窗口 focus / bible·chapters 数据版本变化时自动重新拉取
+  useAutoRefresh(["bible", "chapters"], load, [load]);
 
   const filtered = useMemo(() => {
     if (!data || filterChapter === null) return data;
@@ -365,6 +365,69 @@ export function TimelineView() {
                   </div>
                 ))}
               </div>
+            </CardContent>
+          </Card>
+
+          {/* 章节详情（筛选单章时展示） */}
+          {filterChapter !== null && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">第{filterChapter}章详情</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-xs leading-relaxed">
+                {(() => {
+                  const ch = data.chapters.find((c) => c.chapter === filterChapter);
+                  if (!ch) return <p className="text-muted">该章暂无摘要数据</p>;
+                  return (
+                    <>
+                      {ch.title && <p className="font-semibold text-foreground">{ch.title}</p>}
+                      {ch.time_location && <p className="text-muted">📅 {ch.time_location}</p>}
+                      {ch.core_events && (
+                        <div>
+                          <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">核心事件</div>
+                          <p className="text-foreground">{ch.core_events}</p>
+                        </div>
+                      )}
+                      {ch.chapter_hook && (
+                        <div>
+                          <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">章末钩子</div>
+                          <p className="text-foreground">{ch.chapter_hook}</p>
+                        </div>
+                      )}
+                      {ch.word_count > 0 && <p className="text-[10px] text-muted">字数：{ch.word_count}</p>}
+                    </>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* 通用事件流 */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Activity size={14} aria-hidden="true" />
+                通用事件流
+                <span className="rounded-full bg-surface-hover px-1.5 py-0.5 text-[10px] text-muted">{(filtered?.events ?? []).length}</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {!filtered || filtered.events.length === 0 ? (
+                <p className="py-3 text-xs text-muted">暂无通用事件。生成并提交章节后，角色状态变化、伏笔回收、剧情事件等会自动汇聚到这里。</p>
+              ) : (
+                <ul className="max-h-80 space-y-1 overflow-y-auto pr-1">
+                  {filtered.events.map((ev, i) => (
+                    <li key={`ev-${ev.chapter}-${i}`} className="flex items-start gap-2 rounded-md px-2 py-1 text-xs transition-colors hover:bg-surface-hover">
+                      <Badge className="mt-0.5 shrink-0 px-1.5 py-0 text-[10px]">{ev.type || "事件"}</Badge>
+                      <span className="min-w-0 flex-1 text-muted">
+                        {ev.entity_id && <span className="font-medium text-foreground">{ev.entity_id}：</span>}
+                        {ev.detail || JSON.stringify(ev.payload ?? "").slice(0, 80) || "（无详情）"}
+                      </span>
+                      <span className="shrink-0 text-[10px] text-muted">第{ev.chapter}章</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </CardContent>
           </Card>
 

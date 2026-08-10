@@ -236,38 +236,74 @@ class TestFuseSkills:
             name=f"skill_{round_num}", description="d", content=f"内容{round_num}", tags=[],
         )
 
-    def test_empty_list_raises(self, engine):
+    async def test_empty_list_raises(self, engine):
         with pytest.raises(ValueError):
-            engine.fuse_skills([], None, "融合")
+            await engine.fuse_skills([], None, "融合")
 
-    def test_missing_skill_raises(self, engine):
+    async def test_missing_skill_raises(self, engine):
         with pytest.raises(ValueError):
-            engine.fuse_skills([9999], None, "融合")
+            await engine.fuse_skills([9999], None, "融合")
 
-    def test_default_equal_weights(self, engine, store):
+    async def test_default_equal_weights(self, engine, store):
         work_id = _seed_work(store)
         s1 = self._seed_skill(store, work_id, 1)
         s2 = self._seed_skill(store, work_id, 2)
-        result = engine.fuse_skills([s1, s2], None, "九合一")
+        result = await engine.fuse_skills([s1, s2], None, "九合一")
         fusion = store.get_fusion(result["fusion_id"])
         assert json.loads(fusion["weights_json"]) == [0.5, 0.5]
 
-    def test_custom_weights_normalized(self, engine, store):
+    async def test_custom_weights_normalized(self, engine, store):
         work_id = _seed_work(store)
         s1 = self._seed_skill(store, work_id, 1)
         s2 = self._seed_skill(store, work_id, 2)
-        result = engine.fuse_skills([s1, s2], [1.0, 3.0], "融合")
+        result = await engine.fuse_skills([s1, s2], [1.0, 3.0], "融合")
         fusion = store.get_fusion(result["fusion_id"])
         assert json.loads(fusion["weights_json"]) == [0.25, 0.75]
 
-    def test_negative_weights_clamped(self, engine, store):
+    async def test_negative_weights_clamped(self, engine, store):
         work_id = _seed_work(store)
         s1 = self._seed_skill(store, work_id, 1)
         s2 = self._seed_skill(store, work_id, 2)
-        result = engine.fuse_skills([s1, s2], [-1.0, 2.0], "融合")
+        result = await engine.fuse_skills([s1, s2], [-1.0, 2.0], "融合")
         fusion = store.get_fusion(result["fusion_id"])
-        # 负权重被 clamp 为 0，占比 0
         assert json.loads(fusion["weights_json"]) == [0.0, 1.0]
+
+    async def test_llm_refined_fusion(self, engine, store, tmp_path):
+        """有 LLM 时融合走提炼：产出 v2 结构化总纲，而非拼接原文。"""
+        work_id = _seed_work(store)
+        s1 = self._seed_skill(store, work_id, 1)
+        s2 = self._seed_skill(store, work_id, 2)
+        mock_client = MagicMock()
+        mock_client.generate = AsyncMock(return_value=json.dumps({
+            "name": "融合总纲",
+            "description": "提炼结果",
+            "signature_moves": [{"pattern": "先压后爽", "evidence": "例证", "apply": "落地", "exception": ""}],
+            "hard_rules": [],
+            "soft_guidelines": [],
+            "anti_patterns": [],
+            "tags": ["融合"],
+        }, ensure_ascii=False))
+        result = await engine.fuse_skills([s1, s2], [1.0, 3.0], "融合", client=mock_client)
+        assert result["refined"] is True
+        fusion = store.get_fusion(result["fusion_id"])
+        assert json.loads(fusion["weights_json"]) == [0.25, 0.75]
+        # 提炼产物应含 v2 结构，而非原 skill 拼接内容
+        out = (tmp_path / "skills" / f"{result['skill_file']}.json").read_text(encoding="utf-8")
+        assert "招牌手法" in out
+        assert "先压后爽" in out
+        assert "内容1" not in out  # 不是简单拼接原文
+
+    async def test_llm_fallback_to_concat(self, engine, store):
+        """LLM 提炼失败（抛异常）时回退为按权重拼接，不阻塞融合。"""
+        work_id = _seed_work(store)
+        s1 = self._seed_skill(store, work_id, 1)
+        s2 = self._seed_skill(store, work_id, 2)
+        mock_client = MagicMock()
+        mock_client.generate = AsyncMock(side_effect=RuntimeError("模拟 LLM 失败"))
+        result = await engine.fuse_skills([s1, s2], None, "九合一", client=mock_client)
+        assert result["refined"] is False
+        fusion = store.get_fusion(result["fusion_id"])
+        assert json.loads(fusion["weights_json"]) == [0.5, 0.5]
 
 
 # ----------------------------------------------------------------------

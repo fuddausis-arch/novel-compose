@@ -1,39 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
-import { Save, Trash2, Skull, Sparkles, BookOpen } from "lucide-react";
+import { Save, Trash2, Skull, Sparkles } from "lucide-react";
 import { api } from "@/api";
 import { useAppStore } from "@/store";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog";
+import { AppearanceManager } from "@/components/entity/appearance-manager";
 import type { Monster } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 
 interface MonsterEditorViewProps {
   monsterId: number;
   onBack?: () => void;
-  onGenerateMonster?: () => void;
-  generatingMonster?: boolean;
 }
 
 const MONSTER_TIERS = ["BOSS", "精英", "首领", "小怪", "普通"];
-const ROLE_LABELS: Record<string, string> = {
-  lead: "主角",
-  participant: "参与者",
-  mention: "提及",
-  background: "背景",
-};
 
-export function MonsterEditorView({ monsterId, onBack, onGenerateMonster, generatingMonster }: MonsterEditorViewProps) {
+export function MonsterEditorView({ monsterId, onBack }: MonsterEditorViewProps) {
   const store = useAppStore();
   const { showSuccess, showError } = useToast();
   const { confirm: confirmDelete, dialog: deleteDialog } = useConfirmDialog();
 
   const monster = useMemo(() => store.monsters.find((m) => m.id === monsterId), [store.monsters, monsterId]);
-  const appearances = useMemo(() => store.getEntityAppearances("monster", String(monsterId)), [store, monsterId]);
   const [form, setForm] = useState<Partial<Monster>>(() => monster || {});
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     setForm(monster || {});
@@ -44,6 +36,25 @@ export function MonsterEditorView({ monsterId, onBack, onGenerateMonster, genera
       <div className="flex-1 flex items-center justify-center text-muted text-sm">怪物不存在或已被删除</div>
     );
   }
+
+  const handleAiGenerate = async () => {
+    if (!store.currentProject) return;
+    setGenerating(true);
+    try {
+      const created = await api.generateMonster(store.currentProject.id, {
+        name_hint: form.name || "",
+        rank: form.rank || "",
+        species: form.species || "",
+      });
+      setForm(created);
+      await store.refreshMonsters();
+      showSuccess("AI 已生成怪物设定，已填入表单，点击「保存」生效");
+    } catch (e: any) {
+      showError("AI 生成失败：" + e.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!store.currentProject) return;
@@ -86,12 +97,10 @@ export function MonsterEditorView({ monsterId, onBack, onGenerateMonster, genera
               怪物编辑
             </CardTitle>
             <div className="flex gap-2">
-              {onGenerateMonster && (
-                <Button size="sm" variant="primary" onClick={onGenerateMonster} disabled={generatingMonster}>
-                  <Sparkles className="h-3.5 w-3.5 mr-1" />
-                  {generatingMonster ? "生成中…" : "AI 生成怪物"}
-                </Button>
-              )}
+              <Button size="sm" variant="primary" onClick={handleAiGenerate} disabled={generating}>
+                <Sparkles className="h-3.5 w-3.5 mr-1" />
+                {generating ? "生成中…" : "AI 生成怪物"}
+              </Button>
               <Button size="sm" onClick={handleSave}><Save className="h-3.5 w-3.5 mr-1" /> 保存</Button>
               <Button size="sm" variant="danger" onClick={handleDelete}><Trash2 className="h-3.5 w-3.5 mr-1" /> 删除</Button>
             </div>
@@ -144,22 +153,9 @@ export function MonsterEditorView({ monsterId, onBack, onGenerateMonster, genera
           <Textarea placeholder="背景传说" value={form.lore || ""} onChange={(e) => setForm({ ...form, lore: e.target.value })} />
 
           <div className="border border-border rounded-xl p-3 space-y-3">
-            <div className="flex items-center gap-2">
-              <BookOpen className="h-4 w-4 text-muted" />
-              <h4 className="font-medium text-sm">出场记录</h4>
-            </div>
-            {appearances.length === 0 && <div className="text-sm text-muted">暂无出场记录</div>}
-            <div className="space-y-2">
-              {appearances.map((a) => (
-                <div key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-border p-2 text-sm">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Badge variant="primary">第{a.chapter}章</Badge>
-                    <Badge variant="default">{ROLE_LABELS[a.role_in_chapter] || a.role_in_chapter}</Badge>
-                    <span className="text-muted truncate">{a.context_snippet || "无上下文"}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            {store.currentProject && (
+              <AppearanceManager projectId={store.currentProject.id} entityType="monster" entityId={String(monsterId)} />
+            )}
           </div>
         </CardContent>
       </Card>

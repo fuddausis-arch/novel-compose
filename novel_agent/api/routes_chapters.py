@@ -421,6 +421,33 @@ class ChapterTextEdit(BaseModel):
     content: str = ""
 
 
+def _cleanup_chapter_memory(cfg, project_id: int, chapter: int, db) -> None:
+    """P1#9：删除章节后同步清理记忆残留（向量切片/状态快照/TruthEvent 事件流）。
+
+    全部 try/except 包裹：清理失败仅记日志，不阻塞主流程。
+    """
+    # 向量切片
+    try:
+        from novel_agent.memory.archival import ArchivalMemory
+        ArchivalMemory(cfg, project_id=project_id).delete_chapter(chapter)
+    except Exception as e:
+        logger.warning("删除章节%d向量切片失败: %s", chapter, e)
+    # 状态快照 + TruthEvent 事件流
+    try:
+        from novel_agent.bible.models import StateSnapshot, TruthEvent
+        db.query(StateSnapshot).filter(
+            StateSnapshot.project_id == project_id,
+            StateSnapshot.chapter == chapter,
+        ).delete(synchronize_session=False)
+        db.query(TruthEvent).filter(
+            TruthEvent.project_id == project_id,
+            TruthEvent.chapter == chapter,
+        ).delete(synchronize_session=False)
+        db.commit()
+    except Exception as e:
+        logger.warning("删除章节%d记忆残留(快照/事件)失败: %s", chapter, e)
+
+
 @router.put("/{chapter}/text")
 def save_chapter_text(chapter: int, project_id: int, data: ChapterTextEdit):
     """编辑后保存章节正文到文件。"""
@@ -429,6 +456,14 @@ def save_chapter_text(chapter: int, project_id: int, data: ChapterTextEdit):
     recall = RecallMemory(cfg, project_id=project_id)
     path = recall.save_chapter_text(chapter=chapter, title=data.title,
                                     content=data.content)
+    # P1#9：保存成功后重建该章向量切片（记忆写入闭环），失败不阻塞主流程
+    try:
+        from novel_agent.memory.archival import ArchivalMemory
+        ArchivalMemory(cfg, project_id=project_id).index_chapter(
+            chapter=chapter, title=data.title, content=data.content)
+    except Exception as e:
+        logger.warning("保存章节%d后重建向量切片失败: %s", chapter, e)
+    # 断链①③：出场记录 + 叙事线轻扫已统一收口到 recall.save_chapter_text（写章即更新），此处无需重复
     return {"chapter": chapter, "saved": True, "path": str(path)}
 
 
@@ -451,7 +486,7 @@ def export_txt(project_id: int):
 
 @router.delete("/{chapter}")
 def delete_chapter(chapter: int, project_id: int):
-    """删除章节正文文件 + 圣经摘要。"""
+    """删除章节正文文件 + 圣经摘要 + 同步清理记忆残留。"""
     from novel_agent.memory.recall import RecallMemory
     cfg = load_config()
     recall = RecallMemory(cfg, project_id=project_id)
@@ -472,6 +507,8 @@ def delete_chapter(chapter: int, project_id: int):
         db_deleted = repo.delete_chapter_summary(chapter)
         # 级联清理该章的实体出场记录，避免删除后残留幽灵出场
         repo.delete_entity_appearances_for_chapter(chapter)
+        # P1#9：同步清理该章记忆残留（快照/事件流），失败仅记日志
+        _cleanup_chapter_memory(cfg, project_id, chapter, db)
     finally:
         db.close()
     return {"deleted": True, "files": deleted_files, "summary_removed": db_deleted}
@@ -499,6 +536,8 @@ def batch_delete_chapters(project_id: int, chapters: list[int]):
                 repo.delete_chapter_summary(chapter)
                 # 级联清理该章的实体出场记录
                 repo.delete_entity_appearances_for_chapter(chapter)
+                # P1#9：同步清理该章记忆残留（快照/事件流），失败仅记日志
+                _cleanup_chapter_memory(cfg, project_id, chapter, db)
                 deleted_chapters.append(chapter)
             except Exception:
                 failed.append(chapter)

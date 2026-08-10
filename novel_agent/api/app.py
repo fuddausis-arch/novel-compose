@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,22 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response, JSONResponse
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    """应用生命周期：启动时拉起 cron 定时调度器，关闭时停止。"""
+    try:
+        from novel_agent.api.routes_cron import start_cron_scheduler
+        start_cron_scheduler()
+    except Exception as e:
+        print(f"[create_app] 启动 cron 调度器失败: {e}", file=sys.stderr, flush=True)
+    yield
+    try:
+        from novel_agent.api.routes_cron import stop_cron_scheduler
+        stop_cron_scheduler()
+    except Exception as e:
+        print(f"[create_app] 停止 cron 调度器失败: {e}", file=sys.stderr, flush=True)
 
 
 class SPAStaticFiles(StaticFiles):
@@ -37,9 +54,56 @@ class SPAStaticFiles(StaticFiles):
 limiter = Limiter(key_func=get_remote_address)
 
 
+class TokenAuthMiddleware:
+    """简易 API Token 鉴权（纯 ASGI 中间件）。
+
+    设置环境变量 NOVEL_API_TOKEN 后启用：/api/* 需携带
+    `Authorization: Bearer <token>` 或 `X-API-Token: <token>`；
+    /api/health 与浏览器 CORS 预检（OPTIONS）放行。
+    未设置 NOVEL_API_TOKEN 时完全放行（单机桌面默认，兼容现有客户端）。
+    """
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "") or ""
+        method = (scope.get("method") or "GET").upper()
+        if not (path.startswith("/api/") and not path.startswith("/api/health")
+                and method != "OPTIONS"):
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers", [])}
+        auth = headers.get("authorization", "")
+        ok = False
+        if auth.startswith("Bearer "):
+            ok = auth[7:].strip() == self.token
+        elif headers.get("x-api-token", "").strip():
+            ok = headers["x-api-token"].strip() == self.token
+        if not ok:
+            body = b'{"detail":"Unauthorized: missing or invalid API token (set NOVEL_API_TOKEN)"}'
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                    (b"www-authenticate", b"Bearer"),
+                ],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
+
+
 def create_app(project_data_dir: Path | None = None) -> FastAPI:
     print("[create_app] 开始初始化 FastAPI 应用", flush=True)
-    app = FastAPI(title="多 Agent 小说生成 API", version="0.4.0")
+    app = FastAPI(title="多 Agent 小说生成 API", version="0.4.0", lifespan=_app_lifespan)
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     # CORS：开发本机 + 手机 App 壳（Capacitor WebView）来源；
@@ -59,6 +123,13 @@ def create_app(project_data_dir: Path | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # 简易鉴权：设置 NOVEL_API_TOKEN 后 /api/* 需带 token（远程/局域网访问时启用）
+    _api_token = os.environ.get("NOVEL_API_TOKEN", "").strip()
+    if _api_token:
+        app.add_middleware(TokenAuthMiddleware, token=_api_token)
+        print("[create_app] 已启用 API Token 鉴权（环境变量 NOVEL_API_TOKEN）", flush=True)
+    else:
+        print("[create_app] 未设置 NOVEL_API_TOKEN，API 不鉴权（单机桌面默认）", flush=True)
     # 确保项目数据目录存在（打包模式默认 %APPDATA%/NovelCompose/project_data）
     if project_data_dir:
         project_data_dir.mkdir(parents=True, exist_ok=True)
@@ -127,6 +198,10 @@ def create_app(project_data_dir: Path | None = None) -> FastAPI:
         ("routes_entity_cards", ""),
         # 百科卡：五类实体摘要列表 + 出场场景索引
         ("routes_encyclopedia", ""),
+        # AI 味检测与去味闭环：检测/规则修复/LLM修复/章节检测
+        ("routes_audit_ai", "/api/audit"),
+        # 叙事线系统：明暗线/主支线/长伏笔追踪 + 双通道健康度扫描
+        ("routes_storylines", "/api/storylines"),
     ]
     from novel_agent.api import (
         routes_projects, routes_planning, routes_chapters, routes_bible,
@@ -141,6 +216,8 @@ def create_app(project_data_dir: Path | None = None) -> FastAPI:
         routes_timeline,
         routes_entity_cards,
         routes_encyclopedia,
+        routes_audit_ai,
+        routes_storylines,
     )
     # 圆桌会议路由在 novel_agent.roundtable 包内（非 novel_agent.api），单独导入
     from novel_agent.roundtable import routes as routes_roundtable
@@ -174,6 +251,8 @@ def create_app(project_data_dir: Path | None = None) -> FastAPI:
         "routes_timeline": routes_timeline,
         "routes_entity_cards": routes_entity_cards,
         "routes_encyclopedia": routes_encyclopedia,
+        "routes_audit_ai": routes_audit_ai,
+        "routes_storylines": routes_storylines,
     }
     for spec in _router_specs:
         name = spec[0]

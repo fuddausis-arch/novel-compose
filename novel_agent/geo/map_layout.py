@@ -46,8 +46,8 @@ LAYER_BAND = {
 
 # 关系类型 → 期望距离（px）
 REL_REST_LENGTH = {
-    "contains": 180.0,
-    "adjacent": 260.0,
+    "contains": 260.0,
+    "adjacent": 300.0,
     "road": 420.0,
     "portal": 900.0,
     "warzone": 520.0,
@@ -57,7 +57,8 @@ _LAYER_WEIGHT = 0.0      # layer 带内聚集权重
 _DIRECTION_WEIGHT = 0.15  # 方位锚点权重（随迭代衰减）
 _PARENT_WEIGHT = 1.4      # 父子吸引权重
 _EDGE_WEIGHT = 1.0        # 普通关系吸引权重
-_REPULSION = 2600.0       # 全局斥力强度
+_REPULSION = 7000.0       # 全局斥力强度（调大保证节点分散不重叠）
+_SPRING_COEF = 0.012      # 弹簧系数（调小避免把节点拉成一团）
 
 
 def _normalize(dx: float, dy: float) -> tuple[float, float]:
@@ -95,21 +96,30 @@ def layout_map(locations: list[dict], rels: list[dict], hints: dict | None = Non
     layer_by_id = {loc["id"]: (loc.get("layer") or "surface") for loc in locations}
     parent_of_id = {loc["id"]: loc.get("parent_name") or "" for loc in locations}
 
-    # 初始位置：方位锚点 + layer 带 + 随机微扰
+    # 初始位置：黄金角螺旋铺开（保证 LLM 语义退化时也能分散）+ 方位锚点 + layer 带
     rng = random.Random(42)
+    n_locs = len(locations)
+    golden_angle = math.pi * (3 - math.sqrt(5))
+    max_r = min(width, height) * 0.42
     pos: dict[int, list[float]] = {}
-    for loc in locations:
+    for idx, loc in enumerate(locations):
         lid = loc["id"]
         hint = hints.get(loc["name"]) or {}
         dx, dy = DIRECTION_HINTS.get(hint.get("direction", ""), (0.0, 0.0))
         rel_to = hint.get("relative_to")
+        # 螺旋初始位：半径随索引递增，均匀铺满画布
+        r = max_r * math.sqrt((idx + 0.5) / max(1, n_locs))
+        theta = idx * golden_angle
+        x = width / 2 + r * math.cos(theta)
+        y = height / 2 + r * math.sin(theta)
         if rel_to and rel_to in id_by_name:
             # 相对参照：放在参照物方向外侧
             ref_id = id_by_name[rel_to]
             ref_pos = pos.get(ref_id, [width / 2, height / 2])
             x = ref_pos[0] + dx * 320.0
             y = ref_pos[1] + dy * 320.0
-        else:
+        elif dx != 0 or dy != 0:
+            # 有方位语义：锚到对应方向（覆盖螺旋位）
             x = width / 2 + dx * width * 0.32
             y = height / 2 + dy * height * 0.32
         # layer 带：垂直偏置
@@ -207,7 +217,49 @@ def layout_map(locations: list[dict], rels: list[dict], hints: dict | None = Non
             pos[lid][0] = min(max(pos[lid][0], 80.0), width - 80.0)
             pos[lid][1] = min(max(pos[lid][1], 80.0), height - 80.0)
 
+    # 碰撞消除：力导向迭代可能留下局部重叠，用确定性推挤保证节点间距 ≥ min_dist
+    _resolve_collisions(pos, width, height)
+
     return {lid: {"x": int(round(p[0])), "y": int(round(p[1]))} for lid, p in pos.items()}
+
+
+def _resolve_collisions(pos: dict, width: float, height: float,
+                        min_dist: float = 260.0, max_rounds: int = 80) -> None:
+    """把距离过近的节点对沿连线对称推开，直到无重叠或达到轮次上限。
+
+    节点宽约 240px，min_dist=260 保证视觉上不糊在一起。
+    推出边界时反向压回画布内。
+    """
+    ids = list(pos.keys())
+    n = len(ids)
+    for _ in range(max_rounds):
+        moved = False
+        for i in range(n):
+            for j in range(i + 1, n):
+                a, b = ids[i], ids[j]
+                dx = pos[a][0] - pos[b][0]
+                dy = pos[a][1] - pos[b][1]
+                d = math.hypot(dx, dy)
+                if d < min_dist and d > 1e-6:
+                    push = (min_dist - d) * 0.5
+                    ux, uy = dx / d, dy / d
+                    pos[a][0] += ux * push
+                    pos[a][1] += uy * push
+                    pos[b][0] -= ux * push
+                    pos[b][1] -= uy * push
+                    moved = True
+                elif d < 1e-6:
+                    # 完全重合：向随机方向错开
+                    ang = (i * 1.7 + j * 2.3) % (2 * math.pi)
+                    pos[a][0] += math.cos(ang) * min_dist * 0.4
+                    pos[a][1] += math.sin(ang) * min_dist * 0.4
+                    moved = True
+        if not moved:
+            break
+        # 边界约束（推出画布的点压回，触发后续迭代重新平衡）
+        for lid in ids:
+            pos[lid][0] = min(max(pos[lid][0], 100.0), width - 100.0)
+            pos[lid][1] = min(max(pos[lid][1], 100.0), height - 100.0)
 
 
 def _apply_spring(force: dict, pos: dict, a: int, b: int, rest: float, weight: float) -> None:
@@ -218,7 +270,7 @@ def _apply_spring(force: dict, pos: dict, a: int, b: int, rest: float, weight: f
     if d < 1e-6:
         return
     disp = d - rest
-    f = disp * 0.02 * weight
+    f = disp * _SPRING_COEF * weight
     ux, uy = dx / d, dy / d
     force[a][0] += ux * f
     force[a][1] += uy * f

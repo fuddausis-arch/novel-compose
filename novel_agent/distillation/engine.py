@@ -33,9 +33,11 @@ _CHAPTER_RE = re.compile(
 )
 
 # 蒸馏维度定义：round_num -> (维度名, 分析要点)
-# 参考 Works DNA Extractor 的 16 层 DNA + 网文拆书方法论，精选 12 个维度。
+# 参考 Works DNA Extractor 的 16 层 DNA + 网文拆书方法论，精选 12 个语义维度。
 # 1-7 为文笔/技法维度（向后兼容），8-12 为网文实战维度（设定/爽点/钩子/对话/反派）。
 # 蒸馏时可自由勾选要分析的维度（默认全部）。
+# 13-15 为「人味统计指纹」维度：直接对齐 AI 检测器（朱雀/GPTZero/Turnitin）的统计信号，
+# 让"蒸馏输出的指纹"与"检测引擎的指纹"同一套，源头注入即可降低 AI 率。
 ROUND_DIMENSIONS: dict[int, tuple[str, str]] = {
     1: ("写作风格特征", "叙事节奏、对话风格、描写习惯、情感表达方式"),
     2: ("语言特征", "用词偏好、句式结构、修辞手法、标点使用习惯"),
@@ -49,6 +51,9 @@ ROUND_DIMENSIONS: dict[int, tuple[str, str]] = {
     10: ("章节钩子", "章节结尾断章技巧、悬念抛出方式、金句钩子、开篇抓人手法"),
     11: ("对话与台词", "对话占文本比例、角色语言辨识度、对话推动剧情的方式、潜台词运用"),
     12: ("反派与配角", "反派动机自洽与不降智、配角功能定位、工具人规避、人物关系张力"),
+    13: ("节奏与句长指纹", "句长分布（短/中/长句占比）、对话占比、段落长短变化度——检测器第一信号（burstiness）的源头指纹"),
+    14: ("禁词与套路词表", "原书回避的 AI 高频词与套路句式（如'不禁/仿佛/总而言之/不是…而是…'）——生成与检测共用同一份禁词表"),
+    15: ("密度目标", "形容词密度、破折号密度、连接词密度、重复词密度的控制习惯——各检测器的词法统计信号"),
 }
 
 _DISTILL_SYSTEM = (
@@ -87,6 +92,30 @@ _CONDENSE_OUTPUT_SPEC = """【输出要求】
 }
 数量要求：signature_moves 4-8 条，hard_rules ≤3 条，soft_guidelines 3-6 条，anti_patterns 2-4 条。
 禁止'单句不得超过X字'这类逐句硬限；数字只用于整体比例（如'长句占比≤30%'）或变化度（如'避免连续3句以上长度相近'）。"""
+
+# 13-15 轮（人味统计指纹）专用输出规格：产出可量化指纹，供检测引擎/注入链路共用
+_SIGNATURE_OUTPUT_SPEC = """【输出要求】
+只输出一个 JSON 对象（不要输出任何其他文字、不要用 markdown 围栏），格式：
+{
+  "name": "指纹名称（≤12字，如'雷霆节奏'）",
+  "description": "一句话概括该指纹",
+  "rhythm_profile": {
+    "short_sentence_ratio": "15字内短句占比（整体比例，如 0.35，只允许整体比例，禁止逐句硬限）",
+    "long_sentence_ratio": "40字以上长句占比（整体比例，如 0.20）",
+    "dialogue_ratio": "对话占文本比例（如 0.25，网文通常 0.15-0.35）",
+    "para_variation": "段落长短变化度描述（如'对话段1-2行，场景段4-6行，长短交替'）",
+    "burstiness_note": "原书节奏给读者的直观感受（如'每3-5句必有一个短句砸点'）"
+  },
+  "ban_words": ["原书几乎不用的 AI 高频词/套路词（仅列原书回避的，如'不禁'、'仿佛'）", "..."],
+  "density_targets": {
+    "adj_density": "形容词控制（整体比例或直观描述，如'千字≤2个模糊形容词'）",
+    "dash_density": "破折号控制（如'一章≤2个'）",
+    "connector_density": "连接词控制（如'每千字≤4个套路连接词'）",
+    "repetition": "重复词控制（如'同一词千字重复≤2次'）"
+  },
+  "tags": ["2-3 个标签", "..."]
+}
+只允许整体比例/变化度要求，禁止'每句不得超过X字'这类逐句硬限。每个字段必须是从原文实际观察到的，禁止凭空编造。"""
 
 _JSON_OUTPUT_SPEC = """【输出要求】
 只输出一个 JSON 对象（不要输出任何其他文字、不要用 markdown 围栏），格式：
@@ -226,14 +255,18 @@ class DistillationEngine:
     # ------------------------------------------------------------------
     @staticmethod
     def build_round_prompt(round_num: int, content: str) -> tuple[str, str]:
-        """构造单轮蒸馏的 (system, user) prompt。"""
+        """构造单轮蒸馏的 (system, user) prompt。
+
+        13-15 轮（人味统计指纹）使用独立输出规格，产出可量化指纹。
+        """
         dim_name, dim_points = ROUND_DIMENSIONS.get(round_num, ROUND_DIMENSIONS[1])
+        spec = _SIGNATURE_OUTPUT_SPEC if round_num in (13, 14, 15) else _JSON_OUTPUT_SPEC
         user = (
             f"请对以下小说文本片段进行第 {round_num} 轮蒸馏分析，"
             f"提取【{dim_name}】。\n\n"
             f"分析维度：{dim_points}\n\n"
             f"【文本片段】\n{content}\n\n"
-            f"{_JSON_OUTPUT_SPEC}"
+            f"{spec}"
         )
         return _DISTILL_SYSTEM, user
 
@@ -299,11 +332,16 @@ class DistillationEngine:
                            dimensions: list[int] | None = None,
                            levels: int = 1,
                            retry_failed: bool = False,
-                           on_event: OnEvent | None = None) -> dict:
+                           on_event: OnEvent | None = None,
+                           is_cancelled=None) -> dict:
         """对整部作品的所有片段执行多轮蒸馏，逐事件回调进度。
 
+        is_cancelled: 可选回调（返回 bool）。在片段/轮次边界检查，为 True 时
+        优雅停止（已完成的片段/轮次产物保留），不再启动新的 LLM 调用。
+
         Args:
-            dimensions: 要蒸馏的维度编号列表（1..12，见 ROUND_DIMENSIONS）。
+            dimensions: 要蒸馏的维度编号列表（1..15，见 ROUND_DIMENSIONS；
+                13-15 为人味统计指纹维度，产出 rhythm_profile/ban_words/density_targets）。
                 None 时默认分析全部维度。
             levels: 多级蒸馏级数（1=碎片，2=二次浓缩，3=三次浓缩）。
             retry_failed: 补蒸馏模式——只重跑失败的片段/轮次（跳过已 done 的），
@@ -329,7 +367,15 @@ class DistillationEngine:
             raise ValueError("未选择任何有效的蒸馏维度")
         self.store.update_work_status(work_id, DistillStatus.DISTILLING.value)
         failed = 0
+        cancelled = False
+
+        def _is_cancelled() -> bool:
+            return bool(is_cancelled and is_cancelled())
+
         for chunk in chunks:
+            if _is_cancelled():
+                cancelled = True
+                break
             chunk_id = chunk["id"]
             # 补蒸馏模式：整片段已完成则跳过（保持原状态，不发事件）
             if retry_failed and chunk["status"] == DistillStatus.DONE.value:
@@ -342,6 +388,11 @@ class DistillationEngine:
             self.store.update_chunk_status(chunk_id, DistillStatus.DISTILLING.value)
             chunk_ok = True
             for round_num in dims:
+                # 取消检查：片段/轮次边界优雅停止，不启动新的 LLM 调用
+                if _is_cancelled():
+                    cancelled = True
+                    chunk_ok = False
+                    break
                 # 补蒸馏模式：该轮已完成则跳过（不重复调用 LLM）
                 if retry_failed:
                     existing = self.store.get_round(chunk_id, round_num)
@@ -378,15 +429,16 @@ class DistillationEngine:
                         "chunk_id": chunk_id, "chunk_index": chunk["chunk_index"],
                         "round_num": round_num, "error": str(e),
                     })
-            self.store.update_chunk_status(chunk_id, DistillStatus.DONE.value if chunk_ok else DistillStatus.FAILED.value)
-            await self._emit(on_event, {
-                "type": "chunk_done", "work_id": work_id,
-                "chunk_id": chunk_id, "chunk_index": chunk["chunk_index"],
-                "status": DistillStatus.DONE.value if chunk_ok else DistillStatus.FAILED.value,
-            })
+            if not cancelled:
+                self.store.update_chunk_status(chunk_id, DistillStatus.DONE.value if chunk_ok else DistillStatus.FAILED.value)
+                await self._emit(on_event, {
+                    "type": "chunk_done", "work_id": work_id,
+                    "chunk_id": chunk_id, "chunk_index": chunk["chunk_index"],
+                    "status": DistillStatus.DONE.value if chunk_ok else DistillStatus.FAILED.value,
+                })
 
         # 多级蒸馏：对一次蒸馏产物逐级浓缩（二次/三次蒸馏）
-        if levels >= 2:
+        if not cancelled and levels >= 2:
             source_skills = self.store.list_skills(work_id)
             if source_skills:
                 for level in range(2, levels + 1):
@@ -404,6 +456,14 @@ class DistillationEngine:
                         })
                         break
                     source_skills = [condensed]
+
+        if cancelled:
+            # work 状态已由 cancel 端点置为 cancelled，这里不覆盖为 done/failed
+            await self._emit(on_event, {
+                "type": "cancelled", "work_id": work_id,
+                "status": "cancelled", "dimensions": dims,
+            })
+            return {"status": "cancelled", "dimensions": dims, **self.store.progress(work_id)}
 
         final_status = (DistillStatus.DONE.value if failed == 0 else
                         (DistillStatus.FAILED.value if failed == len(chunks) * len(dims)
@@ -507,11 +567,16 @@ class DistillationEngine:
 
     @staticmethod
     def _batch_texts(blocks: list[str], budget: int) -> list[list[str]]:
-        """把文本块按字符预算分批（保序）。"""
+        """把文本块按字符预算分批（保序）。
+
+        单个块超过预算时截断到预算内，避免单次 LLM 调用输入超上限。
+        """
         batches: list[list[str]] = []
         cur: list[str] = []
         cur_len = 0
         for b in blocks:
+            if len(b) > budget:
+                b = b[:budget]
             if cur and cur_len + len(b) > budget:
                 batches.append(cur)
                 cur, cur_len = [], 0
@@ -529,7 +594,7 @@ class DistillationEngine:
             + "\n\n---\n\n".join(batch_texts)
             + "\n\n" + _CONDENSE_OUTPUT_SPEC
         )
-        return await client.chat(user=user, system=_CONDENSE_SYSTEM, node_name="distill_condense")
+        return await client.generate(user, system=_CONDENSE_SYSTEM, node_name="distill_condense")
 
     @staticmethod
     def _render_style_body(skill_data: dict) -> list[str]:
@@ -610,6 +675,9 @@ class DistillationEngine:
                     lines.append(f"- {str(a).strip()}")
             lines.append("")
 
+        # 人味统计指纹（13-15 轮产出：直击检测器统计信号）
+        lines += DistillationEngine._render_human_signature(skill_data)
+
         # 旧格式兼容：老蒸馏数据（features/guidelines）没有 v2 字段时按旧结构展示
         if not moves and not soft and not hard and not anti:
             features = skill_data.get("features") or []
@@ -624,6 +692,59 @@ class DistillationEngine:
                 for i, g in enumerate(guidelines, 1):
                     lines.append(f"{i}. {g}")
                 lines.append("")
+        return lines
+
+    @staticmethod
+    def _render_human_signature(skill_data: dict) -> list[str]:
+        """渲染人味统计指纹块（rhythm_profile / ban_words / density_targets）。
+
+        这些字段直接对应 AI 检测引擎的统计信号（burstiness/密度/连接词/重复词），
+        渲染进 skill 正文后随注入链路进入写手 prompt，实现"检测与生成同指纹"。
+        """
+        rhythm = skill_data.get("rhythm_profile")
+        ban_words = skill_data.get("ban_words")
+        density = skill_data.get("density_targets")
+        if not rhythm and not ban_words and not density:
+            return []
+        lines: list[str] = ["## 人味统计指纹（对齐 AI 检测器）", ""]
+
+        if isinstance(rhythm, dict) and any(rhythm.values()):
+            lines.append("### 节奏与句长分布")
+            labels = {
+                "short_sentence_ratio": "短句占比（15字内）",
+                "long_sentence_ratio": "长句占比（40字以上）",
+                "dialogue_ratio": "对话占比",
+                "para_variation": "段落变化",
+                "burstiness_note": "节奏手感",
+            }
+            for k, label in labels.items():
+                v = rhythm.get(k)
+                if v:
+                    lines.append(f"- {label}：{v}")
+            lines.append("")
+
+        if ban_words:
+            if isinstance(ban_words, str):
+                ban_words = [ban_words]
+            lines.append("### 禁词表（生成时避免）")
+            for w in ban_words:
+                if str(w).strip():
+                    lines.append(f"- {str(w).strip()}")
+            lines.append("")
+
+        if isinstance(density, dict) and any(density.values()):
+            lines.append("### 密度控制目标")
+            labels = {
+                "adj_density": "形容词密度",
+                "dash_density": "破折号密度",
+                "connector_density": "连接词密度",
+                "repetition": "重复词控制",
+            }
+            for k, label in labels.items():
+                v = density.get(k)
+                if v:
+                    lines.append(f"- {label}：{v}")
+            lines.append("")
         return lines
 
     @staticmethod
@@ -677,8 +798,10 @@ class DistillationEngine:
             description=f"【{display_name}】{description}" if description else f"【{display_name}】",
             content=content, tags=tags,
         )
-        self._write_skill_file(file_name, display_name, description, content, tags)
         skill = self.store.get_skill(skill_id)
+        # 文件 enabled 跟随 skill status（新建即 active → True）
+        self._write_skill_file(file_name, display_name, description, content, tags,
+                               status=skill.get("status", "active") if skill else "active")
         logger.info("Skill 已生成: id=%d name=%s (《%s》片段%d 第%d轮)",
                     skill_id, file_name, work["title"], chunk_index, round_num)
         return skill
@@ -710,13 +833,19 @@ class DistillationEngine:
 
     def _write_skill_file(self, file_name: str, display_name: str,
                           description: str, content: str,
-                          tags: list[str] | None = None) -> Path:
-        """按 routes_skills 的 JSON 格式写入 Skills 系统，供生成流程加载。"""
+                          tags: list[str] | None = None,
+                          status: str = "active") -> Path:
+        """按 routes_skills 的 JSON 格式写入 Skills 系统，供生成流程加载。
+
+        enabled 跟随 skill 状态：active → True，archived → False。
+        注入侧（routes_skills.load_enabled_skills_for_injection*）会跳过
+        enabled=False 的 skill，因此归档/禁用的 skill 不再注入生成流程。
+        """
         path = self._skills_dir() / f"{file_name}.json"
         data = {
             "name": file_name,
             "description": f"【{display_name}】{description}" if description else f"【{display_name}】",
-            "enabled": True,
+            "enabled": status != "archived",
             "auto_inject": True,
             "sections": [{"name": "distilled_style", "content": content}],
             "tools": [],
@@ -731,18 +860,28 @@ class DistillationEngine:
     # ------------------------------------------------------------------
     # 融合
     # ------------------------------------------------------------------
-    def fuse_skills(self, skill_ids: list[int], weights: list[float] | None,
-                    fusion_name: str, description: str = "") -> dict:
-        """按权重融合多个 Skill（支持"九合一"等模式）。
+    async def fuse_skills(self, skill_ids: list[int], weights: list[float] | None,
+                          fusion_name: str, description: str = "",
+                          client: LLMClient | None = None,
+                          on_event: OnEvent | None = None,
+                          extra_skills: list[dict] | None = None) -> dict:
+        """提炼式融合多个 Skill（支持"九合一"等模式）。
+
+        有 client 时：把多个 Skill 交给 LLM 浓缩提炼成一份精炼总纲（非简单拼接）——
+        分批 → 每批提炼 → 递归归并 → 输出 v2 结构化总纲；高权重来源优先保留。
+        无 client 或提炼失败时：回退为按权重降序拼接（保底，不阻塞功能）。
+
+        extra_skills: 不在蒸馏 DB 中的 Skill（如拆书 skill），以 dict（含 content /
+            work_title / chunk_index / round_num）传入，与 DB skill 一起参与融合。
 
         融合产物：
-        - distill_fusions 表记录（skill_ids + weights）
+        - distill_fusions 表记录（skill_ids + weights，仅 DB skill）
         - Skills 系统写入融合 Skill 文件 distill_fusion_{fusion_id}.json
 
         Returns:
-            {"fusion_id": int, "skill_file": str, "skill_count": int}
+            {"fusion_id": int, "skill_file": str, "skill_count": int, "refined": bool}
         """
-        if not skill_ids:
+        if not skill_ids and not extra_skills:
             raise ValueError("skill_ids 不能为空")
         skills = []
         for sid in skill_ids:
@@ -750,6 +889,8 @@ class DistillationEngine:
             if not skill:
                 raise ValueError(f"Skill 不存在: id={sid}")
             skills.append(skill)
+        if extra_skills:
+            skills = skills + [dict(s) for s in extra_skills]
         if weights and len(weights) == len(skills):
             w = [max(0.0, float(x)) for x in weights]
         else:
@@ -761,36 +902,116 @@ class DistillationEngine:
             name=fusion_name, skill_ids=skill_ids, weights=w,
             description=description,
         )
-        # 按权重降序拼接融合内容
+
         ordered = sorted(zip(skills, w), key=lambda x: x[1], reverse=True)
-        lines = [
-            f"# 融合写作风格：{fusion_name}",
-            "",
-            f"本 Skill 由 {len(skills)} 个蒸馏 Skill 按权重融合而成，"
-            "权重越高的风格对生成结果影响越大。",
-            "",
-        ]
-        for skill, weight in ordered:
-            lines.append(f"---")
-            lines.append(f"## 来源：《{skill['work_title']}》片段{skill['chunk_index'] + 1}"
-                         f" 第{skill['round_num']}轮（权重 {weight:.0%}）")
-            lines.append("")
-            lines.append(skill["content"])
-            lines.append("")
-        content = "\n".join(lines)
+
+        # 有 LLM：提炼式融合
+        refined = False
+        content = None
+        if client is not None:
+            blocks = []
+            for skill, weight in ordered:
+                ci, rn = skill.get("chunk_index", -1), skill.get("round_num", 0)
+                chunk_info = f"片段{ci + 1} 第{rn}轮" if ci >= 0 else ""
+                body = (skill.get("content") or "").strip()
+                if not body:
+                    continue
+                blocks.append(f"【来源：《{skill.get('work_title', '')}》{chunk_info} · 权重 {weight:.0%}】\n{body}")
+            if blocks:
+                try:
+                    final_text = await self._fuse_to_one(blocks, client, on_event)
+                    parsed = parse_json_safe(final_text)
+                    if isinstance(parsed, dict) and parsed:
+                        content = self._compose_fusion_content(fusion_name, description, parsed)
+                        refined = True
+                    elif final_text and final_text.strip():
+                        content = final_text.strip()
+                except Exception as e:
+                    logger.warning("融合提炼失败（fusion_id=%d），回退为按权重拼接: %s", fusion_id, e)
+
+        # 无 client / 提炼失败：回退为按权重降序拼接
+        if content is None:
+            lines = [f"# 融合写作风格：{fusion_name}", ""]
+            if description:
+                lines += [description, ""]
+            lines += [f"本 Skill 由 {len(skills)} 个蒸馏 Skill 按权重融合而成（提炼失败，已回退拼接）。", ""]
+            for skill, weight in ordered:
+                lines.append("---")
+                ci, rn = skill.get("chunk_index", -1), skill.get("round_num", 0)
+                chunk_info = f"片段{ci + 1} 第{rn}轮" if ci >= 0 else ""
+                lines.append(f"## 来源：《{skill.get('work_title', '')}》{chunk_info}（权重 {weight:.0%}）")
+                lines.append("")
+                lines.append(skill.get("content") or "")
+                lines.append("")
+            content = "\n".join(lines)
+
         file_name = f"distill_fusion_{fusion_id}"
+        if (self._skills_dir() / f"{file_name}.json").exists():
+            file_name = f"{file_name}_{uuid.uuid4().hex[:6]}"
+        tags = ["融合", f"{len(skills)}合一"] + (["AI提炼"] if refined else [])
         self._write_skill_file(
             file_name, fusion_name,
             description or f"{len(skills)} 个蒸馏 Skill 的加权融合",
-            content, tags=["融合", f"{len(skills)}合一"],
+            content, tags=tags,
         )
-        logger.info("Skill 融合完成: fusion_id=%d name=%s (%d 个 Skill)",
-                    fusion_id, fusion_name, len(skills))
+        logger.info("Skill 融合完成: fusion_id=%d name=%s (%d 个 Skill, refined=%s)",
+                    fusion_id, fusion_name, len(skills), refined)
         return {
             "fusion_id": fusion_id,
             "skill_file": file_name,
             "skill_count": len(skills),
+            "refined": refined,
         }
+
+    async def _fuse_to_one(self, blocks: list[str], client: LLMClient,
+                           on_event: OnEvent | None = None) -> str:
+        """多 Skill 融合提炼：分批 → 每批 LLM 提炼 → 递归归并直到剩 1 块。"""
+        safety = 0
+        while len(blocks) > 1 and safety < 12:
+            safety += 1
+            batches = self._batch_texts(blocks, budget=self._CONDENSE_BATCH_BUDGET)
+            new_blocks: list[str] = []
+            for i, batch in enumerate(batches):
+                if len(batches) > 1:
+                    await self._emit(on_event, {
+                        "type": "fuse_batch_start", "batch": i + 1, "total": len(batches),
+                    })
+                try:
+                    text = await self._llm_fusion(batch, client)
+                    if text and text.strip():
+                        new_blocks.append(text.strip())
+                except Exception as e:
+                    logger.warning("融合批 %d/%d 失败: %s", i + 1, len(batches), e)
+                if len(batches) > 1:
+                    await self._emit(on_event, {
+                        "type": "fuse_batch_done", "batch": i + 1, "total": len(batches),
+                    })
+            blocks = new_blocks if new_blocks else ["\n\n".join(blocks)]
+        return blocks[0]
+
+    async def _llm_fusion(self, batch_texts: list[str], client: LLMClient) -> str:
+        """单批融合提炼：LLM 把多个 Skill 浓缩成精炼总纲（权重越高越优先保留）。"""
+        user = (
+            f"【多 Skill 融合 · 提炼浓缩】\n"
+            f"下面是 {len(batch_texts)} 个写作 Skill 的内容，每个开头标注了来源权重"
+            f"（权重越高越重要）。请融合提炼成一份精炼总纲：\n"
+            f"- 合并重复项，去粗取精，只保留共性规律与可操作规则；\n"
+            f"- 高权重的 Skill 的规则优先保留；低权重且与高权重冲突的规则让位或舍弃；\n"
+            f"- 不要照抄原文，用自己的话概括；输入越多，压缩得越狠。\n\n"
+            + "\n\n---\n\n".join(batch_texts)
+            + "\n\n" + _CONDENSE_OUTPUT_SPEC
+        )
+        return await client.generate(user, system=_CONDENSE_SYSTEM, node_name="distill_fuse")
+
+    @staticmethod
+    def _compose_fusion_content(fusion_name: str, description: str, data: dict) -> str:
+        """把融合提炼的 v2 JSON 组装成融合 Skill 正文（markdown）。"""
+        lines = [f"# 融合写作风格：{fusion_name}", ""]
+        desc = str(data.get("description") or description or "").strip()
+        if desc:
+            lines += [desc, ""]
+        lines += DistillationEngine._render_style_body(data)
+        return "\n".join(lines).strip()
 
     # ------------------------------------------------------------------
     # 效果对比

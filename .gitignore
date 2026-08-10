@@ -11,9 +11,7 @@ __pycache__/
 .eggs/
 build/
 dist/
-# 前端构建产物（需要跟踪，新人 clone 即可用）
-!frontend/dist/
-!frontend/dist/**
+# 前端构建产物：开源后 clone 自行构建，不提交产物（与第 73 行 frontend/dist/ 一致，取消跟踪）
 .venv/
 venv/
 env/
@@ -77,6 +75,20 @@ frontend/app-state.png
 frontend/*.png
 # 测试运行临时输出
 _pytest_out.txt
+
+# ===== 开源发布·根目录开发调试脚本（不公开，误 add 风险高）=====
+/_test_novel.py
+/novel_agent/_test_novel.py
+/blindtest_ai_detect.py
+/blindtest_result.json
+/retest_integrated.py
+# 模型评测/微调/调查类脚本（含本机路径与内部结论，不公开）
+/bakeoff_models.py
+/calibrate_passline.py
+/ft_generate_ai.py
+/ft_prepare_data.py
+/investigate_fp.py
+/verify_real_scene.py
 
 # ===== 开源发布·内部文档与开发记录（含本机路径/个人笔记，不公开）=====
 docs/superpowers/

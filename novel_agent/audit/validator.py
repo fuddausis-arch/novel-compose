@@ -668,9 +668,6 @@ NARRATIVE_FUNCTIONS = {
     "挫折", "战斗", "智斗",
 }
 
-# 高潮赌注等级（来源：拆书8卷递进规律）
-STAKES_LEVELS = ["个人突破", "团队突破", "体系突破", "区域突破", "世界存亡"]
-
 
 def _safe_json_loads(text: str):
     """安全 JSON 解析，失败返回 None。"""
@@ -840,31 +837,6 @@ def check_info_density_anomaly(repo, chapter: int) -> list[dict]:
             return issues
     except Exception:
         pass
-    return issues
-
-
-def check_stakes_progression(prev_stakes: str, curr_stakes: str) -> list[dict]:
-    """检查高潮赌注递进是否合理。
-
-    规则来源：拆书8卷赌注每两卷升一级，跳级不超过1级。
-    - 跳级超过1级 → critical
-    - 赌注倒退 → warning
-    """
-    issues = []
-    if prev_stakes not in STAKES_LEVELS or curr_stakes not in STAKES_LEVELS:
-        return issues
-    prev_idx = STAKES_LEVELS.index(prev_stakes)
-    curr_idx = STAKES_LEVELS.index(curr_stakes)
-    if curr_idx > prev_idx + 1:
-        issues.append({
-            "severity": "critical",
-            "message": f"赌注跳级过大：{prev_stakes}→{curr_stakes}，中间缺一级",
-        })
-    if curr_idx < prev_idx:
-        issues.append({
-            "severity": "warning",
-            "message": f"赌注倒退：{prev_stakes}→{curr_stakes}",
-        })
     return issues
 
 

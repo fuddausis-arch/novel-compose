@@ -1,6 +1,7 @@
-/** 全局设置 · 插件管理页：已安装 / 仓库 双 tab，支持安装与启停 */
+/** 全局设置 · 插件管理页：已安装 / 仓库 双 tab，支持安装与启停 + 资产导入导出 */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Boxes, Loader2, PackagePlus, RefreshCw } from "lucide-react";
+import { Archive, Boxes, Loader2, PackagePlus, RefreshCw } from "lucide-react";
+import { api } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +37,167 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** 资产导入导出：skills / rules / preset_phrases 打包为 .naassets */
+function AssetsTransferSection() {
+  const { showSuccess, showError } = useToast();
+  const [exportPath, setExportPath] = useState("assets.naassets");
+  const [include, setInclude] = useState<string[]>(["skills", "rules", "preset_phrases"]);
+  const [packagePath, setPackagePath] = useState("");
+  const [strategy, setStrategy] = useState<"merge" | "overwrite">("merge");
+  const [busy, setBusy] = useState<"export" | "inspect" | "import" | null>(null);
+  const [inspectResult, setInspectResult] = useState<{ manifest?: any; files?: string[] } | null>(null);
+  const [transferResult, setTransferResult] = useState<string | null>(null);
+
+  const toggleInclude = (key: string) => {
+    setInclude((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  };
+
+  const handleExport = async () => {
+    if (!exportPath.trim()) {
+      showError("请输入导出路径");
+      return;
+    }
+    setBusy("export");
+    setTransferResult(null);
+    try {
+      const r = await api.exportPluginAssets(exportPath.trim(), include);
+      const counts = Object.entries(r.counts || {})
+        .filter(([, v]) => v > 0)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join("，");
+      setTransferResult(`已导出到 ${r.path}${counts ? `（${counts}）` : ""}`);
+      showSuccess("资产包导出成功");
+    } catch (e: any) {
+      showError("导出失败：" + e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleInspect = async () => {
+    if (!packagePath.trim()) {
+      showError("请输入资产包路径");
+      return;
+    }
+    setBusy("inspect");
+    try {
+      const r = await api.inspectPluginAssets(packagePath.trim());
+      setInspectResult(r);
+      showSuccess("资产包检查完成");
+    } catch (e: any) {
+      setInspectResult(null);
+      showError("检查失败：" + e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!packagePath.trim()) {
+      showError("请输入资产包路径");
+      return;
+    }
+    setBusy("import");
+    setTransferResult(null);
+    try {
+      const r = await api.importPluginAssets(packagePath.trim(), strategy);
+      const imported = Object.entries(r.imported || {}).filter(([, v]) => v > 0);
+      const skipped = Object.entries(r.skipped || {}).filter(([, v]) => v > 0);
+      setTransferResult(
+        `导入完成：${imported.length > 0 ? imported.map(([k, v]) => `${k} ${v} 项`).join("，") : "无新增"}` +
+          (skipped.length > 0 ? `；跳过：${skipped.map(([k, v]) => `${k} ${v} 项`).join("，")}` : ""),
+      );
+      showSuccess("资产包导入成功");
+    } catch (e: any) {
+      showError("导入失败：" + e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center gap-2">
+        <Archive className="h-4 w-4 text-primary" />
+        <h3 className="text-sm font-semibold text-foreground">资产导入导出</h3>
+      </div>
+      <p className="mt-1 text-xs text-muted">将 Skill / Rule / 预设短语打包为 .naassets 资产包，或从资产包导入（路径需为服务端可访问的本地路径）。</p>
+
+      <div className="mt-3 space-y-4">
+        {/* 导出 */}
+        <div className="space-y-2 rounded-lg border border-border bg-surface/50 p-3">
+          <div className="text-xs font-medium text-muted">导出</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              className="flex-1 min-w-[200px] font-mono text-xs"
+              value={exportPath}
+              onChange={(e) => setExportPath(e.target.value)}
+              placeholder="输出路径，如 assets.naassets"
+            />
+            <div className="flex flex-wrap items-center gap-3 text-xs text-foreground">
+              {["skills", "rules", "preset_phrases"].map((k) => (
+                <label key={k} className="flex cursor-pointer items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={include.includes(k)}
+                    onChange={() => toggleInclude(k)}
+                    className="h-3.5 w-3.5 rounded border-border-strong"
+                  />
+                  {k}
+                </label>
+              ))}
+            </div>
+            <Button size="sm" variant="primary" onClick={() => void handleExport()} disabled={busy !== null}>
+              {busy === "export" ? "导出中…" : "导出资产包"}
+            </Button>
+          </div>
+        </div>
+
+        {/* 检查 / 导入 */}
+        <div className="space-y-2 rounded-lg border border-border bg-surface/50 p-3">
+          <div className="text-xs font-medium text-muted">检查 / 导入</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              className="flex-1 min-w-[200px] font-mono text-xs"
+              value={packagePath}
+              onChange={(e) => setPackagePath(e.target.value)}
+              placeholder="资产包路径，如 project_data/assets.naassets"
+            />
+            <select
+              value={strategy}
+              onChange={(e) => setStrategy(e.target.value as "merge" | "overwrite")}
+              className="h-9 rounded-lg border border-border-strong bg-surface px-3 text-xs text-foreground"
+            >
+              <option value="merge">merge（同名跳过）</option>
+              <option value="overwrite">overwrite（同名覆盖）</option>
+            </select>
+            <Button size="sm" variant="outline" onClick={() => void handleInspect()} disabled={busy !== null}>
+              {busy === "inspect" ? "检查中…" : "检查资产包"}
+            </Button>
+            <Button size="sm" variant="primary" onClick={() => void handleImport()} disabled={busy !== null}>
+              {busy === "import" ? "导入中…" : "导入资产包"}
+            </Button>
+          </div>
+
+          {inspectResult && (
+            <div className="rounded-lg bg-surface p-2 text-xs text-muted">
+              <div>Manifest：{inspectResult.manifest ? JSON.stringify(inspectResult.manifest.counts || {}) : "—"}</div>
+              {inspectResult.files && inspectResult.files.length > 0 && (
+                <div className="mt-1 max-h-28 overflow-y-auto">
+                  {inspectResult.files.map((f) => (
+                    <div key={f} className="truncate font-mono">{f}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {transferResult && <div className="text-xs text-success">{transferResult}</div>}
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 export default function PluginsPage() {
@@ -220,6 +382,7 @@ export default function PluginsPage() {
         {header}
         {stats}
         {body}
+        <AssetsTransferSection />
       </div>
 
       {/* 安装弹窗 */}

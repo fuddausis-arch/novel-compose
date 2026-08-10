@@ -3,6 +3,7 @@ import { Users, Plus, Sparkles, Trash2, Save, X, Edit2 } from "lucide-react";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog";
+import { AppearanceManager } from "@/components/entity/appearance-manager";
 import type { Project, Character } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,6 +50,26 @@ export function CharactersView({ project, characters, refresh }: CharactersViewP
   const [previewItems, setPreviewItems] = useState<Partial<Character>[]>([]);
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [streamOpen, setStreamOpen] = useState(false);
+  const [generatingChar, setGeneratingChar] = useState(false);
+
+  // 单条 AI 生成：调用 /generate-character 生成新角色并填入当前编辑表单
+  const handleGenerateOne = async () => {
+    if (!editingId) return;
+    setGeneratingChar(true);
+    try {
+      const created = await api.generateCharacter(project.id, {
+        name_hint: editForm.name || "",
+        role_hint: editForm.role || "",
+        importance_hint: editForm.importance || "",
+      });
+      setEditForm({ ...editForm, ...created });
+      showSuccess("AI 已生成角色设定，已填入表单，点击「保存」生效");
+    } catch (e: any) {
+      showError("AI 生成失败：" + e.message);
+    } finally {
+      setGeneratingChar(false);
+    }
+  };
 
   const handleGenerate = async () => {
     setStreamOpen(true);
@@ -261,8 +282,15 @@ export function CharactersView({ project, characters, refresh }: CharactersViewP
                     />
                   ))}
                   <div className="flex gap-2">
+                    <Button size="sm" variant="primary" onClick={handleGenerateOne} disabled={generatingChar}>
+                      <Sparkles className="h-3.5 w-3.5 mr-1" />
+                      {generatingChar ? "生成中…" : "AI 生成"}
+                    </Button>
                     <Button size="sm" onClick={handleUpdate}><Save className="h-3.5 w-3.5 mr-1" /> 保存</Button>
                     <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}><X className="h-3.5 w-3.5 mr-1" /> 取消</Button>
+                  </div>
+                  <div className="rounded-lg border border-border p-3">
+                    <AppearanceManager projectId={project.id} entityType="character" entityId={String(c.id)} />
                   </div>
                 </div>
               ) : (

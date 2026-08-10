@@ -483,19 +483,25 @@ def _collect_suggestions(
     return [fix for fix, _ in counter.most_common()]
 
 
-def run(text: str) -> dict:
-    """AI 率检测统一入口（确定性正则，不调用 LLM）。
+def run(text: str, ignore_words: set[str] | None = None) -> dict:
+    """AI 率检测统一入口（规则 + 统计 + 深度模型三层融合）。
 
     对正文做词/句/段三级 AI 味分析，返回结构化报告，供工作流脚本
-    与外部调用方直接消费。
+    与外部调用方直接消费。深度模型（AIGC_detector_zhv3）就绪时占综合分
+    50%；未就绪自动降级为规则+统计两层，不阻塞调用。
 
     Args:
         text: 待检测的正文文本
+        ignore_words: 白名单词集合（如项目角色名/设定关键词），
+            重复词统计时跳过，避免主角名反复出现被误报为 AI 味
 
     Returns:
         {
             "overall_score": 0-100,      # 越高越自然（100=纯人类）
             "ai_level": "自然"|"轻度AI味"|"明显AI味",
+            "deep_available": bool,      # 深度模型是否参与评分
+            "deep_ai_probability": 0-1,  # 深度模型 AI 概率（未就绪为 None）
+            "deep_verdict": "AI"|"Mixed"|"Human"|"unavailable",
             "word_hits": [{"pattern":"仿佛","count":N,"level":"word","issue":"...","fix":"..."}],
             "sentence_hits": [{"sentence":"...","matched":"...","level":"sentence","issue":"...","fix":"..."}],
             "paragraph_hits": [{"paragraph":"...","level":"paragraph","issue":"...","fix":"..."}],
@@ -510,7 +516,37 @@ def run(text: str) -> dict:
     word_issues = report.get("word_issues", [])
     sentence_issues = report.get("sentence_issues", [])
     paragraph_issues = report.get("paragraph_issues", [])
-    score = report.get("overall_score", 100)
+    rule_score = report.get("overall_score", 100)
+
+    # 统计层信号（零成本，与规则层互补）
+    from .stat_signal import stat_signal_report
+    stat = stat_signal_report(text, ignore_words=ignore_words)
+    stat_score = stat["stat_score"]
+    stat_hits = stat["hits"]
+
+    # 深度层信号（AIGC_detector_zhv3 分类模型，判官级；模型未就绪时优雅降级）
+    deep_available = False
+    deep_ai_probability: float | None = None
+    deep_verdict = "unavailable"
+    deep_ai_level = "模型未就绪"
+    try:
+        from .roberta_signal import detect_deep
+        deep = detect_deep(text)
+        if deep.get("available"):
+            deep_available = True
+            deep_ai_probability = deep.get("ai_probability")
+            deep_verdict = deep.get("verdict", "")
+            deep_ai_level = deep.get("ai_level", "")
+    except Exception:
+        logger.warning("深度检测不可用，降级为规则+统计两层", exc_info=True)
+
+    # 综合分：深度模型就绪时 规则30% + 统计20% + 深度50%（深度层为准绳）；
+    # 未就绪时回退 规则60% + 统计40%（与旧行为一致）
+    if deep_available and deep_ai_probability is not None:
+        deep_human_score = (1.0 - deep_ai_probability) * 100.0
+        score = int(round(rule_score * 0.3 + stat_score * 0.2 + deep_human_score * 0.5))
+    else:
+        score = int(round(rule_score * 0.6 + stat_score * 0.4))
 
     # 词级命中：直接透出 pattern/count/issue/fix，补 level 标记
     word_hits = [
@@ -549,14 +585,52 @@ def run(text: str) -> dict:
         sum(w.get("count", 1) for w in word_issues)
         + len(sentence_issues)
         + len(paragraph_issues)
+        + len(stat_hits)
     )
+
+    # 达标线：从配置读取（默认 AI 率 ≤30%），保证与前端展示一致
+    pass_line = 30
+    try:
+        from novel_agent.config import load_config
+        pass_line = int(load_config().ai_pass_ai_rate)
+    except Exception:
+        pass
+
+    ai_rate = 100 - score
+    passed = ai_rate <= pass_line
+
+    # 判定提示：分数落在达标线附近的"轻度AI味"多数是段落级误报，提示人工判断
+    if passed:
+        verdict_hint = "通过"
+    elif score >= 100 - pass_line - 10:
+        verdict_hint = (
+            f"接近达标线（AI率 {ai_rate}% ≤ {pass_line}% 即通过），"
+            f"可能是个别段落的风格误报，建议查看可疑段落后再判断"
+        )
+    else:
+        verdict_hint = (
+            f"AI率 {ai_rate}% 明显高于达标线 {pass_line}%，"
+            f"建议对照可疑段落修改后再复检"
+        )
 
     return {
         "overall_score": score,
+        "rule_score": rule_score,          # 规则层分（0-100）
+        "stat_score": stat_score,          # 统计层分（0-100）
+        "deep_available": deep_available,  # 深度模型是否就绪
+        "deep_ai_probability": deep_ai_probability,  # 深度模型 AI 概率（0-1）
+        "deep_verdict": deep_verdict,      # AI / Mixed / Human / unavailable
+        "deep_ai_level": deep_ai_level,
+        "ai_rate": ai_rate,                # AI 率
+        "pass_line": pass_line,            # 达标线（百分数）
+        "passed": passed,                  # AI 率 ≤ 达标线 视为通过
+        "verdict_hint": verdict_hint,      # 给作者看的判定提示（含人工判断建议）
+        "dimensions": stat.get("dimensions", {}),
         "ai_level": _ai_level(score),
         "word_hits": word_hits,
         "sentence_hits": sentence_hits,
         "paragraph_hits": paragraph_hits,
+        "stat_hits": stat_hits,
         "total_hits": total_hits,
         "suggestions": _collect_suggestions(word_issues, sentence_issues, paragraph_issues),
         "chars": _cjk_len(text),

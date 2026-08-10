@@ -104,3 +104,46 @@ def test_sql_injection_attempt(client):
     """对整数型路径参数传入 SQL 片段应被 FastAPI 校验拒绝。"""
     resp = client.get("/api/projects/1' OR '1'='1")
     assert resp.status_code == 422
+
+
+# ---- 9.4 API Token 鉴权（NOVEL_API_TOKEN） ----
+
+@pytest.fixture
+def authed_client(tmp_path, monkeypatch):
+    """设置 NOVEL_API_TOKEN 后创建客户端（/api/* 需带 token）。"""
+    monkeypatch.setenv("NOVEL_API_TOKEN", "test-token-123")
+    monkeypatch.setenv("NOVEL_PROJECT_DATA_DIR", str(tmp_path / "project_data"))
+    monkeypatch.setenv("NOVEL_CONFIG_PATH", str(tmp_path / "test_config.yaml"))
+    (tmp_path / "project_data").mkdir(parents=True, exist_ok=True)
+    app = create_app(project_data_dir=tmp_path / "project_data")
+    app.state.limiter.enabled = False
+    return TestClient(app)
+
+
+def test_api_token_auth(authed_client):
+    """设置 NOVEL_API_TOKEN 后：无 token 401，带 token 200，health 放行。"""
+    c = authed_client
+    assert c.get("/api/projects").status_code == 401
+    assert c.get("/api/projects", headers={"X-API-Token": "test-token-123"}).status_code == 200
+    assert c.get("/api/projects", headers={"Authorization": "Bearer test-token-123"}).status_code == 200
+    assert c.get("/api/projects", headers={"X-API-Token": "wrong"}).status_code == 401
+    assert c.get("/api/health").status_code == 200  # 健康检查放行
+
+
+def test_no_token_no_auth(client):
+    """未设置 NOVEL_API_TOKEN：API 不鉴权（单机默认，向后兼容）。"""
+    assert client.get("/api/projects").status_code == 200
+
+
+# ---- 9.5 save_config 回写占位符（config.yaml 不落明文 Key） ----
+
+def test_save_config_writes_placeholder_not_plaintext(tmp_path, monkeypatch):
+    """save_config 把明文 Key 回写为 ${VAR} 占位符，config.yaml 不落明文。"""
+    from novel_agent.config import Config, save_config
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-real-secret-xyz")
+    cfg = Config(project_data_dir=tmp_path / "pd")
+    cfg.llm.api_key = "sk-real-secret-xyz"
+    p = save_config(cfg, yaml_path=tmp_path / "cfg.yaml")
+    text = p.read_text(encoding="utf-8")
+    assert "sk-real-secret-xyz" not in text, "config.yaml 出现明文 API Key"
+    assert "${DEEPSEEK_API_KEY}" in text

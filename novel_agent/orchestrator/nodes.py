@@ -51,6 +51,47 @@ def _check_cancelled(state: ChapterGenState, node_name: str) -> dict | None:
     return None
 
 
+# 参考文件单文件截断长度（字），防止超大参考文件撑爆 prompt
+_REFERENCE_PER_FILE_LIMIT = 2000
+
+
+def _build_reference_injections(project_id: int) -> str:
+    """读取项目参考文件内容并注入 prompt（每个文件截断到 2000 字）。
+
+    参考文件存储于 project_data/projects/{id}/references/（upload_reference API
+    写入的纯文本）。无参考文件或读取失败时返回空字符串，不影响原有生成流程。
+    """
+    try:
+        from novel_agent.api.routes_references import get_all_reference_text
+        ref_text = get_all_reference_text(project_id)
+    except Exception as e:
+        logger.debug("_build_reference_injections: 参考文件读取失败: %s", e)
+        return ""
+    if not ref_text.strip():
+        return ""
+    # get_all_reference_text 以 “【参考文件：...】” 分块，每块对应一个文件
+    parts = []
+    for block in ref_text.split("【参考文件："):
+        block = block.strip()
+        if not block:
+            continue
+        # 块首是文件名（到换行为止），恢复完整格式
+        if "\n" in block:
+            fname, _, body = block.partition("\n")
+            header = f"【参考文件：{fname.strip()}】"
+        else:
+            header, body = "【参考文件】", block
+        body = body.strip()
+        if len(body) > _REFERENCE_PER_FILE_LIMIT:
+            body = body[:_REFERENCE_PER_FILE_LIMIT] + "\n……（参考文件过长，已截断）"
+        if body:
+            parts.append(f"{header}\n{body}")
+    if not parts:
+        return ""
+    logger.info("_build_reference_injections: 注入 %d 个参考文件 (project=%d)", len(parts), project_id)
+    return "\n\n".join(parts)
+
+
 def _build_bible_injections(repo: BibleRepository, chapter_num: int, skill_context: str = "") -> str:
     """从 Bible 注入红线、梗、导入章纲约束，供 writer 节点使用。
 
@@ -137,6 +178,12 @@ def _build_bible_injections(repo: BibleRepository, chapter_num: int, skill_conte
                     gag_text += f"  使用备注：{g.usage_notes}\n"
             gag_text += "\n"
             parts.append(gag_text)
+            # P1#13：注入后标记"已用"，避免同一梗被反复注入；失败仅记日志
+            for g in gags:
+                try:
+                    repo.update_gag(g.id, status="已用")
+                except Exception as ge:
+                    logger.warning("标记梗「%s」已用失败: %s", g.name, ge)
     except Exception as e:
         logger.debug("_build_bible_injections: 梗加载失败: %s", e)
 
@@ -668,6 +715,18 @@ async def write_chapter(state: ChapterGenState,
         f"宁可剧情紧凑字数偏少，也不要注水。写每个段落前都问自己：这段话推进剧情了吗？没有就删。</word_limit>\n\n"
         f"<context>\n{state.get('context', '')}\n</context>\n\n"
     )
+    # 注入：项目参考文件（用户上传，每个文件截断到 2000 字；无参考文件时不注入）
+    try:
+        _pid = state.get("project_id")
+        if _pid:
+            ref_injections = _build_reference_injections(_pid)
+            if ref_injections:
+                prompt += (
+                    f"<references>\n以下为本项目上传的参考文件，写作时参考其中的设定/文风/范例，"
+                    f"但不得照搬抄袭原文：\n{ref_injections}\n</references>\n\n"
+                )
+    except Exception as e:
+        logger.debug("write_chapter 第%d章 参考文件注入失败: %s", state["chapter"], e)
     # 注入人类样本写法分析（analyze_style 节点产出）
     style_analysis = state.get("style_analysis", "")
     if style_analysis:
@@ -1773,6 +1832,16 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
                     updates["current_location"] = cs["location"]
                 if cs.get("emotion"):
                     updates["current_emotion"] = cs["emotion"]
+                # P1#12：LLM 若输出 known_info/info 字段，累加到角色已知信息
+                # （分号拼接，避免覆盖已有；prompt 未要求该字段时 LLM 通常不输出，跳过即可）
+                new_info = cs.get("known_info") or cs.get("info")
+                if new_info:
+                    new_info = str(new_info).strip()
+                    if new_info:
+                        old_info = (char.known_info or "").strip()
+                        updates["known_info"] = (
+                            f"{old_info}；{new_info}" if old_info else new_info
+                        )
                 if updates:
                     try:
                         # 记录状态变更到 StateChange 表
@@ -1798,6 +1867,17 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
                         repo.update_character(name, **updates)
                     except Exception as e:
                         logger.warning("summarize_chapter 第%d章：更新角色%s状态失败：%s", chapter, name, e)
+            # P0#5：情感弧线落库（时间线"情感弧线泳道"数据源）
+            if cs.get("emotion"):
+                try:
+                    repo.create_emotion_arc(
+                        character_name=name, chapter=chapter,
+                        event=core_events[:120],
+                        emotion_before=str(char.current_emotion or ""),
+                        emotion_after=str(cs.get("emotion", "")),
+                    )
+                except Exception as e:
+                    logger.warning("summarize_chapter 第%d章：写入情感弧线失败：%s", chapter, e)
 
     # 爽点交付回写 PleasureBeat 表
     for b in beats_delivered:
@@ -1828,6 +1908,19 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
             )
         except Exception:
             pass
+
+    # P0#4：自动关闭已兑现欠账（debts_resolved 为欠账描述，按文本模糊匹配 open 欠账）
+    for debt_text in debts_resolved:
+        if not debt_text:
+            continue
+        try:
+            for debt in repo.list_open_debts():
+                desc = debt.description or ""
+                if debt_text in desc or desc in debt_text:
+                    repo.resolve_debt(debt.id, chapter)
+                    break
+        except Exception as e:
+            logger.warning("summarize_chapter 第%d章：关闭欠账「%s」失败：%s", chapter, debt_text, e)
 
     # 回写覆盖率探针（防 silent 失败）
     coverage = {

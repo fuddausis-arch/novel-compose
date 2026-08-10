@@ -4,6 +4,7 @@ spec 2.4 铁律：模型绝不直接写真相源，只产 delta；代码层 appl
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -11,6 +12,8 @@ from novel_agent.bible.repository import BibleRepository
 from novel_agent.protocol.schemas import (
     Delta, ForeshadowDelta, CharacterDelta, SummaryDelta, OutlineDelta,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ApplyError(Exception):
@@ -283,7 +286,47 @@ class DeltaApplier:
 
     def _apply_relationship_update(self, d: dict, chapter: int | None = None) -> None:
         ch = d.get("chapter") if d.get("chapter") is not None else chapter
-        entity_id = f"{d.get('character_a', '')}-{d.get('character_b', '')}"
+        a = str(d.get("character_a") or "").strip()
+        b = str(d.get("character_b") or "").strip()
+        rel = str(d.get("relation") or d.get("relationship") or d.get("relation_type") or "").strip()
+        try:
+            strength = int(d.get("strength") or 0)
+        except (TypeError, ValueError):
+            strength = 0
+        entity_id = f"{a}-{b}" if (a or b) else f"{d.get('source', '')}-{d.get('target', '')}"
+
+        # P0#2：关系不只写事件流——同时落角色关系表 + 关系变更表
+        if a and b and a != b:
+            try:
+                self.repo.create_character_relationship(
+                    source_character=a, target_character=b,
+                    relation_type=rel or "other",
+                    strength=strength,
+                    description=str(d.get("description") or ""),
+                    since_chapter=ch or 0,
+                )
+            except Exception as e:
+                logger.warning("角色关系落库失败 %s-%s: %s", a, b, e)
+            # P0#5：角色交互矩阵（相遇/交互记录）
+            try:
+                self.repo.create_character_matrix(
+                    chapter=ch or 0, character_a=a, character_b=b,
+                    interaction_type="meeting",
+                    relationship_change=rel,
+                )
+            except Exception as e:
+                logger.warning("角色交互矩阵落库失败 %s-%s: %s", a, b, e)
+            try:
+                self.repo.create_relationship_change(
+                    chapter=ch or 0, entity_type="角色", source_id=a, target_id=b,
+                    field="relationship",
+                    old_value=str(d.get("old_relation") or d.get("old") or ""),
+                    new_value=rel,
+                    reason=str(d.get("description") or ""),
+                )
+            except Exception as e:
+                logger.warning("关系变更落库失败 %s-%s: %s", a, b, e)
+
         self.repo.append_event(
             chapter=ch, type="relationship_change", entity_id=entity_id, payload=d,
         )
@@ -298,10 +341,33 @@ class DeltaApplier:
         )
 
     def _apply_foreshadow_update(self, d: dict, chapter: int | None = None) -> None:
-        foreshadow_id = d.get("foreshadow_id", "")
+        foreshadow_id = str(d.get("foreshadow_id", "")).strip()
         status = d.get("status", "planted")
-        self.repo.update_foreshadow_status(foreshadow_id, status)
         ch = d.get("chapter") if d.get("chapter") is not None else chapter
+        if not foreshadow_id:
+            return
+        existing = self.repo.get_foreshadow(foreshadow_id)
+        if not existing:
+            if status == "planted":
+                # P0#3：正文/大纲埋设的伏笔自动创建（不再静默失败）
+                try:
+                    self.repo.create_foreshadow(
+                        foreshadow_id=foreshadow_id,
+                        tier=str(d.get("tier") or "c"),
+                        plant_chapter=int(ch or d.get("plant_chapter") or 0),
+                        description=str(d.get("description") or ""),
+                        planned_resolve_chapter=int(d.get("planned_resolve_chapter") or 0),
+                        status="planted",
+                    )
+                except Exception as e:
+                    logger.warning("伏笔 %s 自动埋设失败: %s", foreshadow_id, e)
+                    return
+            else:
+                # developing/resolved 但不存在：记录警告，不静默（可能命名不一致）
+                logger.warning("伏笔 %s 不存在但状态为 %s，跳过更新（可能命名不一致）", foreshadow_id, status)
+                return
+        else:
+            self.repo.update_foreshadow_status(foreshadow_id, status)
         self.repo.append_event(
             chapter=ch, type="foreshadow_update", entity_id=foreshadow_id,
             payload={"status": status},
@@ -353,7 +419,9 @@ class DeltaApplier:
         self.repo.create_faction(
             name=name,
             alias=d.get("alias", ""),
-            type=d.get("type", "其他"),
+            # 势力类型优先取 faction_type（_build_create_delta 保留的业务字段），
+            # 兼容旧数据里直接放 type 的情况（此时 delta.type 不是动作类型）
+            type=d.get("faction_type") or (d.get("type", "其他") if d.get("type") != "faction_create" else "其他"),
             tier=d.get("tier", ""),
             alignment=d.get("alignment", "中立"),
             description=d.get("description", ""),
@@ -362,7 +430,7 @@ class DeltaApplier:
         ch = d.get("chapter") if d.get("chapter") is not None else chapter
         self.repo.append_event(
             chapter=ch, type="faction_introduced",
-            entity_id=name, payload={"type": d.get("type", "")},
+            entity_id=name, payload={"type": d.get("faction_type") or d.get("type", "")},
         )
 
     def _apply_monster_create(self, d: dict, chapter: int | None = None) -> None:
@@ -395,9 +463,22 @@ class DeltaApplier:
         )
 
     def _apply_world_setting_create(self, d: dict, chapter: int | None = None) -> None:
-        """从正文提取的新世界观设定。"""
+        """从正文提取的新世界观设定（同名去重，postprocess 可能多次调用）。"""
         title = d.get("title", "").strip()
         if not title:
+            return
+        from novel_agent.bible.models import WorldSetting
+
+        existing = self.repo.db.query(WorldSetting).filter(
+            WorldSetting.project_id == self.repo.project_id,
+            WorldSetting.title == title,
+        ).first()
+        if existing:
+            ch = d.get("chapter") if d.get("chapter") is not None else chapter
+            self.repo.append_event(
+                chapter=ch, type="world_setting_added",
+                entity_id=title, payload={"category": d.get("category", ""), "skipped": True},
+            )
             return
         self.repo.create_world_setting(
             category=d.get("category", "其他"),

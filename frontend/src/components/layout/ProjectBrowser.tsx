@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "@/store";
+import { api } from "@/api";
+import { bumpDataVersion } from "@/store/slices/dataVersion";
+import { useToast } from "@/hooks/useToast";
+import { useConfirmDialog } from "@/hooks/useConfirmDialog";
 import { TreeItem } from "@/components/ui/tree";
 
 export interface ProjectBrowserProps {
@@ -19,6 +23,8 @@ type CategoryKey = (typeof CATEGORIES)[number]["key"];
 
 export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
   const navigate = useNavigate();
+  const { showSuccess, showError } = useToast();
+  const { confirm: confirmDelete, dialog: deleteDialog } = useConfirmDialog();
   const [expanded, setExpanded] = useState<Record<CategoryKey, boolean>>({
     outline: true,
     characters: false,
@@ -26,6 +32,10 @@ export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
     foreshadows: false,
     factions: false,
   });
+  // 章节批量删除模式
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [deleting, setDeleting] = useState(false);
 
   const chapters = useAppStore((s) => s.chapters);
   const characters = useAppStore((s) => s.characters);
@@ -41,6 +51,51 @@ export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
 
   const goToAssets = () => {
     if (projectId) navigate(`/projects/${projectId}/assets`);
+  };
+
+  const toggleSelect = (chapter: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(chapter)) next.delete(chapter);
+      else next.add(chapter);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selected.size === chapters.length) setSelected(new Set());
+    else setSelected(new Set(chapters.map((c) => c.chapter)));
+  };
+
+  const handleBatchDelete = async () => {
+    if (!projectId || selected.size === 0) return;
+    const ok = await confirmDelete({
+      title: "批量删除章节",
+      description: `将删除 ${selected.size} 章正文及其摘要、出场记录等关联数据，此操作不可恢复。`,
+      confirmText: "确认删除",
+      cancelText: "取消",
+      variant: "danger",
+    });
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      const ids = Array.from(selected).sort((a, b) => a - b);
+      const r = await api.batchDeleteChapters(projectId, ids);
+      setSelected(new Set());
+      setSelectMode(false);
+      await Promise.all([useAppStore.getState().refreshChapters(), useAppStore.getState().refreshAssets()]);
+      bumpDataVersion("chapters");
+      bumpDataVersion("bible");
+      showSuccess(
+        r.deleted_count > 0
+          ? `已删除 ${r.deleted_count} 章` + (r.failed.length > 0 ? `，失败 ${r.failed.length} 章` : "")
+          : "没有章节被删除",
+      );
+    } catch (e: any) {
+      showError("批量删除失败：" + e.message);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -68,18 +123,67 @@ export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
               {chapters.length === 0 ? (
                 <TreeItem label="暂无章节，请到大纲页生成" depth={1} />
               ) : (
-                chapters.map((chapter) => (
-                  <TreeItem
-                    key={chapter.chapter}
-                    label={chapter.title || `第${chapter.chapter}章`}
-                    depth={1}
-                    onClick={
-                      onOpenChapter
-                        ? () => onOpenChapter(chapter.chapter, chapter.title)
-                        : undefined
-                    }
-                  />
-                ))
+                <>
+                  <div className="flex items-center gap-1 px-2 py-1">
+                    <button
+                      type="button"
+                      onClick={() => { setSelectMode((v) => !v); setSelected(new Set()); }}
+                      className="rounded px-1.5 py-0.5 text-[10px] text-muted hover:bg-foreground/5 hover:text-foreground"
+                    >
+                      {selectMode ? "退出批量" : "批量删除"}
+                    </button>
+                    {selectMode && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={toggleSelectAll}
+                          className="rounded px-1.5 py-0.5 text-[10px] text-muted hover:bg-foreground/5 hover:text-foreground"
+                        >
+                          {selected.size === chapters.length ? "取消全选" : "全选"}
+                        </button>
+                        {selected.size > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => void handleBatchDelete()}
+                            disabled={deleting}
+                            className="rounded px-1.5 py-0.5 text-[10px] text-danger hover:bg-danger/10 disabled:opacity-50"
+                          >
+                            {deleting ? "删除中…" : `删除选中(${selected.size})`}
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  {chapters.map((chapter) => (
+                    <TreeItem
+                      key={chapter.chapter}
+                      label={
+                        selectMode ? (
+                          <span className="flex items-center gap-1.5">
+                            <input
+                              type="checkbox"
+                              checked={selected.has(chapter.chapter)}
+                              onChange={() => toggleSelect(chapter.chapter)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="h-3 w-3 rounded border-border-strong"
+                            />
+                            <span className="truncate">{chapter.title || `第${chapter.chapter}章`}</span>
+                          </span>
+                        ) : (
+                          chapter.title || `第${chapter.chapter}章`
+                        )
+                      }
+                      depth={1}
+                      onClick={
+                        selectMode
+                          ? () => toggleSelect(chapter.chapter)
+                          : onOpenChapter
+                            ? () => onOpenChapter(chapter.chapter, chapter.title)
+                            : undefined
+                      }
+                    />
+                  ))}
+                </>
               )}
             </div>
           )}
@@ -153,6 +257,7 @@ export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
           )}
         </div>
       ))}
+      {deleteDialog}
     </div>
   );
 }

@@ -24,6 +24,7 @@ import "reactflow/dist/style.css";
 import {
   AlertTriangle,
   ChevronDown,
+  Crown,
   Database,
   Eye,
   GitBranch,
@@ -31,6 +32,7 @@ import {
   LayoutGrid,
   ListTree,
   Loader2,
+  Lock,
   MapPin,
   MapPinned,
   Menu,
@@ -43,6 +45,7 @@ import {
   ShieldAlert,
   Sparkles,
   Trash2,
+  User,
   Users,
   Wand2,
   X,
@@ -66,6 +69,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useCurrentProject } from "@/hooks/useCurrentProject";
 import { useToast } from "@/hooks/useToast";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { useDataVersionStore } from "@/store/slices/dataVersion";
 import { cn } from "@/lib/utils";
 import { DFEmptyState } from "../components/dashboard/DFEmptyState";
 import { DFIconButton, DFSecondaryButton } from "../components/admin/df-ui";
@@ -119,7 +123,12 @@ interface LocationNodeData {
   importance: string;
   tier: string;
   layer: string;
+  ruler?: string;
+  plot_role?: string;
+  unlocked_chapter?: number;
   color: string;
+  residents?: string[];
+  event_count?: number;
 }
 
 interface GraphData {
@@ -135,6 +144,8 @@ interface GraphMeta {
   description: string;
   graph_data: GraphData;
   is_auto: boolean;
+  /** 剧情数据（写章/大纲/角色等）是否比该图谱新（后端 graph_version 脏标记） */
+  dirty?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -158,6 +169,9 @@ interface Location {
   importance: string;
   tier: string;
   layer: string;
+  ruler?: string;
+  plot_role?: string;
+  unlocked_chapter?: number;
 }
 
 interface LocationRelationship {
@@ -225,7 +239,12 @@ const GRAPH_TYPE_NODES: Record<GraphType, GraphNodeType[]> = {
 };
 
 const IMPORTANCE_OPTIONS = ["主角", "核心", "重要", "次要", "背景", "普通", "边缘"];
-const LOCATION_TIER_OPTIONS = ["continent", "kingdom", "region", "city", "town", "site", "dungeon", "landmark", "other"];
+const LOCATION_TIER_OPTIONS = ["continent", "kingdom", "region", "city", "town", "district", "site", "dungeon", "landmark", "other"];
+const LOCATION_TIER_LABEL: Record<string, string> = {
+  continent: "大陆", kingdom: "国家", region: "区域",
+  city: "主城/城市", town: "附属城", district: "街区/街道",
+  site: "建筑/地标", dungeon: "秘境/副本", landmark: "地标", other: "其他",
+};
 const LOCATION_LAYER_OPTIONS = ["surface", "celestial", "underworld", "underwater", "realm", "other"];
 const FACTION_POWER_OPTIONS = ["顶尖", "高", "中", "低"];
 const FORESHADOW_STATUS_OPTIONS = ["planted", "resolved", "abandoned"];
@@ -396,17 +415,19 @@ function NodeShell({
   color,
   icon: Icon,
   children,
+  width = 260,
 }: {
   data: { color?: string; label?: string };
   color: string;
   icon: LucideIcon;
   children?: React.ReactNode;
+  width?: number;
 }) {
   const accent = data.color || color;
   return (
     <div
-      className="w-[260px] rounded-xl border-2 bg-surface-elevated px-3 py-2.5 shadow-lg transition-shadow"
-      style={{ borderColor: `${accent}66` }}
+      className="rounded-xl border-2 bg-surface-elevated px-3 py-2.5 shadow-lg transition-shadow"
+      style={{ width, borderColor: `${accent}66` }}
     >
       <Handle type="target" position={Position.Top} className="!opacity-0" />
       <div className="flex items-center gap-1.5">
@@ -507,21 +528,93 @@ function DFOutlineNode({ data }: NodeProps<OutlineNodeData>) {
   );
 }
 
+/** 地点节点宽度：按层级从大到小（大陆最大 → 建筑最小），主城居中卫星城环绕时视觉直观 */
+const TIER_NODE_WIDTH: Record<string, number> = {
+  continent: 380,
+  kingdom: 340,
+  region: 300,
+  city: 260,
+  town: 230,
+  district: 200,
+  site: 180,
+  landmark: 180,
+  dungeon: 180,
+  other: 180,
+};
+
 function DFLocationNode({ data }: NodeProps<LocationNodeData>) {
   const accent = data.color || NODE_TYPE_COLOR.dfLocation;
+  const residents = data.residents ?? [];
+  const eventCount = data.event_count ?? 0;
+  const tier = (data.tier || "").toLowerCase();
+  const tierLabel = LOCATION_TIER_LABEL[tier];
+  const width = TIER_NODE_WIDTH[tier] ?? 260;
+  const unlocked = data.unlocked_chapter ?? 0;
+  const isUnlocked = unlocked > 0;
   return (
-    <NodeShell data={data} color={NODE_TYPE_COLOR.dfLocation} icon={MapPin}>
+    <NodeShell data={data} color={NODE_TYPE_COLOR.dfLocation} icon={MapPin} width={width}>
       <div className="mt-1.5 flex items-center justify-between gap-1">
         <span
           className="min-w-0 flex-1 truncate rounded px-1 py-0.5 text-[10px] font-medium"
           style={{ backgroundColor: `${accent}1f`, color: accent }}
         >
-          {data.type || "地点"}
+          {tierLabel || data.type || "地点"}
         </span>
         {data.parent_name && (
-          <span className="min-w-0 max-w-[90px] truncate text-[10px] text-muted">↑ {data.parent_name}</span>
+          <span className="min-w-0 max-w-[90px] truncate text-[10px] text-muted" title={`上级：${data.parent_name}`}>
+            ↑ {data.parent_name}
+          </span>
         )}
       </div>
+      {(data.ruler || data.plot_role) && (
+        <div className="mt-1 space-y-0.5">
+          {data.ruler && (
+            <div className="truncate text-[10px] text-cyan-500" title={`城主/掌管者：${data.ruler}`}>
+              <Crown size={9} className="mr-0.5 inline" aria-hidden="true" />
+              {data.ruler}
+            </div>
+          )}
+          {data.plot_role && (
+            <div className="truncate text-[9px] text-muted" title={data.plot_role}>
+              {data.plot_role}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="mt-1 flex items-center justify-between gap-1">
+        {isUnlocked ? (
+          <span className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1 py-0.5 text-[9px] font-medium text-emerald-400">
+            <Sparkles size={8} aria-hidden="true" />
+            第{unlocked}章解锁
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-0.5 rounded bg-surface-hover px-1 py-0.5 text-[9px] text-muted">
+            <Lock size={8} aria-hidden="true" />
+            未解锁
+          </span>
+        )}
+        {data.parent_name && (
+          <span className="truncate text-[9px] text-muted" title="所属上级">
+            {data.parent_name}
+          </span>
+        )}
+      </div>
+      {(residents.length > 0 || eventCount > 0) && (
+        <div className="mt-1 space-y-0.5">
+          {residents.length > 0 && (
+            <div className="truncate text-[9px] text-blue-500">
+              <User size={9} className="mr-0.5 inline" aria-hidden="true" />
+              {residents.length > 2 ? `${residents.slice(0, 2).join("、")} 等 ${residents.length} 人` : residents.join("、")}
+            </div>
+          )}
+          {eventCount > 0 && (
+            <div className="text-[9px] text-amber-500">
+              <Sparkles size={9} className="mr-0.5 inline" aria-hidden="true" />
+              此处发生 {eventCount} 起事件
+            </div>
+          )}
+        </div>
+      )}
     </NodeShell>
   );
 }
@@ -551,6 +644,11 @@ function GraphPageContent() {
   const { projectId } = useCurrentProject();
   const { showError, showSuccess } = useToast();
 
+  // ---- 数据版本订阅：其他页面（如章节提交）写入数据后提示并刷新右侧实体面板 ----
+  const bibleVersion = useDataVersionStore((s) => s.version.bible ?? 0);
+  const chaptersVersion = useDataVersionStore((s) => s.version.chapters ?? 0);
+  const lastDataVersionRef = useRef({ bible: bibleVersion, chapters: chaptersVersion });
+
   // ---- 图谱列表 ----
   const [graphs, setGraphs] = useState<GraphMeta[]>([]);
   const [listLoading, setListLoading] = useState(false);
@@ -567,6 +665,8 @@ function GraphPageContent() {
 
   // ---- 实体卡片抽屉 ----
   const [cardDrawer, setCardDrawer] = useState<{ entityType: EntityCardType; entityId: string } | null>(null);
+  // ---- 大纲节点详情弹窗（章节脉络图双击节点用，大纲节点无实体卡） ----
+  const [outlineDetail, setOutlineDetail] = useState<OutlineNodeData | null>(null);
 
   // ---- 保存 ----
   const [saving, setSaving] = useState(false);
@@ -592,6 +692,9 @@ function GraphPageContent() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationRels, setLocationRels] = useState<LocationRelationship[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
+  // AI 生成世界地图：进度
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiStage, setAiStage] = useState("");
 
   const selectedGraph = useMemo(
     () => graphs.find((g) => g.id === selectedGraphId) ?? null,
@@ -648,6 +751,45 @@ function GraphPageContent() {
         setNodes(loadedNodes);
         setEdges(loadedEdges);
         setSavedSnapshot(JSON.stringify(serializeGraph(loadedNodes, loadedEdges)));
+
+        // 地图图谱：旧快照节点缺 tier/ruler/plot_role/unlocked_chapter 时，
+        // 用 locations 表最新数据补齐字段（保留布局），让层级/城主/解锁状态即时显示
+        if (g.graph_type === "map" && loadedNodes.length > 0) {
+          const missingTier = loadedNodes.some(
+            (n) => (n.data as { tier?: string })?.tier === undefined,
+          );
+          if (missingTier) {
+            graphApi
+              .listLocations(projectId)
+              .then((locs) => {
+                if (cancelled) return;
+                const byName = new Map(locs.map((l) => [l.name, l]));
+                const updated = loadedNodes.map((n) => {
+                  const l = byName.get(String((n.data as { label?: string })?.label ?? ""));
+                  if (!l) return n;
+                  return {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      tier: l.tier ?? "",
+                      ruler: l.ruler ?? "",
+                      plot_role: l.plot_role ?? "",
+                      unlocked_chapter: l.unlocked_chapter ?? 0,
+                    },
+                  };
+                });
+                const changed = updated.some((n, i) => n !== loadedNodes[i]);
+                if (changed) {
+                  setNodes(updated);
+                  setSavedSnapshot(JSON.stringify(serializeGraph(updated, loadedEdges)));
+                  showSuccess("已用最新地点数据刷新地图（含城主/层级/解锁状态），记得点「保存」固化");
+                }
+              })
+              .catch(() => {
+                /* 拉取失败不阻塞画布 */
+              });
+          }
+        }
       })
       .catch((e) => {
         if (cancelled) return;
@@ -661,7 +803,7 @@ function GraphPageContent() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, selectedGraphId, setNodes, setEdges]);
+  }, [projectId, selectedGraphId, setNodes, setEdges, showSuccess]);
 
   // ---- map 图谱进入编辑模式时加载地点与关系 ----
   useEffect(() => {
@@ -752,7 +894,7 @@ function GraphPageContent() {
     [isMobile],
   );
 
-  /** 按节点类型打开实体卡片抽屉（大纲节点无实体卡，跳过） */
+  /** 按节点类型打开实体卡片抽屉（大纲节点无实体卡，改为打开大纲节点详情弹窗） */
   const openNodeCard = useCallback((node: Node) => {
     const type = node.type as GraphNodeType;
     const label = (node.data as { label?: string } | undefined)?.label;
@@ -770,8 +912,12 @@ function GraphPageContent() {
       case "dfLocation":
         setCardDrawer({ entityType: "location", entityId: label });
         break;
+      case "dfOutline":
+        // 大纲节点没有实体卡：弹出大纲节点详情弹窗（章节脉络图）
+        setOutlineDetail(node.data as OutlineNodeData);
+        break;
       default:
-        break; // dfOutline：无实体卡片
+        break;
     }
   }, []);
 
@@ -880,6 +1026,88 @@ function GraphPageContent() {
     [projectId, showError],
   );
 
+  // ---- AI 生成世界地图（读取资产设定 + bishu-novel 世界观，智能合并） ----
+  const reloadLocations = useCallback(async () => {
+    if (!projectId) return;
+    const [locs, rels] = await Promise.all([
+      graphApi.listLocations(projectId).catch(() => [] as Location[]),
+      graphApi.listLocationRelationships(projectId).catch(() => [] as LocationRelationship[]),
+    ]);
+    setLocations(locs);
+    setLocationRels(rels);
+  }, [projectId]);
+
+  // ---- 数据已变更监听：bible/chapters 版本变化时刷新右侧实体面板（地点/关系）并提示 ----
+  // 图谱画布是"快照"需手动重新布局，这里只做保守处理：刷新列表 + toast 提示
+  useEffect(() => {
+    const prev = lastDataVersionRef.current;
+    const changed = bibleVersion !== prev.bible || chaptersVersion !== prev.chapters;
+    lastDataVersionRef.current = { bible: bibleVersion, chapters: chaptersVersion };
+    if (!changed) return;
+    showSuccess("检测到数据更新");
+    void reloadLocations();
+  }, [bibleVersion, chaptersVersion, reloadLocations, showSuccess]);
+
+  const handleAiGenerateMap = useCallback(async () => {
+    if (!projectId) return;
+    setAiGenerating(true);
+    setAiStage("连接服务...");
+    try {
+      const res = await fetch(`${API_BASE}/${projectId}/locations/ai-generate-map`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ max_new: 15 }),
+      });
+      if (!res.ok) throw new Error(`请求失败（HTTP ${res.status}）`);
+      if (!res.body) throw new Error("无法建立流式连接");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let done: { created: number; updated: number; relations: number; total: number } | null = null;
+      while (true) {
+        const { done: end, value } = await reader.read();
+        if (end) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let evt: Record<string, unknown>;
+          try {
+            evt = JSON.parse(line.slice(6)) as Record<string, unknown>;
+          } catch {
+            continue; // ping 等无法解析的帧，忽略
+          }
+          if (evt.type === "gen_stage") {
+            setAiStage(String(evt.stage ?? ""));
+          } else if (evt.type === "gen_done") {
+            done = evt as { created: number; updated: number; relations: number; total: number };
+          } else if (evt.type === "error") {
+            throw new Error(String(evt.error ?? "生成失败"));
+          }
+        }
+      }
+      if (!done) throw new Error("AI 未返回结果");
+
+      // 刷新地点列表 + 重建当前世界地图画布（布局由语义约束 + 弹簧力学引擎完成）
+      await reloadLocations();
+      const rebuilt = await graphApi.autoGenerate(projectId, { graph_type: "map" });
+      setNodes(rebuilt.graph_data.nodes ?? []);
+      setEdges(rebuilt.graph_data.edges ?? []);
+      setSelectedNodeId(null);
+      showSuccess(
+        `世界地图已生成：新增 ${done.created} 个地点，补全 ${done.updated} 个，` +
+          `新增 ${done.relations} 条关系（共 ${done.total} 个地点）。记得点击「保存」固化图谱`,
+      );
+    } catch (e) {
+      showError("AI 生成世界地图失败：" + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setAiGenerating(false);
+      setAiStage("");
+    }
+  }, [projectId, reloadLocations, setNodes, setEdges, showSuccess, showError]);
+
   // ---- 重新布局（对已保存图谱重新生成布局，覆盖画布，需手动保存）----
   const [relayouting, setRelayouting] = useState(false);
   const handleRelayout = useCallback(async () => {
@@ -901,6 +1129,41 @@ function GraphPageContent() {
       setRelayouting(false);
     }
   }, [projectId, selectedGraph, setNodes, setEdges, showSuccess, showError]);
+
+  // ---- 一键刷新（脏标记）：按最新剧情重建当前图谱并保存（清除"有更新"提示） ----
+  const [refreshingGraph, setRefreshingGraph] = useState(false);
+  const handleRefreshGraph = useCallback(async () => {
+    if (!projectId || !selectedGraph) return;
+    if (selectedGraph.graph_type === "custom") {
+      showError("自定义图谱无法自动刷新，请手动编辑");
+      return;
+    }
+    setRefreshingGraph(true);
+    try {
+      const result = await graphApi.autoGenerate(projectId, { graph_type: selectedGraph.graph_type });
+      const rebuilt = {
+        graph_data: result.graph_data,
+      } as const;
+      await graphApi.update(projectId, selectedGraph.id, rebuilt);
+      // 同步画布 + 列表（update 后端已标记该图对齐当前内容，dirty 会变 false）
+      setNodes(result.graph_data.nodes ?? []);
+      setEdges(result.graph_data.edges ?? []);
+      setSelectedNodeId(null);
+      setSavedSnapshot(JSON.stringify(serializeGraph(result.graph_data.nodes ?? [], result.graph_data.edges ?? [])));
+      setGraphs((prev) =>
+        prev.map((g) =>
+          g.id === selectedGraph.id
+            ? { ...g, graph_data: result.graph_data, dirty: false, updated_at: new Date().toISOString() }
+            : g,
+        ),
+      );
+      showSuccess(`已按最新剧情刷新图谱（${result.graph_data.nodes.length} 节点）`);
+    } catch (e) {
+      showError("刷新失败：" + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setRefreshingGraph(false);
+    }
+  }, [projectId, selectedGraph, setNodes, setEdges, showSuccess, showError, setGraphs]);
 
   const handleConfirmAutoGenSave = useCallback(async () => {
     if (!projectId || !autoGenDialog.data) return;
@@ -1048,6 +1311,9 @@ function GraphPageContent() {
       onRelDelete={handleRelDelete}
       onAutoClassify={handleAutoClassify}
       onValidateHierarchy={handleValidateHierarchy}
+      onAiGenerateMap={handleAiGenerateMap}
+      aiGenerating={aiGenerating}
+      aiStage={aiStage}
     />
   ) : null;
 
@@ -1190,6 +1456,35 @@ function GraphPageContent() {
           </>
         )}
       </header>
+
+      {/* 脏标记提示条：剧情数据已更新，图谱还是旧快照 → 一键刷新 */}
+      {selectedGraph?.dirty && (
+        <div
+          className="flex flex-wrap items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2"
+          role="status"
+        >
+          <AlertTriangle size={14} className="shrink-0 text-amber-400" aria-hidden="true" />
+          <span className="min-w-0 flex-1 text-xs text-amber-200">
+            剧情数据已更新（写章/大纲/角色等），当前图谱还是旧快照
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefreshGraph}
+            disabled={refreshingGraph || selectedGraph.graph_type === "custom"}
+            title={selectedGraph.graph_type === "custom"
+              ? "自定义空白图谱不支持自动刷新"
+              : "按最新剧情重建并保存当前图谱"}
+          >
+            {refreshingGraph ? (
+              <Loader2 size={14} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            ) : (
+              <RefreshCw size={14} aria-hidden="true" />
+            )}
+            一键刷新
+          </Button>
+        </div>
+      )}
 
       {/* ========== 主体三栏 ========== */}
       <div className="flex min-h-0 flex-1">
@@ -1428,6 +1723,9 @@ function GraphPageContent() {
           entityId={cardDrawer.entityId}
         />
       )}
+
+      {/* ========== 大纲节点详情弹窗（章节脉络图双击节点打开） ========== */}
+      <OutlineNodeDetailDialog node={outlineDetail} onClose={() => setOutlineDetail(null)} />
     </div>
   );
 }
@@ -1560,6 +1858,11 @@ function GraphList({
                 {g.is_auto && (
                   <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-medium text-amber-300">
                     自动
+                  </span>
+                )}
+                {g.dirty && (
+                  <span className="shrink-0 rounded bg-cyan-500/15 px-1 py-0.5 text-[9px] font-medium text-cyan-300" title="剧情数据已更新，图谱是旧快照">
+                    有新内容
                   </span>
                 )}
               </div>
@@ -1704,6 +2007,9 @@ function EditPanel({
   onRelDelete,
   onAutoClassify,
   onValidateHierarchy,
+  onAiGenerateMap,
+  aiGenerating,
+  aiStage,
 }: {
   graph: GraphMeta;
   selectedNode: Node | null;
@@ -1718,6 +2024,9 @@ function EditPanel({
   onRelDelete: (id: number) => void;
   onAutoClassify: () => Promise<void>;
   onValidateHierarchy: () => Promise<any>;
+  onAiGenerateMap: () => Promise<void>;
+  aiGenerating: boolean;
+  aiStage: string;
 }) {
   const allowedNodes = GRAPH_TYPE_NODES[graph.graph_type] ?? GRAPH_TYPE_NODES.custom;
   const isMap = graph.graph_type === "map";
@@ -1775,6 +2084,9 @@ function EditPanel({
           onRelDelete={onRelDelete}
           onAutoClassify={onAutoClassify}
           onValidate={onValidateHierarchy}
+          onAiGenerateMap={onAiGenerateMap}
+          aiGenerating={aiGenerating}
+          aiStage={aiStage}
         />
       )}
     </div>
@@ -1917,6 +2229,9 @@ function LocationPanel({
   onRelDelete,
   onAutoClassify,
   onValidate,
+  onAiGenerateMap,
+  aiGenerating,
+  aiStage,
 }: {
   locations: Location[];
   locationRels: LocationRelationship[];
@@ -1927,6 +2242,9 @@ function LocationPanel({
   onRelDelete: (id: number) => void;
   onAutoClassify: () => Promise<void>;
   onValidate: () => Promise<any>;
+  onAiGenerateMap: () => Promise<void>;
+  aiGenerating: boolean;
+  aiStage: string;
 }) {
   // 地点表单
   const emptyLoc: Omit<Location, "id"> = {
@@ -1939,6 +2257,9 @@ function LocationPanel({
     importance: "普通",
     tier: "",
     layer: "surface",
+    ruler: "",
+    plot_role: "",
+    unlocked_chapter: 0,
   };
   const [locForm, setLocForm] = useState<Omit<Location, "id">>(emptyLoc);
   const [editingLocId, setEditingLocId] = useState<number | null>(null);
@@ -1969,6 +2290,9 @@ function LocationPanel({
       importance: l.importance,
       tier: l.tier ?? "",
       layer: l.layer ?? "surface",
+      ruler: l.ruler ?? "",
+      plot_role: l.plot_role ?? "",
+      unlocked_chapter: l.unlocked_chapter ?? 0,
     });
   };
 
@@ -2044,7 +2368,7 @@ function LocationPanel({
           >
             <option value="">层级（自动）</option>
             {LOCATION_TIER_OPTIONS.map((o) => (
-              <option key={o} value={o}>{o}</option>
+              <option key={o} value={o}>{LOCATION_TIER_LABEL[o] ?? o}（{o}）</option>
             ))}
           </Select>
           <Select
@@ -2057,6 +2381,28 @@ function LocationPanel({
             ))}
           </Select>
         </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Input
+            placeholder="城主/掌管者（角色名）"
+            value={locForm.ruler ?? ""}
+            onChange={(e) => setLocForm({ ...locForm, ruler: e.target.value })}
+            className="h-8 text-xs"
+          />
+          <Input
+            type="number"
+            min={0}
+            placeholder="解锁章节（0=未解锁）"
+            value={locForm.unlocked_chapter ?? 0}
+            onChange={(e) => setLocForm({ ...locForm, unlocked_chapter: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) })}
+            className="h-8 text-xs"
+          />
+        </div>
+        <Input
+          placeholder="剧情作用（如：主角出生地、第X卷决战地）"
+          value={locForm.plot_role ?? ""}
+          onChange={(e) => setLocForm({ ...locForm, plot_role: e.target.value })}
+          className="h-8 text-xs"
+        />
         <Select
           value={locForm.importance}
           onChange={(e) => setLocForm({ ...locForm, importance: e.target.value })}
@@ -2075,6 +2421,26 @@ function LocationPanel({
         <Button variant="primary" size="sm" onClick={submitLoc} className="w-full">
           {editingLocId ? "保存修改" : "添加地点"}
         </Button>
+      </div>
+
+      {/* AI 生成世界地图：读取资产设定 + bishu-novel 世界观，智能合并补全地点 */}
+      <div className="space-y-2">
+        <Button
+          variant="primary"
+          size="sm"
+          className="w-full text-[11px]"
+          disabled={loading || aiGenerating}
+          onClick={() => void onAiGenerateMap()}
+        >
+          <Sparkles size={11} aria-hidden="true" />
+          {aiGenerating ? "AI 生成中..." : "AI 生成世界地图"}
+        </Button>
+        {aiGenerating && (
+          <div className="flex items-center gap-2 rounded-md border border-primary/20 bg-primary-muted/30 px-2 py-1.5 text-[11px] text-foreground">
+            <Loader2 size={12} className="shrink-0 animate-spin motion-reduce:animate-none text-primary" aria-hidden="true" />
+            <span className="min-w-0 truncate">{aiStage || "AI 生成中..."}</span>
+          </div>
+        )}
       </div>
 
       {/* 地点列表 */}
@@ -2131,7 +2497,13 @@ function LocationPanel({
             <div className="min-w-0 flex-1">
               <div className="truncate text-xs text-foreground">{l.name}</div>
               <div className="truncate text-[10px] text-muted">
-                {[l.type, l.tier, l.layer, l.parent_name, l.importance].filter(Boolean).join(" · ")}
+                {[
+                  l.tier ? (LOCATION_TIER_LABEL[l.tier] ?? l.tier) : l.type,
+                  l.layer,
+                  l.parent_name ? `↑${l.parent_name}` : "",
+                  l.ruler ? `城主:${l.ruler}` : "",
+                  l.unlocked_chapter ? `第${l.unlocked_chapter}章解锁` : "未解锁",
+                ].filter(Boolean).join(" · ")}
               </div>
             </div>
             <DFIconButton
@@ -2293,6 +2665,66 @@ function AutoGenPreviewDialog({
             </div>
           </div>
         )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** 大纲节点详情弹窗（章节脉络图双击节点查看） */
+function OutlineNodeDetailDialog({
+  node,
+  onClose,
+}: {
+  node: OutlineNodeData | null;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={node !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ListTree size={16} className="text-green-500" aria-hidden="true" />
+            大纲节点详情
+          </DialogTitle>
+        </DialogHeader>
+
+        {node && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="success">{node.level_label || OUTLINE_LEVEL_LABEL[node.level] || node.level}</Badge>
+              {typeof node.order === "number" && (
+                <span className="text-xs tabular-nums text-muted">序号 #{node.order}</span>
+              )}
+            </div>
+            <div>
+              <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">标签</div>
+              <div className="text-sm font-semibold text-foreground">{node.label || "未命名"}</div>
+            </div>
+            {node.title && (
+              <div>
+                <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">标题</div>
+                <div className="whitespace-pre-wrap text-sm text-foreground">{node.title}</div>
+              </div>
+            )}
+            {node.summary && (
+              <div>
+                <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">摘要</div>
+                <div className="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted">
+                  {node.summary}
+                </div>
+              </div>
+            )}
+            {!node.title && !node.summary && (
+              <p className="text-xs text-muted">该节点暂无更多内容，可进入编辑模式补充标题与摘要。</p>
+            )}
+          </div>
+        )}
+
+        <div className="flex justify-end border-t border-border pt-3">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            关闭
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   );

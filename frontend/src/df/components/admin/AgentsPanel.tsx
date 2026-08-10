@@ -1,8 +1,8 @@
-/** Agent 定义管理面板：列表 / 新建 / 编辑 / 可见性开关 / 内置播种
- * 对接 /api/agents 系列端点（后端未提供删除端点，故不提供删除入口）。
+/** Agent 定义管理面板：列表 / 新建 / 编辑 / 可见性开关 / 删除 / 内置播种
+ * 对接 /api/agents 系列端点（含 DELETE /api/agents/{agent_type}）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, Pencil, Plus, RefreshCw, Sparkles } from "lucide-react";
+import { Bot, Pencil, Plus, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { apiFetch, apiJson, parseListInput } from "./df-api";
 import {
@@ -21,11 +21,14 @@ import {
   DFTag,
 } from "./df-ui";
 import { useToast } from "@/hooks/useToast";
+import { useConfirmDialog } from "@/hooks/useConfirmDialog";
+import ModelPicker from "./ModelPicker";
 
 /** Agent 定义（与后端 AgentDef 对齐） */
 export interface AgentDef {
   agent_type: string;
   model: string;
+  description?: string;
   temperature: number;
   top_p: number;
   max_turns: number;
@@ -40,6 +43,7 @@ const REASONING_EFFORTS = ["low", "medium", "high"];
 interface AgentFormState {
   agent_type: string;
   model: string;
+  description: string;
   temperature: string;
   top_p: string;
   max_turns: string;
@@ -52,6 +56,7 @@ interface AgentFormState {
 const EMPTY_FORM: AgentFormState = {
   agent_type: "",
   model: "",
+  description: "",
   temperature: "0.8",
   top_p: "0.92",
   max_turns: "10",
@@ -69,6 +74,7 @@ export default function AgentsPanel({
   onSelectAgent?: (agentType: string) => void;
 }) {
   const { showSuccess } = useToast();
+  const { confirm: confirmDelete, dialog: deleteDialog } = useConfirmDialog();
   const [agents, setAgents] = useState<Record<string, AgentDef>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -81,6 +87,7 @@ export default function AgentsPanel({
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [seeding, setSeeding] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async (initial = false) => {
     if (initial) setLoading(true);
@@ -123,6 +130,7 @@ export default function AgentsPanel({
     setForm({
       agent_type: agent.agent_type,
       model: agent.model,
+      description: agent.description || "",
       temperature: String(agent.temperature),
       top_p: String(agent.top_p),
       max_turns: String(agent.max_turns),
@@ -150,6 +158,7 @@ export default function AgentsPanel({
     setFormError(null);
     const payload = {
       model: form.model.trim(),
+      description: form.description.trim(),
       temperature: Number(form.temperature) || 0.8,
       top_p: Number(form.top_p) || 0.92,
       max_turns: Number(form.max_turns) || 10,
@@ -187,6 +196,28 @@ export default function AgentsPanel({
       setError(e instanceof Error ? e.message : "播种失败");
     } finally {
       setSeeding(false);
+    }
+  };
+
+  /** 删除 Agent 定义（DELETE /api/agents/{agent_type}） */
+  const handleDelete = async (agent: AgentDef) => {
+    const ok = await confirmDelete({
+      title: "删除 Agent",
+      description: `确定删除 Agent「${agent.agent_type}」吗？此操作不可恢复。`,
+      confirmText: "删除",
+      cancelText: "取消",
+      variant: "danger",
+    });
+    if (!ok) return;
+    setDeletingId(agent.agent_type);
+    try {
+      await apiJson(`/api/agents/${encodeURIComponent(agent.agent_type)}`, "DELETE");
+      showSuccess(`Agent「${agent.agent_type}」已删除`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "删除失败");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -265,8 +296,22 @@ export default function AgentsPanel({
                     >
                       <Pencil size={14} aria-hidden="true" />
                     </DFIconButton>
+                    <DFIconButton
+                      onClick={() => void handleDelete(agent)}
+                      disabled={deletingId === agent.agent_type}
+                      title="删除"
+                      aria-label={`删除 Agent ${agent.agent_type}`}
+                      className="min-h-[36px] min-w-[36px] text-red-400 hover:text-red-300"
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </DFIconButton>
                   </div>
                 </div>
+                {agent.description && (
+                  <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-muted" title={agent.description}>
+                    {agent.description}
+                  </p>
+                )}
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   <DFTag>{agent.model || "默认模型"}</DFTag>
                   <DFTag>temp {agent.temperature}</DFTag>
@@ -322,12 +367,18 @@ export default function AgentsPanel({
                 placeholder="如 writer / auditor"
               />
             </DFFormField>
-            <DFFormField label="模型（留空使用全局默认模型）" htmlFor="agent-model">
+            <DFFormField label="中文说明（这个 Agent 是干什么的）" htmlFor="agent-description">
               <DFInput
-                id="agent-model"
+                id="agent-description"
+                value={form.description}
+                onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+                placeholder="如：写手——根据章纲写出章节正文"
+              />
+            </DFFormField>
+            <DFFormField label="模型（从模型管理的供应商里点选，留空使用全局默认模型）" htmlFor="mp-provider">
+              <ModelPicker
                 value={form.model}
-                onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
-                placeholder="如 deepseek-chat"
+                onChange={(v) => setForm((f) => ({ ...f, model: v }))}
               />
             </DFFormField>
             <div className="grid grid-cols-3 gap-3">
@@ -404,6 +455,7 @@ export default function AgentsPanel({
         </DFModal>
       )}
 
+      {deleteDialog}
       <DFErrorToast message={error} onClose={() => setError(null)} />
     </div>
   );

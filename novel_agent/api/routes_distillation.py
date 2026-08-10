@@ -12,7 +12,7 @@
 - DELETE /api/distillation/skills/{id}            删除 Skill（同时删除 Skills 系统 JSON 文件）
 - POST   /api/distillation/fuse                   融合 Skill（skill_ids + weights + name）
 - GET    /api/distillation/fusions                列出所有融合方案
-- POST   /api/distillation/compare                效果对比（prompt + skill_id?）
+- POST   /api/distillation/works/{id}/cancel   取消正在进行的蒸馏（优雅停止，保留已完成部分）
 - GET    /api/distillation/status/{work_id}       蒸馏进度
 """
 from __future__ import annotations
@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Callable
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
@@ -28,12 +29,16 @@ from sse_starlette.sse import EventSourceResponse
 
 from novel_agent.config import load_config, LLMConfig
 from novel_agent.distillation.engine import DistillationEngine
-from novel_agent.api.routes_skills import rebuild_skill_index
+from novel_agent.api.routes_skills import rebuild_skill_index, remove_skill_from_index
 from novel_agent.distillation.store import get_store
 from novel_agent.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# 待取消的蒸馏任务（按 work_id）。连接断开（切页）不再取消后台任务，
+# 只有显式调用 cancel 端点才中断——保证切页后任务继续、回来进度还在。
+_CANCELLED_WORKS: set[int] = set()
 
 
 # ---- Pydantic 模型 ----
@@ -77,6 +82,14 @@ class FuseRequest(BaseModel):
     weights: list[float] | None = None
     name: str
     description: str = ""
+    delete_originals: bool = False  # 融合成功后删除参与融合的原 Skill（DB 记录 + JSON 文件）
+    agent_role: str = "auditor"  # 融合是分析型任务，用低温度角色
+    # 模型设置（可选）：不填则跟随 config.yaml 的 agent_role 配置
+    provider: str | None = None
+    model: str | None = None
+    custom_base_url: str | None = None
+    custom_api_key: str | None = None
+    custom_model: str | None = None
 
 
 class CompareRequest(BaseModel):
@@ -160,7 +173,7 @@ def _fusion_view(fusion: dict) -> dict:
     except (json.JSONDecodeError, TypeError):
         view.setdefault("skill_ids", [])
         view.setdefault("weights", [])
-    view["skill_file"] = f"distill_fusion_{view['id']}"
+    view["skill_file"] = view.get("skill_file") or f"distill_fusion_{view['id']}"
     return view
 
 
@@ -321,6 +334,7 @@ async def distill_work(work_id: int, req: DistillRequest):
                 await engine.distill_work(
                     work_id, client, dimensions=req.dimensions, levels=req.levels,
                     retry_failed=req.retry_failed, on_event=on_event,
+                    is_cancelled=lambda: work_id in _CANCELLED_WORKS,
                 )
             except Exception as e:
                 logger.exception("蒸馏执行异常 (work_id=%d)", work_id)
@@ -338,6 +352,8 @@ async def distill_work(work_id: int, req: DistillRequest):
                 except Exception as e:
                     logger.warning("蒸馏后重建 skill 索引失败: %s", e)
                 await queue.put(None)  # 结束哨兵
+            # 蒸馏正常结束后清除取消标记（无论完成还是被取消）
+            _CANCELLED_WORKS.discard(work_id)
 
         task = asyncio.create_task(_run())
         try:
@@ -347,9 +363,13 @@ async def distill_work(work_id: int, req: DistillRequest):
                     break
                 etype = event.get("type", "message")
                 yield {"event": etype, "data": json.dumps(event, ensure_ascii=False)}
+        except asyncio.CancelledError:
+            raise
         finally:
+            # 客户端断开（切页/刷新）不取消后台任务：蒸馏进度已持久化到 DB，
+            # 任务继续跑完，用户切回页面可通过 /status 看到实时进度。
             if not task.done():
-                task.cancel()
+                await task
 
     # ping=15：单轮 LLM 调用可达数分钟，期间无字节会被代理/浏览器掐断
     return EventSourceResponse(event_gen(), ping=15)
@@ -362,6 +382,24 @@ def distill_status(work_id: int):
     if not store.get_work(work_id):
         raise HTTPException(404, f"作品不存在: {work_id}")
     return store.progress(work_id)
+
+
+@router.post("/works/{work_id}/cancel")
+def cancel_distill(work_id: int):
+    """取消正在进行的蒸馏：置取消标记，蒸馏循环在下一个片段/轮次边界优雅停止。
+
+    已完成的片段/轮次产物保留；work 状态置为 cancelled（前端可显示"已中断"）。
+    连接断开（切页）不触发取消——只有显式调用本端点才中断。
+    """
+    store = get_store()
+    if not store.get_work(work_id):
+        raise HTTPException(404, f"作品不存在: {work_id}")
+    _CANCELLED_WORKS.add(work_id)
+    try:
+        store.update_work_status(work_id, "cancelled")
+    except Exception as e:
+        logger.warning("取消蒸馏时更新 work 状态失败: %s", e)
+    return {"cancelled": True, "work_id": work_id}
 
 
 # ---- Skill 管理 ----
@@ -444,14 +482,16 @@ def update_skill(skill_id: int, req: SkillUpdate):
             raise HTTPException(400, f"无效的 skill 名称（仅允许字母数字-_）: {new_name}")
     store.update_skill(skill_id, **updates)
     updated = store.get_skill(skill_id)
-    # 同步 Skills 系统文件：改名则移动文件，改内容/描述则重写
+    # 同步 Skills 系统文件：改名则移动文件，改内容/描述/状态则重写。
+    # status 变更（active/archived）会影响文件中的 enabled 字段，
+    # 归档(archived)的 skill 写入 enabled=False，注入侧会跳过它。
     if new_name and new_name != skill["name"]:
         _remove_skill_file(skill["name"])
-    if updates.keys() & {"name", "description", "content", "tags"}:
+    if updates.keys() & {"name", "description", "content", "tags", "status"}:
         view = _skill_view(updated)
         DistillationEngine(get_store())._write_skill_file(
             view["name"], view["name"], view["description"],
-            view["content"], view["tags"],
+            view["content"], view["tags"], status=view.get("status", "active"),
         )
         rebuild_skill_index()
     return {"updated": True, "skill": _skill_view(updated)}
@@ -459,14 +499,22 @@ def update_skill(skill_id: int, req: SkillUpdate):
 
 @router.delete("/skills/{skill_id}")
 def delete_skill(skill_id: int):
-    """删除 Skill（同时删除 Skills 系统 JSON 文件）。"""
+    """删除 Skill（同时删除 Skills 系统 JSON 文件）。
+
+    索引只做增量移除（不触发全量重建）——删除一个 skill 无需重新 embedding
+    上千条目的向量库，避免删除长时间转圈。
+    """
     store = get_store()
     skill = store.get_skill(skill_id)
     if not skill:
         raise HTTPException(404, f"Skill 不存在: {skill_id}")
     _remove_skill_file(skill["name"])
     store.delete_skill(skill_id)
-    rebuild_skill_index()
+    try:
+        remove_skill_from_index(skill["name"])
+    except Exception as e:
+        logger.warning("skill 索引增量移除失败（降级全量重建）: %s", e)
+        rebuild_skill_index()
     return {"deleted": True, "skill_id": skill_id}
 
 
@@ -474,27 +522,30 @@ def delete_skill(skill_id: int):
 
 
 @router.post("/fuse")
-def fuse_skills(req: FuseRequest):
-    """融合多个 Skill（蒸馏 DB skill + 拆书 skill 均可，支持"九合一"等模式）。"""
+async def fuse_skills(req: FuseRequest):
+    """SSE 流式融合多个 Skill（蒸馏 DB skill + 拆书 skill 均可）。
+
+    v2：融合 = LLM 提炼浓缩（非简单拼接）——把多个 Skill 交给模型提炼成一份
+    精炼总纲，高权重来源优先保留；模型不可用时自动回退为按权重拼接。
+
+    事件类型：
+    - fuse_start {skill_count}
+    - fuse_batch_start {batch, total}
+    - fuse_batch_done {batch, total}
+    - fuse_done {fusion: {...refined, skill_file, deleted_count}}
+    - error {error}
+    """
     if not req.name.strip():
         raise HTTPException(400, "融合方案名称不能为空")
     if not req.skill_ids and not req.skill_files:
         raise HTTPException(400, "至少选择一个 Skill")
 
+    cfg = load_config()
     store = get_store()
-    engine = _engine()
 
-    # 收集 DB skill
-    db_skills = []
-    for sid in req.skill_ids:
-        skill = store.get_skill(sid)
-        if not skill:
-            raise HTTPException(404, f"蒸馏 Skill 不存在: id={sid}")
-        db_skills.append(skill)
-
-    # 收集拆书 skill（从文件加载）
+    # 收集拆书 skill（从文件加载，传给引擎的 extra_skills）
     file_skills = []
-    skills_dir = load_config().project_data_dir / "skills"
+    skills_dir = cfg.project_data_dir / "skills"
     for fname in req.skill_files:
         path = skills_dir / f"{fname}.json"
         if not path.exists():
@@ -517,52 +568,90 @@ def fuse_skills(req: FuseRequest):
         except (json.JSONDecodeError, OSError) as e:
             raise HTTPException(500, f"读取拆书 Skill 失败: {e}")
 
-    # 合并 + 权重
-    all_skills = db_skills + file_skills
-    if req.weights and len(req.weights) == len(all_skills):
-        w = [max(0.0, float(x)) for x in req.weights]
-    else:
-        w = [1.0] * len(all_skills)
-    total = sum(w) or 1.0
-    w = [x / total for x in w]
+    async def event_gen():
+        queue: asyncio.Queue = asyncio.Queue()
 
-    # 写入融合产物
-    fusion_id = store.create_fusion(
-        name=req.name.strip(), skill_ids=req.skill_ids, weights=w,
-        description=req.description,
-    )
-    ordered = sorted(zip(all_skills, w), key=lambda x: x[1], reverse=True)
-    lines = [
-        f"# 融合技能：{req.name.strip()}",
-        "",
-        f"本 Skill 由 {len(all_skills)} 个 Skill 融合而成"
-        f"（蒸馏 {len(db_skills)} + 拆书 {len(file_skills)}），"
-        "权重越高对生成结果影响越大。",
-        "",
-    ]
-    for skill, weight in ordered:
-        source_label = "拆书" if skill.get("source") == "book-to-skill" else "蒸馏"
-        lines.append("---")
-        ci = skill.get("chunk_index", -1)
-        rn = skill.get("round_num", 0)
-        chunk_info = f"片段{ci + 1} 第{rn}轮" if ci >= 0 else ""
-        lines.append(f"## 来源：{source_label} · 《{skill['work_title']}》{chunk_info}（权重 {weight:.0%}）")
-        lines.append("")
-        lines.append(skill["content"])
-        lines.append("")
+        async def on_event(event: dict) -> None:
+            await queue.put(event)
 
-    content = "\n".join(lines)
-    file_name = f"distill_fusion_{fusion_id}"
-    engine._write_skill_file(
-        file_name, req.name.strip(),
-        req.description or f"{len(all_skills)} 个 Skill 的加权融合",
-        content, tags=["融合", f"{len(all_skills)}合一"],
-    )
-    rebuild_skill_index()
-    logger.info("Skill 融合完成: fusion_id=%d name=%s (蒸馏 %d + 拆书 %d)",
-                fusion_id, req.name, len(db_skills), len(file_skills))
-    fusion = store.get_fusion(fusion_id)
-    return {"created": True, "fusion": _fusion_view(fusion)}
+        async def _run():
+            client = None
+            result = None
+            try:
+                engine = _engine()
+                await on_event({"type": "fuse_start", "skill_count": len(file_skills) + len(req.skill_ids)})
+                # 蒸馏是分析型任务：client 构造失败（如非法模型）时回退为无 client 拼接
+                try:
+                    client = LLMClient(_resolve_llm_config(cfg, req))
+                    result = await engine.fuse_skills(
+                        req.skill_ids, req.weights, req.name.strip(), req.description,
+                        client=client, extra_skills=file_skills, on_event=on_event,
+                    )
+                except Exception as e:
+                    logger.warning("融合提炼 client 构造失败，回退为拼接: %s", e)
+                    result = await engine.fuse_skills(
+                        req.skill_ids, req.weights, req.name.strip(), req.description,
+                        client=None, extra_skills=file_skills, on_event=on_event,
+                    )
+            except Exception as e:
+                logger.exception("融合执行异常")
+                await queue.put({"type": "error", "error": str(e)})
+                return
+            finally:
+                if client is not None:
+                    await client.close()
+                await queue.put(None)  # 结束哨兵（正常/异常路径都保证 SSE 流结束）
+
+            # 融合成功后按需批量删除原 Skill（DB 记录 + skills/*.json 文件）
+            deleted_count = 0
+            if req.delete_originals:
+                for sid in req.skill_ids:
+                    skill = store.get_skill(sid)
+                    if not skill:
+                        continue
+                    _remove_skill_file(skill["name"])  # 删 skills/{name}.json
+                    if store.delete_skill(sid):
+                        deleted_count += 1
+                for fname in req.skill_files:
+                    _remove_skill_file(fname)
+                    deleted_count += 1
+                logger.info("融合后删除原 Skill %d 个（fusion=%s）", deleted_count, req.name)
+
+            try:
+                rebuild_skill_index()
+            except Exception as e:
+                logger.warning("融合后重建 skill 索引失败: %s", e)
+            # 融合完成：更新方案状态 + 产物文件名（前端据此区分"融合中/已完成"）
+            try:
+                store.update_fusion_status(result["fusion_id"], "done", result["skill_file"])
+            except Exception as e:
+                logger.warning("更新融合方案状态失败: %s", e)
+            fusion = store.get_fusion(result["fusion_id"])
+            view = _fusion_view(fusion)
+            view["refined"] = result["refined"]
+            view["skill_file"] = result["skill_file"]
+            view["deleted_count"] = deleted_count
+            logger.info("Skill 融合完成: fusion_id=%d name=%s refined=%s",
+                        result["fusion_id"], req.name, result["refined"])
+            await queue.put({"type": "fuse_done", "fusion": view})
+
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                etype = event.get("type", "message")
+                yield {"event": etype, "data": json.dumps(event, ensure_ascii=False)}
+        except asyncio.CancelledError:
+            raise
+        finally:
+            # 客户端断开（切页）不取消融合：融合是后台任务，方案记录已持久化，
+            # 产物生成后写入 skills 目录，切回页面通过 /fusions 仍可见。
+            if not task.done():
+                await task
+
+    return EventSourceResponse(event_gen(), ping=15)
 
 
 @router.get("/fusions")
@@ -570,6 +659,66 @@ def list_fusions():
     """列出所有融合方案。"""
     fusions = [_fusion_view(f) for f in get_store().list_fusions()]
     return {"fusions": fusions}
+
+
+@router.get("/fusions/{fusion_id}/skill")
+def get_fusion_skill(fusion_id: int):
+    """读取融合产物的 Skill 文件内容（供融合方案列表"查看"用）。"""
+    fusion = get_store().get_fusion(fusion_id)
+    if not fusion:
+        raise HTTPException(404, f"融合方案不存在: {fusion_id}")
+    skills_dir = load_config().project_data_dir / "skills"
+    base = f"distill_fusion_{fusion_id}"
+    path = skills_dir / f"{base}.json"
+    if not path.exists():
+        cands = sorted(skills_dir.glob(f"{base}_*.json"))
+        path = cands[0] if cands else None
+    if not path or not path.exists():
+        # 融合产物文件可能被手动清理：降级为提示，不让前端报错
+        return {
+            "name": base,
+            "description": "",
+            "tags": [],
+            "distilled": False,
+            "content": f"（融合产物文件已不存在：skills/{base}.json 可能已被删除，无法查看正文）",
+        }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        raise HTTPException(500, f"读取融合 Skill 失败: {e}")
+    # 拼装可读的 markdown 正文（sections 里存的是提炼/拼接后的内容）
+    content_parts = [s.get("content", "") for s in data.get("sections", []) if isinstance(s, dict)]
+    return {
+        "name": data.get("name", base),
+        "description": data.get("description", ""),
+        "tags": data.get("tags", []),
+        "distilled": bool(data.get("distilled")),
+        "content": "\n\n".join(p for p in content_parts if p) or "",
+    }
+
+
+@router.delete("/fusions/{fusion_id}")
+def delete_fusion(fusion_id: int):
+    """删除融合方案（DB 记录 + skills 目录下残留的产物文件）。"""
+    store = get_store()
+    if not store.get_fusion(fusion_id):
+        raise HTTPException(404, f"融合方案不存在: {fusion_id}")
+    # 清理产物文件（含冲突时的 _uuid 后缀变体）
+    skills_dir = load_config().project_data_dir / "skills"
+    removed = 0
+    for path in list(skills_dir.glob(f"distill_fusion_{fusion_id}*.json")):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as e:
+            logger.warning("删除融合产物文件失败 %s: %s", path, e)
+    store.delete_fusion(fusion_id)
+    try:
+        rebuild_skill_index()
+    except Exception as e:
+        logger.warning("删除融合方案后重建 skill 索引失败: %s", e)
+    logger.info("融合方案已删除: fusion_id=%d（清理文件 %d 个）", fusion_id, removed)
+    return {"deleted": True, "fusion_id": fusion_id, "removed_files": removed}
 
 
 # ---- 效果对比 ----
@@ -669,9 +818,12 @@ async def distill_character(req: CharacterDistillRequest):
                     break
                 etype = event.get("type", "message")
                 yield {"event": etype, "data": json.dumps(event, ensure_ascii=False)}
+        except asyncio.CancelledError:
+            raise
         finally:
+            # 客户端断开不取消后台任务（切页后任务继续跑完，产出不丢）
             if not task.done():
-                task.cancel()
+                await task
 
     return EventSourceResponse(event_gen(), ping=15)
 

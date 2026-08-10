@@ -78,7 +78,7 @@ export function AppLayout({ children, browser, rightPanel, rightPanelWidth = "w-
           </>
         )}
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
+        <main className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-background">
           {children}
         </main>
 

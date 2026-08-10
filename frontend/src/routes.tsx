@@ -16,6 +16,8 @@ const ReferencesPage = lazy(() => import('./pages/ReferencesPage'))
 const ChatPage = lazy(() => import('./pages/ChatPage'))
 const TimelinePage = lazy(() => import('./pages/TimelinePage'))
 const EncyclopediaPage = lazy(() => import('./pages/EncyclopediaPage'))
+const AiStylePage = lazy(() => import('./pages/AiStylePage'))
+const StorylinePage = lazy(() => import('./pages/StorylinePage'))
 
 // 工作流融合界面（组件实现位于 df/ 目录，统一接入项目内路由）
 const ProjectWorkflowPage = lazy(() => import('./df/pages/DFWorkflowPage'))
@@ -128,6 +130,8 @@ export default function AppRoutes() {
         <Route path="/projects/:projectId/stats" element={<StatsPage />} />
         <Route path="/projects/:projectId/timeline" element={<TimelinePage />} />
         <Route path="/projects/:projectId/encyclopedia" element={<EncyclopediaPage />} />
+        <Route path="/projects/:projectId/ai-style" element={<AiStylePage />} />
+        <Route path="/projects/:projectId/storyline" element={<StorylinePage />} />
 
         {/* 全局设置（带子路由布局） */}
         <Route path="/settings" element={<SettingsLayout />}>

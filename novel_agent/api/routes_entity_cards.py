@@ -171,6 +171,9 @@ def _location_card(l: Location) -> dict:
         "importance": l.importance,
         "tier": l.tier,
         "layer": l.layer,
+        "ruler": l.ruler or "",
+        "plot_role": l.plot_role or "",
+        "unlocked_chapter": l.unlocked_chapter or 0,
     }
 
 

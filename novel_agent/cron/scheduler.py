@@ -5,23 +5,25 @@
 - 支持手动触发
 - 任务类型：批量生成、后验裁决、状态快照
 
-APScheduler 可能未安装，用 try/import 处理。
-如果未安装，CronScheduler 的 start/stop 方法降级为 no-op + warning，
-但 CronStore 的 SQLite 持久化与 list_jobs/trigger_job 仍可正常使用。
+APScheduler 可能未安装（requirements.txt 未声明），用 try/import 处理：
+- 已安装：使用 APScheduler BackgroundScheduler
+- 未安装：降级为 daemon 线程轮询 CronStore 的简易调度器（精度 30 秒），
+  保证 start/stop/定时触发整体可用，不因缺少第三方依赖而完全失效。
 """
 from __future__ import annotations
 
 import json
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-# 尝试导入 APScheduler，未安装时降级为 no-op
+# 尝试导入 APScheduler，未安装时降级为线程轮询调度器
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
@@ -31,6 +33,132 @@ except ImportError:  # pragma: no cover - 依赖未安装时的降级路径
     _HAS_APSCHEDULER = False
     BackgroundScheduler = None  # type: ignore[assignment]
     CronTrigger = None  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# 简化 cron 表达式匹配（5 字段：分 时 日 月 周），供降级调度器使用
+# ---------------------------------------------------------------------------
+def _cron_field_set(field: str, values: range) -> set[int]:
+    """解析单个 cron 字段，返回匹配值集合。
+
+    支持：*、*/N、N/M、A-B、逗号列表、单值。
+    """
+    field = field.strip()
+    if field == "*":
+        return set(values)
+    if "," in field:
+        out: set[int] = set()
+        for part in field.split(","):
+            out |= _cron_field_set(part, values)
+        return out
+    if "/" in field:
+        base, step_s = field.split("/")
+        step = int(step_s)
+        if base == "*":
+            return set(range(values.start, values.stop, step))
+        start = int(base)
+        return set(range(start, values.stop, step))
+    if "-" in field:
+        a, b = (int(x) for x in field.split("-"))
+        return set(range(a, b + 1))
+    try:
+        return {int(field)}
+    except ValueError:
+        return set()
+
+
+def cron_matches(expr: str, dt: datetime) -> bool:
+    """判断 dt 是否匹配简化 cron 表达式（5 字段）。"""
+    parts = expr.split()
+    if len(parts) != 5:
+        return False
+    minute, hour, day, month, weekday = parts
+    if dt.minute not in _cron_field_set(minute, range(60)):
+        return False
+    if dt.hour not in _cron_field_set(hour, range(24)):
+        return False
+    if dt.day not in _cron_field_set(day, range(1, 32)):
+        return False
+    if dt.month not in _cron_field_set(month, range(1, 13)):
+        return False
+    # 周字段：cron 用 0/7=周日，Python weekday() 0=周一
+    wd = dt.weekday() + 1  # 1-7，7=周日
+    if wd == 7:
+        wd = 0
+    if weekday != "*" and wd not in _cron_field_set(weekday, range(7)):
+        return False
+    return True
+
+
+def next_cron_run(expr: str, after: datetime | None = None) -> datetime | None:
+    """计算下一个匹配 cron 表达式的时间（逐分钟推进，最多查 24 小时）。
+
+    仅用于展示 next_run，实际触发以轮询匹配为准。
+    """
+    cursor = (after or datetime.now(timezone.utc)).replace(second=0, microsecond=0)
+    cursor += timedelta(minutes=1)
+    for _ in range(1440):
+        if cron_matches(expr, cursor):
+            return cursor
+        cursor += timedelta(minutes=1)
+    return None
+
+
+class _FallbackScheduler:
+    """APScheduler 未安装时的降级调度器：daemon 线程轮询 CronStore。
+
+    每 30 秒扫描一次已启用任务，cron 表达式命中当前分钟则触发一次；
+    同一任务在同一分钟内最多触发一次（内存去重，防止轮询周期内重复触发）。
+    """
+
+    def __init__(self, owner: "CronScheduler"):
+        self._owner = owner
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._last_fired: dict[str, str] = {}  # job_id -> "YYYY-MM-DDTHH:MM"
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self) -> None:
+        if self.running:
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._loop, name="cron-fallback", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread = None
+
+    def remove_job(self, job_id: str) -> None:
+        self._last_fired.pop(job_id, None)
+
+    def _loop(self) -> None:
+        while not self._stop_event.wait(30):
+            try:
+                now = datetime.now(timezone.utc)
+                jobs = self._owner.list_jobs()
+            except Exception:
+                logger.exception("cron 降级调度器读取任务失败")
+                continue
+            for job in jobs:
+                if not job.enabled or not job.schedule:
+                    continue
+                try:
+                    if not cron_matches(job.schedule, now):
+                        continue
+                except Exception:
+                    continue
+                minute_key = now.strftime("%Y-%m-%dT%H:%M")
+                if self._last_fired.get(job.id) == minute_key:
+                    continue
+                self._last_fired[job.id] = minute_key
+                try:
+                    self._owner._dispatch(job.id)
+                except Exception:
+                    logger.exception("Cron job %s 定时执行失败", job.id)
 
 
 @dataclass
@@ -168,10 +296,12 @@ class CronStore:
 
 
 class CronScheduler:
-    """定时任务调度器（使用 APScheduler BackgroundScheduler）。
+    """定时任务调度器。
 
-    APScheduler 未安装时 start/stop 降级为 no-op + warning，
-    持久化（CronStore）与 list_jobs/trigger_job 仍可正常工作。
+    APScheduler 已安装时使用 BackgroundScheduler；
+    未安装时降级为 daemon 线程轮询调度器（_FallbackScheduler），
+    保证 start/stop/定时触发整体可用。持久化（CronStore）与
+    list_jobs/trigger_job 不依赖任何调度后端，始终正常工作。
     """
 
     def __init__(self, store: CronStore | None = None):
@@ -185,6 +315,9 @@ class CronScheduler:
             except Exception as e:
                 logger.warning("初始化 BackgroundScheduler 失败: %s", e)
                 self._scheduler = None
+        else:
+            # APScheduler 未安装：降级为线程轮询调度器，保证 cron 整体可用
+            self._scheduler = _FallbackScheduler(self)
 
     def register_runner(self, workflow_type: str, callback: Callable[[dict], Any]) -> None:
         """注册某类 workflow_type 的执行回调。
@@ -197,35 +330,46 @@ class CronScheduler:
         logger.info("已注册 cron runner: %s", workflow_type)
 
     def add_job(self, job: CronJob) -> None:
-        """添加定时任务：持久化 + 注册到 APScheduler。"""
+        """添加定时任务：持久化 + 注册到调度后端。"""
         self._store.save_job(job)
         if self._scheduler is not None and job.enabled and job.schedule:
             try:
-                trigger = CronTrigger.from_crontab(job.schedule)
-                self._scheduler.add_job(
-                    self._dispatch,
-                    trigger=trigger,
-                    args=[job.id],
-                    id=job.id,
-                    replace_existing=True,
-                )
-                # 用 APScheduler 计算出的下次运行时间回写持久化
-                ap_job = self._scheduler.get_job(job.id)
-                if ap_job is not None and ap_job.next_run_time is not None:
-                    job.next_run = ap_job.next_run_time.isoformat()
-                    self._store.save_job(job)
+                if _HAS_APSCHEDULER:
+                    trigger = CronTrigger.from_crontab(job.schedule)
+                    self._scheduler.add_job(
+                        self._dispatch,
+                        trigger=trigger,
+                        args=[job.id],
+                        id=job.id,
+                        replace_existing=True,
+                    )
+                    # 用 APScheduler 计算出的下次运行时间回写持久化
+                    ap_job = self._scheduler.get_job(job.id)
+                    if ap_job is not None and ap_job.next_run_time is not None:
+                        job.next_run = ap_job.next_run_time.isoformat()
+                        self._store.save_job(job)
+                else:
+                    # 降级调度器：轮询时从 store 读取，无需预注册；
+                    # 计算 next_run 近似值用于展示
+                    next_run = next_cron_run(job.schedule)
+                    if next_run is not None:
+                        job.next_run = next_run.isoformat()
+                        self._store.save_job(job)
             except Exception as e:
-                logger.warning("APScheduler 注册 job %s 失败: %s", job.id, e)
+                logger.warning("注册 cron job %s 失败: %s", job.id, e)
         logger.info("已添加 cron job: %s (%s)", job.id, job.name)
 
     def remove_job(self, job_id: str) -> None:
-        """移除任务：从持久化与 APScheduler 中同时删除。"""
+        """移除任务：从持久化与调度后端中同时删除。"""
         self._store.delete_job(job_id)
         if self._scheduler is not None:
             try:
-                self._scheduler.remove_job(job_id)
+                if _HAS_APSCHEDULER:
+                    self._scheduler.remove_job(job_id)
+                else:
+                    self._scheduler.remove_job(job_id)
             except Exception:
-                # APScheduler 中可能不存在该 job，忽略
+                # 调度后端中可能不存在该 job，忽略
                 pass
         logger.info("已移除 cron job: %s", job_id)
 
@@ -259,31 +403,35 @@ class CronScheduler:
             return {"ok": False, "error": str(e)}
 
     def start(self) -> None:
-        """启动调度器。APScheduler 未安装时降级为 no-op + warning。"""
+        """启动调度器（APScheduler 或降级线程调度器）。"""
         if self._scheduler is None:
-            logger.warning("APScheduler 未安装，CronScheduler.start() 降级为 no-op")
+            logger.warning("调度器不可用，CronScheduler.start() 降级为 no-op")
             return
         try:
             if not self._scheduler.running:
                 self._scheduler.start()
-                logger.info("CronScheduler 已启动")
+                logger.info("CronScheduler 已启动（%s）",
+                            "APScheduler" if _HAS_APSCHEDULER else "降级线程调度器")
         except Exception as e:
             logger.warning("启动 CronScheduler 失败: %s", e)
 
     def stop(self) -> None:
-        """停止调度器。APScheduler 未安装时降级为 no-op + warning。"""
+        """停止调度器（APScheduler 或降级线程调度器）。"""
         if self._scheduler is None:
-            logger.warning("APScheduler 未安装，CronScheduler.stop() 降级为 no-op")
+            logger.warning("调度器不可用，CronScheduler.stop() 降级为 no-op")
             return
         try:
             if self._scheduler.running:
-                self._scheduler.shutdown(wait=False)
+                if _HAS_APSCHEDULER:
+                    self._scheduler.shutdown(wait=False)
+                else:
+                    self._scheduler.stop()
                 logger.info("CronScheduler 已停止")
         except Exception as e:
             logger.warning("停止 CronScheduler 失败: %s", e)
 
     def _dispatch(self, job_id: str) -> None:
-        """APScheduler 定时触发的回调，按 job_id 分发到 runner。"""
+        """调度后端定时触发的回调，按 job_id 分发到 runner。"""
         try:
             self.trigger_job(job_id)
         except Exception:

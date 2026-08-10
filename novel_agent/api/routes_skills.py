@@ -593,6 +593,27 @@ class _SkillIndex:
         self._cache_order.clear()
         self._sync_vector()
 
+    def remove_skill(self, skill_name: str) -> None:
+        """增量移除某 skill 的全部索引条目（删除单个 skill 用）。
+
+        只从内存索引过滤 + 向量层按 skill_name 删除，不触发全量重建——
+        避免删除一个 skill 时把上千条目重新 embedding（几百次网络请求，很慢）。
+        """
+        if not skill_name:
+            return
+        with self._lock:
+            before = len(self._index)
+            self._index = [e for e in self._index if e.get("skill_name") != skill_name]
+            removed = before - len(self._index)
+        try:
+            self._ensure_vector()
+            if self._collection is not None and removed:
+                self._collection.delete(where={"skill_name": skill_name})
+        except Exception as e:
+            logger.warning("skill 索引增量移除向量条目失败（下次 rebuild 兜底）: %s", e)
+        self._query_cache.clear()
+        self._cache_order.clear()
+
     def _rebuild_locked(self):
         """重建索引主体（持锁执行）：扫描 skills 目录 + 蒸馏 DB。"""
         entries: list[dict] = []
@@ -960,6 +981,11 @@ _skill_index = _SkillIndex()
 def rebuild_skill_index():
     """重建 skill 索引（skill 增删改后调用）。"""
     _skill_index.rebuild()
+
+
+def remove_skill_from_index(skill_name: str):
+    """增量移除某 skill 的索引条目（删除单个 skill 时调用，避免全量重建）。"""
+    _skill_index.remove_skill(skill_name)
 
 
 def load_enabled_skills_for_injection_with_context(context: str = "") -> str:

@@ -7,15 +7,25 @@
 
 本模块面向 OpenAI dict 格式消息（与 novel_agent.chat.context_manager 一致），
 不依赖 LangChain BaseMessage，便于在 chat / orchestrator 两层复用。
+
+压缩日志：每次实际压缩（压缩后 token 数减少）会追加一条 JSONL 记录到
+project_data/compression_log.jsonl，供 /api/compression 监控端点读取统计。
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
+import threading
+from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# 压缩日志写锁（多线程追加安全）
+_log_lock = threading.Lock()
 
 # 微压缩时保留最近的工具结果条数（借鉴 DeterminFlow keepRecentToolResults）
 _MICRO_KEEP_RECENT_TOOLS = 5
@@ -73,6 +83,94 @@ def estimate_tokens(messages: list[dict]) -> int:
     return max(1, total_chars // _CHARS_PER_TOKEN)
 
 
+# ---------------------------------------------------------------------------
+# 压缩日志（JSONL 持久化，供 /api/compression 监控端点统计）
+# ---------------------------------------------------------------------------
+def _compression_log_path() -> Path | None:
+    """压缩日志文件路径：project_data/compression_log.jsonl。"""
+    try:
+        from novel_agent.config import load_config
+        cfg = load_config()
+        return cfg.project_data_dir / "compression_log.jsonl"
+    except Exception:
+        return None
+
+
+def _record_compression(strategy: str, before_tokens: int, after_tokens: int,
+                        before_msgs: int, after_msgs: int) -> None:
+    """记录一次压缩事件到 JSONL 日志（线程安全追加，失败静默）。"""
+    path = _compression_log_path()
+    if path is None or before_tokens <= 0:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "strategy": strategy,
+            "before_tokens": before_tokens,
+            "after_tokens": after_tokens,
+            "tokens_saved": max(0, before_tokens - after_tokens),
+            "ratio": round(max(0.0, 1 - after_tokens / before_tokens), 4),
+            "before_messages": before_msgs,
+            "after_messages": after_msgs,
+        }
+        with _log_lock:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.debug("记录压缩日志失败: %s", e)
+
+
+def load_compression_logs(limit: int = 50, offset: int = 0) -> list[dict]:
+    """读取压缩日志（最新在前，支持分页）。"""
+    path = _compression_log_path()
+    if path is None or not path.exists():
+        return []
+    try:
+        with _log_lock:
+            with open(path, encoding="utf-8") as f:
+                lines = [ln for ln in f if ln.strip()]
+        records: list[dict] = []
+        for ln in lines:
+            try:
+                records.append(json.loads(ln))
+            except json.JSONDecodeError:
+                continue
+        records.reverse()  # 最新在前
+        return records[offset:offset + limit]
+    except Exception as e:
+        logger.warning("读取压缩日志失败: %s", e)
+        return []
+
+
+def count_compression_logs() -> int:
+    """压缩日志总条数。"""
+    path = _compression_log_path()
+    if path is None or not path.exists():
+        return 0
+    try:
+        with _log_lock:
+            with open(path, encoding="utf-8") as f:
+                return sum(1 for ln in f if ln.strip())
+    except Exception:
+        return 0
+
+
+def compression_stats() -> dict:
+    """从压缩日志聚合统计：总次数 / 平均压缩率 / 累计节省 token。"""
+    records = load_compression_logs(limit=10 ** 9)
+    total = len(records)
+    if total == 0:
+        return {"total_compressions": 0, "avg_ratio": 0.0, "total_tokens_saved": 0}
+    tokens_saved = sum(r.get("tokens_saved", 0) for r in records)
+    ratio_sum = sum(r.get("ratio", 0.0) for r in records)
+    return {
+        "total_compressions": total,
+        "avg_ratio": round(ratio_sum / total, 4),
+        "total_tokens_saved": tokens_saved,
+    }
+
+
 class ContextCompressor:
     """上下文压缩器：按策略压缩消息列表。
 
@@ -103,14 +201,21 @@ class ContextCompressor:
         """
         if strategy == CompressionStrategy.NONE:
             return list(messages)
+        before = estimate_tokens(messages)
         if strategy == CompressionStrategy.MICRO:
-            return self._micro_compress(messages)
-        if strategy == CompressionStrategy.FULL:
-            return await self._full_compress(messages, llm_client)
-        if strategy == CompressionStrategy.REACTIVE:
+            result = self._micro_compress(messages)
+        elif strategy == CompressionStrategy.FULL:
+            result = await self._full_compress(messages, llm_client)
+        elif strategy == CompressionStrategy.REACTIVE:
             target = target_tokens or int(estimate_tokens(messages) * 0.7)
-            return self._reactive_compress(messages, target)
-        return list(messages)
+            result = self._reactive_compress(messages, target)
+        else:
+            return list(messages)
+        # 实际发生压缩（token 减少）时记录日志，供 /api/compression 监控统计
+        after = estimate_tokens(result)
+        if after < before:
+            _record_compression(strategy.value, before, after, len(messages), len(result))
+        return result
 
     # ── MICRO: 只压缩工具结果，保留 system + 最近 N 轮对话 ──────────────
     def _micro_compress(self, messages: list[dict]) -> list[dict]:

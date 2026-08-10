@@ -17,6 +17,7 @@ import {
 import { AppLayout } from "@/components/layout/AppLayout";
 import { useCurrentProject } from "@/hooks/useCurrentProject";
 import { useAppStore } from "@/store";
+import { bumpDataVersion } from "@/store/slices/dataVersion";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
@@ -409,6 +410,10 @@ export default function ChatPage() {
         const resultText = parts.length > 0 ? parts.join("；") : "无数据变更";
         store.updateInteractiveMessage(idx, (m) => ({ ...m, committed: true, committing: false, commitResult: resultText }));
         showSuccess(`第 ${msg.chapter} 章已提交`);
+        // 提交成功：刷新章节列表 + 全部 bible 实体，并通知各页面（百科/时间线/图谱）数据已变更
+        store.refreshAssets().catch(() => {});
+        bumpDataVersion("bible");
+        bumpDataVersion("chapters");
       } else {
         const issues = (res as any).validation_issues;
         const issueText = issues && Array.isArray(issues) && issues.length > 0

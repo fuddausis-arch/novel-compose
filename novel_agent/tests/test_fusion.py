@@ -4,7 +4,6 @@
 - test_json_output: 测试 5 策略修复
 - test_token_usage: 测试 Token 账本
 - test_ai_detect: 测试 AI 味检测
-- test_tool_permissions: 测试工具权限
 - test_workflow_snapshot: 测试 Workflow 冻结
 - test_context_compressor: 测试压缩引擎
 """
@@ -23,7 +22,6 @@ from novel_agent.utils.json_output import (
 )
 from novel_agent.utils.token_usage import TokenLedger
 from novel_agent.audit.ai_detect import detect_ai_style
-from novel_agent.chat.tool_permissions import is_tool_allowed, filter_tools_for_role
 from novel_agent.orchestrator.workflow_snapshot import WorkflowSnapshot, freeze_workflow
 from novel_agent.utils.context_compressor import (
     ContextCompressor,
@@ -199,42 +197,6 @@ class TestAiDetect:
         assert len(sentence_issues) > 0
 
 
-# ── test_tool_permissions: 测试工具权限 ────────────────────────
-
-class TestToolPermissions:
-    """工具权限控制测试。"""
-
-    def test_admin_all_tools(self):
-        """admin 角色可以使用所有工具。"""
-        assert is_tool_allowed("admin", "any_tool") is True
-        assert is_tool_allowed("admin", "delete_everything") is True
-
-    def test_writer_readonly(self):
-        """writer 角色只能用只读工具。"""
-        assert is_tool_allowed("writer", "read_chapter") is True
-        assert is_tool_allowed("writer", "write_outline") is False
-
-    def test_auditor_no_write(self):
-        """auditor 角色不能写库。"""
-        assert is_tool_allowed("auditor", "read_chapter") is True
-        assert is_tool_allowed("auditor", "write_outline") is False
-
-    def test_unknown_role_denied(self):
-        """未知角色默认拒绝。"""
-        assert is_tool_allowed("unknown_role", "any_tool") is False
-
-    def test_filter_tools_for_role(self):
-        """按角色过滤工具列表。"""
-        all_tools = [
-            {"type": "function", "function": {"name": "read_chapter"}},
-            {"type": "function", "function": {"name": "write_outline"}},
-            {"type": "function", "function": {"name": "delete_everything"}},
-        ]
-        filtered = filter_tools_for_role("writer", all_tools)
-        assert "read_chapter" in filtered
-        assert "write_outline" not in filtered
-
-
 # ── test_workflow_snapshot: 测试 Workflow 冻结 ────────────────
 
 class TestWorkflowSnapshot:
@@ -318,7 +280,8 @@ class TestContextCompressor:
         import asyncio
         compressor = ContextCompressor()
         msgs = [{"role": "user", "content": "hello"}]
-        result = asyncio.get_event_loop().run_until_complete(
+        # 用 asyncio.run 而非 get_event_loop：Python 3.11 下无当前循环会抛 RuntimeError（顺序性 flake）
+        result = asyncio.run(
             compressor.compress(msgs, CompressionStrategy.NONE)
         )
         assert result == msgs

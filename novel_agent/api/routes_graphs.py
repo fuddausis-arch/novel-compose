@@ -5,16 +5,20 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse
 
 from novel_agent.bible.database import SessionLocal, set_config
 from novel_agent.bible.models import Base, Graph
 from novel_agent.config import load_config
+from novel_agent.graphs.version import is_graph_dirty, mark_graph_generated
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -62,8 +66,11 @@ class LocationInput(BaseModel):
     coord_x: int = 0
     coord_y: int = 0
     importance: str = ""
-    tier: str = ""               # kingdom/continent/region/city/town/site/dungeon/landmark/other
+    tier: str = ""               # continent/kingdom/region/city/town/district/site/dungeon/landmark/other
     layer: str = "surface"       # surface/celestial/underworld/underwater/realm/other
+    ruler: str = ""              # 城主/掌管者（角色名，多个用顿号分隔）
+    plot_role: str = ""          # 剧情作用：该地点在剧情中的定位
+    unlocked_chapter: int = 0    # 剧情解锁章节：0=未解锁，>0=第 N 章起已解锁
 
 
 class LocationRelationshipInput(BaseModel):
@@ -74,8 +81,18 @@ class LocationRelationshipInput(BaseModel):
     description: str = ""
 
 
+class AiGenerateMapRequest(BaseModel):
+    max_new: int = 15  # AI 新增地点数量上限
+
+
 # ===== 序列化 =====
 def _graph_dict(g: Graph) -> dict:
+    # 脏标记：剧情数据（写章/大纲/角色等）比该图谱新 → dirty=True（前端提示"有更新"）
+    dirty = False
+    try:
+        dirty = is_graph_dirty(g.project_id, g.id)
+    except Exception:
+        pass
     return {
         "id": g.id,
         "project_id": g.project_id,
@@ -84,6 +101,7 @@ def _graph_dict(g: Graph) -> dict:
         "description": g.description,
         "graph_data": g.graph_data or {"nodes": [], "edges": []},
         "is_auto": g.is_auto,
+        "dirty": dirty,
         "created_at": g.created_at.isoformat() if g.created_at else None,
         "updated_at": g.updated_at.isoformat() if g.updated_at else None,
     }
@@ -123,6 +141,8 @@ def create_graph(project_id: int, data: GraphInput, db: Session = Depends(get_db
     db.add(g)
     db.commit()
     db.refresh(g)
+    # 新建即视为"当前内容版本下已刷新"（刚生成/手动建，不含旧快照）
+    mark_graph_generated(project_id, g.id)
     return _graph_dict(g)
 
 
@@ -139,6 +159,8 @@ def update_graph(project_id: int, graph_id: int, data: GraphUpdateInput, db: Ses
         g.graph_data = data.graph_data
     db.commit()
     db.refresh(g)
+    # 保存即标记该图已对齐当前内容版本（前端"一键刷新"后调用此接口清除脏标记）
+    mark_graph_generated(project_id, g.id)
     return _graph_dict(g)
 
 
@@ -708,12 +730,14 @@ def _build_chapters_graph(project_id: int, db: Session) -> dict:
 def _build_map_graph(project_id: int, db: Session, use_ai: bool = True) -> dict:
     """地图图谱：地点为节点，地点关系为边。
 
-    布局策略（可视化融合 P3 混合方案）：
+    布局策略（层级优先，可视化融合）：
     1. 若地点已有用户设置的坐标(coord_x/coord_y 非0)，直接用真实坐标
-    2. 若无坐标且 use_ai=True，走 LLM 语义约束 + 弹簧力学引擎布局
-    3. 若 use_ai=False 或引擎失败，回退到按 importance 同心圆分层布局
+    2. 否则走**层级树布局**：大陆/主城在中心，附属城/街区/建筑逐层环绕父级
+       （层级感最直观，符合"主城大、卫星城围一圈、街道内嵌"的预期）
+    3. 层级树不可用（无父链）时，走 LLM 语义约束 + 弹簧力学引擎布局
+    4. 引擎失败回退到按 importance 同心圆分层布局
     """
-    from novel_agent.bible.models import Location, LocationRelationship
+    from novel_agent.bible.models import Location, LocationRelationship, Character, TruthEvent
 
     locations = db.query(Location).filter(Location.project_id == project_id).all()
     rels = db.query(LocationRelationship).filter(LocationRelationship.project_id == project_id).all()
@@ -724,23 +748,40 @@ def _build_map_graph(project_id: int, db: Session, use_ai: bool = True) -> dict:
     # 检测是否有用户设置的真实坐标
     has_real_coords = any(loc.coord_x != 0 or loc.coord_y != 0 for loc in locations)
 
-    if not has_real_coords and use_ai:
-        # 尝试 AI 生成坐标
-        ai_positions = _ai_layout_map(project_id, locations, rels, db)
-        if ai_positions:
-            positions = ai_positions
-        else:
-            # AI 失败回退：按 importance 同心圆分层
-            positions = _map_fallback_layout(locations)
-    elif has_real_coords:
+    if has_real_coords:
         positions = {loc.id: {"x": loc.coord_x, "y": loc.coord_y} for loc in locations}
     else:
-        positions = _map_fallback_layout(locations)
+        # 1) 层级树布局优先（真正成树且孤立地点少时才有意义）
+        positions = _hierarchical_map_layout(locations)
+        if not positions:
+            # 2) 力导向引擎（纯算法、零 LLM、天然分散，父子地点强吸引）
+            positions = _engine_map_layout(locations)
+        if not positions and use_ai:
+            # 3) LLM 语义约束 + 弹簧力学
+            positions = _ai_layout_map(project_id, locations, rels, db)
+        if not positions:
+            # 4) 兜底：importance 同心圆
+            positions = _map_fallback_layout(locations)
 
     type_color = {
         "city": "#06b6d4", "region": "#8b5cf6", "landmark": "#f59e0b",
         "secret": "#ec4899", "dungeon": "#ef4444", "other": "#94a3b8",
     }
+
+    # 关联数据：角色所在地 + 事件发生地（让地图与其他数据联动）
+    chars = db.query(Character).filter(Character.project_id == project_id).all()
+    loc_residents: dict[str, list[str]] = {}
+    for c in chars:
+        cl = (c.current_location or "").strip()
+        if cl:
+            loc_residents.setdefault(cl, []).append(c.name)
+    tevents = db.query(TruthEvent).filter(TruthEvent.project_id == project_id).all()
+    loc_event_count: dict[str, int] = {}
+    for te in tevents:
+        p = te.payload if isinstance(te.payload, dict) else {}
+        pl = str(p.get("location") or p.get("place") or "").strip()
+        if pl:
+            loc_event_count[pl] = loc_event_count.get(pl, 0) + 1
 
     nodes = []
     for loc in locations:
@@ -756,7 +797,13 @@ def _build_map_graph(project_id: int, db: Session, use_ai: bool = True) -> dict:
                 "description": loc.description or "",
                 "parent_name": loc.parent_name or "",
                 "importance": loc.importance or "",
+                "tier": loc.tier or "",
+                "ruler": loc.ruler or "",
+                "plot_role": loc.plot_role or "",
+                "unlocked_chapter": loc.unlocked_chapter or 0,
                 "color": color,
+                "residents": loc_residents.get(loc.name, [])[:20],
+                "event_count": loc_event_count.get(loc.name, 0),
             },
         })
 
@@ -786,7 +833,137 @@ def _build_map_graph(project_id: int, db: Session, use_ai: bool = True) -> dict:
             "markerEnd": {"type": "arrowclosed", "color": color},
         })
 
+    # 自动补边：上级地点 → 包含关系（无需手动维护）
+    # 优先用库里的 parent_name；未填时用名称前缀推断父子（旧数据也能立即连线）
+    parent_map = _infer_parent_names({loc.name for loc in locations})
+    seen = {(e["source"], e["target"]) for e in edges}
+    for loc in locations:
+        parent = (loc.parent_name or "").strip() or parent_map.get(loc.name, "")
+        if not parent:
+            continue
+        parent_id = name_to_id.get(parent)
+        child_id = name_to_id.get(loc.name)
+        if not parent_id or not child_id or parent_id == child_id:
+            continue
+        if (parent_id, child_id) in seen:
+            continue
+        edges.append({
+            "id": f"auto_parent_{loc.id}",
+            "source": parent_id,
+            "target": child_id,
+            "label": "包含",
+            "type": "smoothstep",
+            "style": {"stroke": "#8b5cf6", "strokeWidth": 1.5, "strokeDasharray": "4 4"},
+        })
+        seen.add((parent_id, child_id))
+
     return {"nodes": nodes, "edges": edges}
+
+
+def _hierarchical_map_layout(locations) -> dict | None:
+    """层级树布局：大陆/主城在中心，子级（附属城/街区/建筑）环绕父级分布。
+
+    以 parent_name 构建树，递归放置：
+    - 根（无父地点）放最内圈中心
+    - 每个父节点的子节点均匀分布在以父为中心的圆周上
+    - 环绕半径随层级深度递增，保证不同层级在地理上分离
+    返回 {location_id: {x, y}}；无父链（全部孤立）时返回 None 走原布局。
+    """
+    import math
+
+    name_to_loc = {loc.name: loc for loc in locations}
+    children: dict[str, list] = {}
+    for loc in locations:
+        p = (loc.parent_name or "").strip()
+        if p and p in name_to_loc:
+            children.setdefault(p, []).append(loc)
+
+    # 根：无父 或 父地点不存在于清单（孤儿地点也当根，避免丢节点）
+    roots = [loc for loc in locations
+             if not (loc.parent_name or "").strip() or loc.parent_name not in name_to_loc]
+    if not roots:
+        return None
+
+    # 有没有真正连成树的子链？没有则退回 None（纯并列地点用弹簧布局更合适）
+    if not children:
+        return None
+
+    # 孤立地点过多时层级树无意义：所有根铺一个大圆仍会挤成一团（节点宽240px），
+    # 退回力导向引擎让 61+ 个节点摊开到整个画布。
+    if len(roots) > 6:
+        return None
+
+    positions: dict[int, dict] = {}
+
+    def place(loc, cx, cy, depth: int):
+        positions[loc.id] = {"x": round(cx), "y": round(cy)}
+        kids = children.get(loc.name, [])
+        if not kids:
+            return
+        n = len(kids)
+        # 环绕半径：随深度 + 子节点数自适应，保证子节点不糊在一起
+        # 每个子节点至少占 260px 圆周弧长（节点宽 240 + 间距 20）
+        r = max(150 + depth * 90, math.ceil(n * 260 / (2 * math.pi)))
+        for i, k in enumerate(kids):
+            a = 2 * math.pi * i / n - math.pi / 2  # 从正上方开始顺时针
+            place(k, cx + r * math.cos(a), cy + r * math.sin(a), depth + 1)
+
+    if len(roots) == 1:
+        place(roots[0], 0, 0, 0)
+    else:
+        # 多个根：根之间按数量自适应分布（同样保证圆周弧长 ≥ 260px）
+        n = len(roots)
+        r_root = max(400, math.ceil(n * 260 / (2 * math.pi)))
+        for i, r in enumerate(roots):
+            a = 2 * math.pi * i / n
+            place(r, r_root * math.cos(a), r_root * math.sin(a), 0)
+
+    # 偏移到正坐标（+边距），避免负坐标
+    xs = [p["x"] for p in positions.values()]
+    ys = [p["y"] for p in positions.values()]
+    if not xs:
+        return None
+    min_x, min_y = min(xs), min(ys)
+    for p in positions.values():
+        p["x"] = p["x"] - min_x + 120
+        p["y"] = p["y"] - min_y + 120
+    return positions
+
+
+def _engine_map_layout(locations) -> dict:
+    """力导向引擎布局：纯算法、零 LLM 调用，节点天然分散不重叠。
+
+    把 parent_name 转成 contains 强吸引边（子地点环绕父地点），
+    画布大小随节点数自适应（每个节点预留约 56000px²，避免放大后仍密集）。
+    对应计划书：孤立地点多/层级树不可用时的首选布局。
+    """
+    import math
+    from novel_agent.geo.map_layout import layout_map
+
+    locs = [
+        {"id": l.id, "name": l.name, "type": l.type, "layer": l.layer or "",
+         "parent_name": l.parent_name or "", "importance": l.importance or ""}
+        for l in locations
+    ]
+    rels = []
+    for l in locations:
+        p = (l.parent_name or "").strip()
+        if p and p != l.name:
+            rels.append({"source": l.name, "target": p, "relation_type": "contains"})
+
+    # 画布面积随节点数自适应（16:9）；每节点 64000px² 保证平均间距 >240px
+    area = max(len(locations) * 64000, 2000 * 1400)
+    width = max(1800, int(math.sqrt(area * 16 / 9)))
+    height = max(1300, int(width * 9 / 16))
+    positions = layout_map(locs, rels, hints=None, width=width, height=height, iterations=140)
+    if not positions:
+        return {}
+    # 平移到正坐标
+    xs = [p["x"] for p in positions.values()]
+    ys = [p["y"] for p in positions.values()]
+    min_x, min_y = min(xs), min(ys)
+    return {lid: {"x": p["x"] - min_x + 120, "y": p["y"] - min_y + 120}
+            for lid, p in positions.items()}
 
 
 def _map_fallback_layout(locations) -> dict:
@@ -924,6 +1101,9 @@ def _location_dict(loc) -> dict:
         "importance": loc.importance,
         "tier": loc.tier or "",
         "layer": loc.layer or "surface",
+        "ruler": loc.ruler or "",
+        "plot_role": loc.plot_role or "",
+        "unlocked_chapter": loc.unlocked_chapter or 0,
     }
 
 
@@ -953,6 +1133,9 @@ def create_location(project_id: int, data: LocationInput, db: Session = Depends(
         importance=data.importance,
         tier=data.tier,
         layer=data.layer,
+        ruler=data.ruler,
+        plot_role=data.plot_role,
+        unlocked_chapter=data.unlocked_chapter,
     )
     db.add(loc)
     db.commit()
@@ -1007,6 +1190,575 @@ def auto_classify_locations(project_id: int, db: Session = Depends(get_db)):
     if updated:
         db.commit()
     return {"updated": updated, "total": len(items)}
+
+
+def _norm_loc_item(item) -> dict:
+    """LLM 输出字段容错：key 小写去空格下划线 + 字段别名归一。
+
+    真实 LLM 经常变体：name→value/location/place/location_id/aliases、
+    description→descriptiion/desc、is_new/is_existing 是字符串 "true"。
+    这里统一成标准字段，并把 is_new 反转成 is_existing。
+    """
+    norm: dict = {}
+    if not isinstance(item, dict):
+        return norm
+    for k, v in item.items():
+        key = str(k).lower().replace(" ", "").replace("_", "")
+        if key not in norm or not norm[key]:
+            norm[key] = v
+    # 名称别名（location_id/aliases 常见于 LLM 输出的超全字段版）
+    if not str(norm.get("name") or "").strip():
+        for alias in ("value", "location", "place", "placename", "locationid", "id", "alias", "aliases"):
+            v = norm.get(alias)
+            if isinstance(v, list):
+                v = v[0] if v else ""
+            if str(v or "").strip():
+                norm["name"] = v
+                break
+    # 描述别名
+    if "description" not in norm or not str(norm.get("description") or "").strip():
+        norm["description"] = norm.get("descriptiion") or norm.get("desc") or ""
+    # 已有/新增布尔化：is_new 取反成 is_existing（兼容字符串 "true"/"1"/"是"）
+    if "is_new" in norm:
+        v = norm["is_new"]
+        is_new = str(v).strip().lower() in ("true", "1", "yes", "是") if isinstance(v, str) else bool(v)
+        norm["is_existing"] = not is_new
+    elif "is_existing" in norm:
+        v = norm["is_existing"]
+        norm["is_existing"] = str(v).strip().lower() in ("true", "1", "yes", "是", "已有", "existing") if isinstance(v, str) else bool(v)
+    # 关系字段别名：from/to、rel
+    if "source" not in norm or not norm.get("source"):
+        norm["source"] = norm.get("from", "")
+    if "target" not in norm or not norm.get("target"):
+        norm["target"] = norm.get("to", "")
+    if not norm.get("relation_type"):
+        norm["relation_type"] = norm.get("rel", "")
+    # 剧情作用别名：plot_role → plotrole 已归一，取回标准字段名
+    if "plotrole" in norm and "plot_role" not in norm:
+        norm["plot_role"] = norm.pop("plotrole")
+    # 类型枚举归一：LLM 常填错/填自定义词，非法值归 other
+    _LOC_TYPES = ("city", "region", "landmark", "secret", "dungeon", "other")
+    t = str(norm.get("type") or "").strip().lower()
+    if t and t not in _LOC_TYPES:
+        norm["type"] = "other"
+    return norm
+
+
+def _extract_json_anywhere(raw: str) -> dict | None:
+    """parse_json_safe 失败时的兜底：用栈扫描定位第一个完整闭合的 {…} 再 json.loads。
+
+    处理字符串内的 { } 与转义，避免 LLM 输出尾部残留 markdown/解释导致解析失败。
+    """
+    if not raw:
+        return None
+    start = raw.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(raw)):
+        ch = raw[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(raw[start:i + 1])
+                    except (json.JSONDecodeError, ValueError):
+                        return None
+    return None
+
+
+# 合理地点名最大长度（超过即判定混入了描述，需清洗）
+_LOCATION_NAME_MAX = 30
+
+# 层级中文值 → tier 枚举（层级从大到小，dict 顺序即层级序）
+# continent 大陆 → region 区域/国家 → city 城市/主城 → town 附属城/卫星城
+# → district 街区/街道 → site 建筑/地标 → dungeon 秘境/副本
+_TIER_ZH_MAP: dict[str, str] = {
+    "大陆": "continent", "世界": "continent",
+    "区域": "region", "国家": "kingdom", "帝国": "kingdom",
+    "城市": "city", "主城": "city", "都城": "city", "王城": "city",
+    "附属城": "town", "附属城镇": "town", "卫星城": "town", "城镇": "town", "镇": "town",
+    "街区": "district", "街道": "district", "城区": "district",
+    "建筑": "site", "地标": "landmark", "遗迹": "landmark",
+    "秘境": "dungeon", "副本": "dungeon", "地下城": "dungeon",
+}
+
+# 层级权重（用于布局/大小/校验）：数值越小层级越大
+_TIER_ORDER: dict[str, int] = {
+    "continent": 0, "kingdom": 0, "region": 1,
+    "city": 2, "town": 3, "district": 4, "site": 5,
+    "dungeon": 6, "landmark": 6, "other": 7,
+}
+
+def _tier_weight(tier: str) -> int:
+    """层级权重：未识别层级返回 7（最小）。"""
+    return _TIER_ORDER.get((tier or "").strip().lower(), 7)
+
+
+def _clean_location_name(raw_name: str) -> str:
+    """清洗 AI 输出的地点名。
+
+    LLM 不按格式输出时会把整段描述当名称（几十上百字）。合理地点名很短，
+    超长说明混入了描述——尝试在常见描述起点截断，仍超长则返回空（调用方丢弃）。
+    """
+    name = (raw_name or "").strip().strip("|")
+    if not name:
+        return ""
+    if len(name) <= _LOCATION_NAME_MAX:
+        return name
+    # 常见描述起始词/标点：优先从句点、逗号断开
+    for sep in ("，", "。", "；", "位于", "坐落", "一座", "一处", "一栋",
+                "这里", "据说", "门口", "距离"):
+        idx = name.find(sep, 2)
+        if idx != -1:
+            cand = name[:idx].strip()
+            if cand and len(cand) <= _LOCATION_NAME_MAX:
+                return cand
+    return ""  # 无法截断 → 丢弃该地点（宁缺毋滥）
+
+
+def _infer_parent_names(names: set[str]) -> dict[str, str]:
+    """自动父子推断：地点名以另一地点名为前缀且剩余部分像子场所时，推断父级。
+
+    例：'灰烬农场带边缘哨站' → 父 '灰烬农场带'；'蜂巢公寓迷宫入口' → 父 '蜂巢公寓迷宫'。
+    长名优先，避免链式误判。Returns: {地点名: 父地点名}
+    """
+    result: dict[str, str] = {}
+    name_list = sorted(names, key=len, reverse=True)
+    for name in name_list:
+        if not name or name in result:
+            continue
+        best = ""
+        for other in names:
+            if not other or other == name or len(other) >= len(name) or len(other) < 2:
+                continue
+            # 真前缀且差异 >=2 字（避免"风语平原磨坊镇"反过来匹配"风语平原"这种合法父级之外的误配）
+            if name.startswith(other) and len(name) - len(other) >= 2:
+                if len(other) > len(best):
+                    best = other
+        if best:
+            result[name] = best
+    return result
+
+
+def _parse_location_lines(raw: str) -> list[dict]:
+    """文本行格式兜底：每行一个地点。
+
+    新格式（层级化）：名称|层级|类型|上级|城主|剧情作用|描述
+      层级取中文直观值：大陆/区域/国家/城市/附属城/卫星城/街区/街道/建筑/地标/秘境/副本
+      例：曙光城|城市|city|曙光大陆|白夜|主角出生地|废土最大的幸存者聚居地
+    旧格式兼容：名称|类型|重要性|上级|描述（第 2 段是英文类型枚举时按旧格式解析）
+
+    宽松解析：行内有 | 取对应段；没有 | 则整行当作名称（超长会清洗丢弃）。
+    """
+    items: list[dict] = []
+    for line in (raw or "").splitlines():
+        line = line.strip().lstrip("-•*0123456789.、)）")
+        if not line:
+            continue
+        if line.startswith("#") or line.startswith("地点") or line.startswith("关系"):
+            continue
+        # 过滤 AI 常见废话行（提示语/总结/格式说明），避免被当成地点名
+        if line.startswith(("请", "以下", "以上", "（", "(", "注", "说明", "根据", "为", "如果")):
+            continue
+        # 跳过 markdown 代码块围栏与 JSON 残留行
+        if line.startswith("```") or line.startswith("{") or line.startswith("}"):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        name = _clean_location_name(parts[0] if parts else "")
+        if not name:
+            continue
+        # 新格式标志：行内任意位置出现中文层级词（LLM 常因空段/思考泄漏导致字段错位，
+        # 只要找到层级词就按 新格式 解析：去空段后依次 name/tier/type/parent/ruler/plot_role/desc）
+        tier_idx = -1
+        for i, p in enumerate(parts):
+            if p in _TIER_ZH_MAP:
+                tier_idx = i
+                break
+        if tier_idx != -1:
+            compact = [parts[0]] + [p for p in parts[tier_idx:] if p]
+            seq = compact
+            items.append({
+                "name": name,
+                "tier": _TIER_ZH_MAP[seq[1]] if len(seq) > 1 else "",
+                "type": seq[2] if len(seq) > 2 else "",
+                "parent_name": seq[3] if len(seq) > 3 else "",
+                "ruler": seq[4] if len(seq) > 4 else "",
+                "plot_role": seq[5] if len(seq) > 5 else "",
+                "importance": "",
+                "description": "".join(seq[6:]) if len(seq) > 6 else "",
+            })
+        else:
+            # 旧格式：名称|类型|重要性|上级|描述
+            items.append({
+                "name": name,
+                "type": parts[1] if len(parts) > 1 else "",
+                "importance": parts[2] if len(parts) > 2 else "",
+                "parent_name": parts[3] if len(parts) > 3 else "",
+                "tier": "",
+                "ruler": "",
+                "plot_role": "",
+                "description": "".join(parts[4:]) if len(parts) > 4 else "",
+            })
+    return items
+
+
+def _parse_relation_lines(raw: str) -> list[dict]:
+    """文本行关系兜底：每行 关系|源地点|目标地点|类型|距离。
+
+    AI 生成地图时若未输出 JSON relationships，会按此格式输出关系行。
+    """
+    rels: list[dict] = []
+    for line in (raw or "").splitlines():
+        line = line.strip().lstrip("-•*0123456789.、)）")
+        if not line or not line.startswith("关系"):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 3:
+            continue
+        src, tgt = parts[1], parts[2]
+        rtype = (parts[3] if len(parts) > 3 else "road").strip() or "road"
+        dist = parts[4] if len(parts) > 4 else ""
+        if src and tgt and src != tgt:
+            rels.append({"source": src, "target": tgt, "relation_type": rtype, "distance": dist})
+    return rels
+
+
+@router.post("/{project_id}/locations/ai-generate-map")
+async def ai_generate_map(project_id: int, data: AiGenerateMapRequest,
+                          db: Session = Depends(get_db)):
+    """SSE：AI 根据当前资产设定 + bishu-novel 世界观文件，智能合并生成世界地图。
+
+    读取：world_settings（六维设定）、已有地点/关系、势力（含地盘）、副本、
+    项目工作区 meta/*.md 世界观文件（bishu-novel 产物，存在才读）。
+    LLM 输出智能合并方案：
+    - keep：已有地点只补空字段（type/tier/layer/importance/parent/description），不覆盖已有内容
+    - new：与世界观一致的新地点（数量 ≤ max_new，与已有地点不重名）
+    - relationships：基于最终地点集的连接关系
+    写库后前端重新走 auto-generate 出图谱（布局仍由 LLM 语义约束 + 弹簧力学引擎负责）。
+
+    事件类型：
+    - gen_stage {stage}
+    - gen_done {created, updated, relations, total}
+    - error {error}
+    """
+    from novel_agent.bible.models import (
+        Faction, Instance, Location, LocationRelationship, WorldSetting,
+    )
+    from novel_agent.llm.client import LLMClient
+    from novel_agent.utils.json_output import parse_json_safe
+
+    max_new = max(1, min(data.max_new or 15, 60))
+
+    async def event_gen():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def emit(event: dict) -> None:
+            await queue.put(event)
+
+        async def _run():
+            client = None
+            try:
+                cfg = load_config()
+
+                # ---- 1. 读取资产 ----
+                await emit({"type": "gen_stage", "stage": "读取项目资产与世界观..."})
+                world_settings = db.query(WorldSetting).filter(WorldSetting.project_id == project_id).all()
+                locations = db.query(Location).filter(Location.project_id == project_id).all()
+                rels = db.query(LocationRelationship).filter(LocationRelationship.project_id == project_id).all()
+                factions = db.query(Faction).filter(Faction.project_id == project_id).all()
+                instances = db.query(Instance).filter(Instance.project_id == project_id).all()
+
+                ws_text = "\n".join(
+                    f"【{s.category or ''}{'/' + s.dimension if s.dimension else ''}】{s.title}: {s.content}"
+                    for s in world_settings if (s.content or "").strip()
+                )[:8000]
+                loc_list = [{
+                    "name": l.name, "type": l.type or "city", "tier": l.tier or "",
+                    "layer": l.layer or "surface", "importance": l.importance or "",
+                    "parent_name": l.parent_name or "", "description": (l.description or "")[:200],
+                } for l in locations]
+                rel_list = [{
+                    "source": r.source_location, "target": r.target_location,
+                    "relation_type": r.relation_type or "road", "distance": r.distance or "",
+                } for r in rels]
+                fac_list = [{"name": f.name, "description": (f.description or "")[:200]} for f in factions]
+                inst_list = [{"name": i.name, "description": (i.description or "")[:150]} for i in instances]
+
+                # bishu-novel 世界观文件（跑过 MVP 工作流才有 meta/，存在才读，缺失不报错）
+                meta_dir = cfg.project_data_dir / "projects" / str(project_id) / "meta"
+                bishu_text = ""
+                if meta_dir.exists():
+                    for p in sorted(meta_dir.glob("*.md")):
+                        try:
+                            bishu_text += f"\n===== {p.stem} =====\n" + p.read_text(encoding="utf-8", errors="ignore")[:2000]
+                        except OSError:
+                            continue
+                    bishu_text = bishu_text[:6000]
+
+                # ---- 2. LLM 智能合并 ----
+                await emit({"type": "gen_stage",
+                            "stage": f"AI 生成世界地图中（已有 {len(locations)} 个地点）..."})
+                client = LLMClient(cfg.get_agent_llm("auditor"))
+
+                system_prompt = f"""你是小说世界观地图设计师。根据项目已有设定与资产，设计**新增**的世界地图地点（已有地点不重复列出）。
+
+要求：
+1. 世界地图必须按**层级**组织，从上到下：大陆(continent) → 区域/国家(region/kingdom) → 主城/城市(city) → 附属城/卫星城(town) → 街区/街道(district) → 建筑/地标(site)，另有秘境/副本(dungeon)
+2. 每个新地点占一行，用 | 分隔，**严格恰好 7 段**（没有的内容就留空段，| 分隔符保留）：
+   名称|层级|类型|上级地点|城主|剧情作用|描述
+   例：曙光城|城市|city|曙光大陆|白夜|主角出生地，第一卷核心舞台|废土最大的幸存者聚居地
+   例：城东集市区|街区|region|曙光城|无|第一章主角活动区域|贩卖废土物资的市集
+3. 层级取中文值：大陆/区域/国家/城市/附属城/卫星城/街区/街道/建筑/地标/秘境/副本（无合适层级就用"区域"）
+4. 类型取：city/region/landmark/secret/dungeon/other
+5. 上级地点必须来自「已有地点」清单或本批新增的上级地点名；街道/建筑必须挂在城市/附属城下，附属城必须挂在城市/大陆下，禁止孤立
+6. 城主填该地点的掌管角色名（必须来自项目已有角色或资产设定），**每一项都必须填**：有掌管者填角色名，没有就填"无"，禁止填描述性文字
+7. 剧情作用写清楚该地点在剧情中的定位（如"主角出生地""第X卷决战地""补给中转站"），**每一项都必须填**，没有特别作用填"无"
+8. 新地点数量 ≤ {max_new}
+9. 在所有地点行之后，**必须输出至少 5 条关系**，每行格式：关系|源地点|目标地点|类型|距离说明
+   类型取：road（道路）/ adjacent（相邻）/ contains（包含）/ portal（传送门）
+   父级与子级之间必须输出 contains 关系；新地点与已有地点之间也尽量连 road/adjacent，让地图连线丰富
+10. 只输出地点行和关系行，不要输出 JSON、不要编号、不要任何解释或 markdown
+11. 直接给出最终答案，禁止在输出中思考、自我修正、重写或添加任何说明文字（一旦开始修正请整行重写后再输出）
+
+示例：
+曙光城|城市|city|曙光大陆|白夜|主角出生地，第一卷核心舞台|废土最大的幸存者聚居地
+城东集市区|街区|region|曙光城|无|第一章主角活动区域|贩卖废土物资的市集
+城西工业区|街区|region|曙光城|白夜|主角发现线索的地方|废旧机械回收厂聚集地
+曙光港|附属城|city|曙光城|郑铁|主角出海必经地|曙光城唯一对外港口
+地下黑市|建筑|site|城西工业区|无|主角获取情报的灰色地带|见不得光的交易场所
+关系|曙光城|曙光港|contains|-
+关系|曙光城|城东集市区|contains|-
+关系|曙光城|城西工业区|contains|-
+关系|城西工业区|地下黑市|contains|-
+关系|城东集市区|城西工业区|road|半小时路程"""
+
+                user_prompt = f"""## 世界观设定（world_settings）
+{ws_text if ws_text else "（项目暂无结构化世界观设定）"}
+
+## bishu-novel 世界观文件
+{bishu_text if bishu_text else "（无，可忽略）"}
+
+## 已有地点（{len(loc_list)} 个）
+{json.dumps(loc_list, ensure_ascii=False, indent=2) if loc_list else "（无）"}
+
+## 已有地点关系（{len(rel_list)} 条）
+{json.dumps(rel_list, ensure_ascii=False, indent=2) if rel_list else "（无）"}
+
+## 势力（{len(fac_list)} 个）
+{json.dumps(fac_list, ensure_ascii=False, indent=2) if fac_list else "（无）"}
+
+## 副本/秘境（{len(inst_list)} 个）
+{json.dumps(inst_list, ensure_ascii=False, indent=2) if inst_list else "（无）"}
+
+请按系统要求输出新增地点方案：每行一个地点（名称|层级|类型|上级地点|城主|剧情作用|描述，新地点不超过 {max_new} 个），地点行之后输出关系行（关系|源地点|目标地点|类型|距离）。"""
+
+                content = await client.generate(
+                    user_prompt, system=system_prompt,
+                    max_tokens=12000, temperature=0.3, thinking=False,
+                    node_name="ai_generate_map",
+                )
+                raw_content = content or ""
+                # 全角标点转半角（LLM 中文 JSON 常见错误：： ， “ ”）
+                sanitized = (raw_content.replace("：", ":").replace("，", ",")
+                             .replace("“", '"').replace("”", '"')
+                             .replace("‘", "'").replace("’", "'"))
+                parsed = parse_json_safe(sanitized) if sanitized else None
+                if not isinstance(parsed, dict):
+                    parsed = _extract_json_anywhere(sanitized)
+                # 统一成地点条目列表：JSON（new_locations/locations/keep+new）→ 文本行兜底
+                loc_entries: list = []
+                rel_entries: list = []
+                if isinstance(parsed, dict):
+                    if isinstance(parsed.get("new_locations"), list):
+                        loc_entries = parsed["new_locations"]
+                    elif isinstance(parsed.get("locations"), list):
+                        loc_entries = parsed["locations"]
+                    else:
+                        loc_entries = (parsed.get("keep") or []) + (parsed.get("new") or [])
+                    rel_entries = parsed.get("relationships") or []
+                if not rel_entries:
+                    # 文本行关系兜底：关系|源|目标|类型|距离
+                    rel_entries = _parse_relation_lines(raw_content)
+                if not loc_entries:
+                    # 纯文本行格式：每行一个地点 名称|类型|重要性|上级|描述
+                    loc_entries = _parse_location_lines(raw_content)
+                if not loc_entries:
+                    logger.warning("AI 生成地图原始输出(前3000字): %s", raw_content[:3000])
+                    raise ValueError(
+                        "AI 未返回有效的世界地图方案"
+                        + (f"（返回前 300 字：{raw_content[:300]}）" if raw_content else "")
+                    )
+
+                # ---- 3. 写库（智能合并） ----
+                await emit({"type": "gen_stage", "stage": "写入地点与关系..."})
+                created = updated = relations = 0
+                all_names = {l.name for l in locations}
+
+                # 写库阶段 1：补全已有地点（只补空字段，不覆盖已有内容）
+                for raw_item in loc_entries:
+                    item = _norm_loc_item(raw_item)
+                    name = str(item.get("name") or "").strip()
+                    if not name:
+                        continue
+                    loc = next((l for l in locations if l.name == name), None)
+                    if not loc:
+                        continue
+                    changed = False
+                    for field in ("type", "tier", "layer", "importance", "parent_name", "ruler"):
+                        val = str(item.get(field) or "").strip()
+                        if val and not getattr(loc, field):
+                            setattr(loc, field, val)
+                            changed = True
+                    plot_role = str(item.get("plot_role") or "").strip()
+                    if plot_role and not (loc.plot_role or "").strip():
+                        loc.plot_role = plot_role
+                        changed = True
+                    desc = str(item.get("description") or "").strip()
+                    if desc and not (loc.description or "").strip():
+                        loc.description = desc
+                        changed = True
+                    if changed:
+                        updated += 1
+                db.flush()
+
+                # 写库阶段 2：新增地点（没匹配到已有地点的都尝试创建，上限 max_new）
+                from novel_agent.bible.world_structure import classify_layer, classify_tier
+
+                for raw_item in loc_entries:
+                    if created >= max_new:
+                        break
+                    item = _norm_loc_item(raw_item)
+                    name = str(item.get("name") or "").strip()
+                    if not name or name in all_names:
+                        continue
+                    desc = str(item.get("description") or "").strip()
+                    tier_val = str(item.get("tier") or "").strip()
+                    layer_val = str(item.get("layer") or "").strip()
+                    if not tier_val:
+                        tier_val = classify_tier(name)
+                    if not layer_val or layer_val == "surface":
+                        layer_val = classify_layer(name, desc)
+                    db.add(Location(
+                        project_id=project_id, name=name,
+                        type=str(item.get("type") or "city").strip() or "city",
+                        tier=tier_val,
+                        layer=layer_val or "surface",
+                        importance=str(item.get("importance") or "").strip(),
+                        parent_name=str(item.get("parent_name") or "").strip(),
+                        ruler=str(item.get("ruler") or "").strip(),
+                        plot_role=str(item.get("plot_role") or "").strip(),
+                        description=desc,
+                    ))
+                    all_names.add(name)
+                    created += 1
+                db.flush()
+
+                existing_rel = {(r.source_location, r.target_location, r.relation_type or "road") for r in rels}
+                for raw_item in rel_entries:
+                    item = _norm_loc_item(raw_item)
+                    src = str(item.get("source") or "").strip()
+                    tgt = str(item.get("target") or "").strip()
+                    rtype = str(item.get("relation_type") or item.get("relationtype") or "road").strip() or "road"
+                    if not src or not tgt or src == tgt:
+                        continue
+                    if src not in all_names or tgt not in all_names:
+                        continue
+                    if (src, tgt, rtype) in existing_rel:
+                        continue
+                    db.add(LocationRelationship(
+                        project_id=project_id, source_location=src, target_location=tgt,
+                        relation_type=rtype, distance=str(item.get("distance") or "").strip(),
+                    ))
+                    existing_rel.add((src, tgt, rtype))
+                    relations += 1
+                db.commit()
+
+                # 兜底①：AI 未填上级时，用名称前缀推断父子关系并补写（如"灰烬农场带边缘哨站"→父"灰烬农场带"）
+                all_locs = db.query(Location).filter(Location.project_id == project_id).all()
+                parent_map = _infer_parent_names({loc.name for loc in all_locs})
+                for loc in all_locs:
+                    if not (loc.parent_name or "").strip() and loc.name in parent_map:
+                        loc.parent_name = parent_map[loc.name]
+                        updated += 1
+                db.flush()
+
+                # 兜底②：上级地点自动建 contains 关系（AI 漏输出关系时仍有点有线）
+                for loc in all_locs:
+                    parent = (loc.parent_name or "").strip()
+                    if not parent or parent == loc.name:
+                        continue
+                    if parent not in all_names or loc.name not in all_names:
+                        continue
+                    if (parent, loc.name, "contains") in existing_rel:
+                        continue
+                    db.add(LocationRelationship(
+                        project_id=project_id, source_location=parent, target_location=loc.name,
+                        relation_type="contains", distance="",
+                    ))
+                    existing_rel.add((parent, loc.name, "contains"))
+                    relations += 1
+
+                # 兜底③：仍没有任何关系的地点自动连 road 链，保证地图连线丰富
+                linked_names: set[str] = set()
+                for src, tgt, _rt in existing_rel:
+                    linked_names.add(src)
+                    linked_names.add(tgt)
+                isolated = [loc.name for loc in all_locs if loc.name not in linked_names]
+                if isolated:
+                    anchor = next((n for n in linked_names), None)
+                    prev = anchor or isolated[0]
+                    for nm in isolated:
+                        if prev != nm and (prev, nm, "road") not in existing_rel:
+                            db.add(LocationRelationship(
+                                project_id=project_id, source_location=prev, target_location=nm,
+                                relation_type="road", distance="",
+                            ))
+                            existing_rel.add((prev, nm, "road"))
+                            relations += 1
+                        prev = nm
+                db.commit()
+
+                await emit({"type": "gen_done", "created": created, "updated": updated,
+                            "relations": relations, "total": len(all_names)})
+            except Exception as e:
+                logger.exception("AI 生成世界地图失败 (project_id=%d)", project_id)
+                await emit({"type": "error", "error": str(e)})
+            finally:
+                if client is not None:
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
+                await queue.put(None)  # 结束哨兵（正常/异常路径都保证 SSE 流结束）
+
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                etype = event.get("type", "message")
+                yield {"event": etype, "data": json.dumps(event, ensure_ascii=False)}
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return EventSourceResponse(event_gen(), ping=15)
 
 
 @router.get("/{project_id}/locations/validate-hierarchy")

@@ -17,7 +17,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
 
 from novel_agent.bible.repository import BibleRepository
-from novel_agent.planning.agents import Planner, Architect, Outliner
+from novel_agent.planning.agents import Planner, Architect
 from novel_agent.planning.state import VolumePlanState
 from novel_agent.protocol.applier import DeltaApplier
 from novel_agent.state_common import PlanningStatus

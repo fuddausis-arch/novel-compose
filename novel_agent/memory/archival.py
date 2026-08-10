@@ -135,6 +135,16 @@ class ArchivalMemory:
             metadatas=[{"type": "chapter", "chapter": chapter, "title": title}],
         )
 
+    def delete_chapter(self, chapter: int) -> None:
+        """删除某章的所有向量切片（章节被删除后清理记忆残留）。"""
+        if self._client is None:
+            return
+        try:
+            self._collection.delete(where={"chapter": chapter, "type": "chapter"})
+            logger.info("第%d章向量切片已删除", chapter)
+        except Exception as e:
+            logger.warning("删除第%d章向量切片失败: %s", chapter, e)
+
     def index_setting(self, category: str, title: str, content: str) -> None:
         if self._client is None:
             return

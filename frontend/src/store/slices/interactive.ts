@@ -1,6 +1,7 @@
 import { api } from "../../api";
 import type { ChatMessage, MessagePhase } from "../../types";
 import type { SliceCreator } from "../types";
+import { bumpDataVersion } from "./dataVersion";
 
 // ---- 状态机辅助 ----
 
@@ -306,7 +307,10 @@ export const interactiveSlice: SliceCreator = (set, get) => ({
               _processChapterSSEEvent(currentEvent, data, { interactiveStreamOptions: get().interactiveStreamOptions }, set, get);
             } else if (currentEvent === "done") {
               if (data.type === "chapter_committed") {
-                get().refreshChapters().catch(() => {});
+                // 章节已提交写入圣经：刷新章节列表 + 全部 bible 实体，并通知各页面
+                get().refreshAssets().catch(() => {});
+                bumpDataVersion("bible");
+                bumpDataVersion("chapters");
               } else if (data.type === "chapter") {
                 const aiMsg: ChatMessage = {
                   role: "assistant",
@@ -472,7 +476,10 @@ export const interactiveSlice: SliceCreator = (set, get) => ({
               _processChapterSSEEvent(currentEvent, data, { interactiveStreamOptions: get().interactiveStreamOptions }, set, get);
             } else if (currentEvent === "done") {
               if (data.type === "chapter_committed") {
-                get().refreshChapters().catch(() => {});
+                // 章节已提交写入圣经：刷新章节列表 + 全部 bible 实体，并通知各页面
+                get().refreshAssets().catch(() => {});
+                bumpDataVersion("bible");
+                bumpDataVersion("chapters");
               }
             } else if (currentEvent === "error") {
               set((s) => {

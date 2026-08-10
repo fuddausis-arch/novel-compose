@@ -1,10 +1,13 @@
 """Recall memory：全量原文 + 事件时间线查询（不进上下文，供精确回溯）。"""
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
 from novel_agent.config import Config
+
+logger = logging.getLogger(__name__)
 
 
 class RecallMemory:
@@ -34,7 +37,43 @@ class RecallMemory:
             if old != path:
                 old.unlink()
         path.write_text(f"# 第{chapter}章 {clean_title or 'untitled'}\n\n{content}", encoding="utf-8")
+        # 图谱脏标记：正文变更 → 内容版本 +1（图谱页据此提示"有更新，可刷新"）
+        try:
+            from novel_agent.graphs.version import bump_content
+            bump_content(self.project_id)
+        except Exception:
+            pass  # 脏标记失败不阻塞保存
+        # 断链①③：写章即更新——补写出场记录 + 叙事线规则通道轻扫。
+        # 所有正文落盘路径（手动保存/标准生成/交互式创作/工作流）都经 save_chapter_text，
+        # 在此统一挂钩，避免各入口重复代码且不漏写；失败不阻塞保存。
+        self._post_save_sync(chapter, content)
         return path
+
+    def _post_save_sync(self, chapter: int, content: str) -> None:
+        """写章后同步（断链①③）：出场记录（文本匹配）+ 叙事线轻扫（规则通道，零成本）。
+
+        出场记录供人物/势力图谱过滤"未出场实体"与时间线角色泳道；
+        叙事线轻扫维护线进度/最近推进章/断线预警（LLM 深度语义扫描仍由叙事线页手动触发）。
+        """
+        try:
+            from novel_agent.bible import database as db_mod
+            from novel_agent.bible.models import Base, Storyline
+            from novel_agent.bible.repository import BibleRepository
+            from novel_agent.storyline.scanner import light_scan_chapter
+            db_mod.set_config(self.config)
+            Base.metadata.create_all(bind=db_mod.engine)
+            db = db_mod.SessionLocal()
+            try:
+                repo = BibleRepository(db, project_id=self.project_id)
+                n_app = repo.record_appearances_from_text(chapter, content or "")
+                lines = db.query(Storyline).filter_by(project_id=self.project_id).all()
+                light_scan_chapter(db, self.project_id, chapter, content or "", lines)
+                if n_app:
+                    logger.info("第%d章出场记录（文本匹配）写入 %d 条", chapter, n_app)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("写章后同步出场/叙事线失败（不阻塞保存）: %s", e)
 
     def read_chapter_text(self, chapter: int) -> str:
         """读取章节正文，找不到返回空串。"""

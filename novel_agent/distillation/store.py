@@ -97,10 +97,24 @@ class DistillationStore:
                         weights_json TEXT NOT NULL DEFAULT '[]',
                         description TEXT NOT NULL DEFAULT '',
                         status TEXT NOT NULL DEFAULT 'active',
+                        skill_file TEXT NOT NULL DEFAULT '',
+                        finished_at TEXT NOT NULL DEFAULT '',
                         created_at TEXT NOT NULL
                     );"""
                 )
                 conn.commit()
+                # 存量库兼容迁移：distill_fusions 补 skill_file / finished_at 列
+                for col, ddl in (
+                    ("skill_file", "ALTER TABLE distill_fusions ADD COLUMN skill_file TEXT NOT NULL DEFAULT ''"),
+                    ("finished_at", "ALTER TABLE distill_fusions ADD COLUMN finished_at TEXT NOT NULL DEFAULT ''"),
+                ):
+                    try:
+                        has = [r[1] for r in conn.execute("PRAGMA table_info(distill_fusions)").fetchall()]
+                        if col not in has:
+                            conn.execute(ddl)
+                            conn.commit()
+                    except Exception:
+                        pass
             finally:
                 conn.close()
 
@@ -410,6 +424,38 @@ class DistillationStore:
                     "SELECT * FROM distill_fusions WHERE id=?", (fusion_id,)
                 ).fetchone()
                 return self._row_to_dict(row)
+            finally:
+                conn.close()
+
+    def delete_fusion(self, fusion_id: int) -> bool:
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM distill_fusions WHERE id=?", (fusion_id,)
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def update_fusion_status(self, fusion_id: int, status: str,
+                             skill_file: str = "") -> None:
+        """融合任务状态更新：active（进行中）→ done / failed，附带产物文件名。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                if skill_file:
+                    conn.execute(
+                        "UPDATE distill_fusions SET status=?, skill_file=?, finished_at=? WHERE id=?",
+                        (status, skill_file, self._now(), fusion_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE distill_fusions SET status=?, finished_at=? WHERE id=?",
+                        (status, self._now(), fusion_id),
+                    )
+                conn.commit()
             finally:
                 conn.close()
 

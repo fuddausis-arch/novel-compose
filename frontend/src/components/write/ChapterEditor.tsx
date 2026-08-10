@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAppStore } from "@/store";
 import { useToast } from "@/hooks/useToast";
+import { bumpDataVersion } from "@/store/slices/dataVersion";
 
 interface ChapterEditorProps {
   chapterId: number;
@@ -70,6 +71,9 @@ export function ChapterEditor({ chapterId }: ChapterEditorProps) {
         .then(() => {
           setDirty(false);
           setSaveState("saved");
+          // 断链④：保存后 bump，让时间线/统计等页面感知数据变化
+          bumpDataVersion("chapters");
+          bumpDataVersion("bible");
         })
         .catch((e) => {
           setSaveState("idle");

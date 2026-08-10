@@ -31,13 +31,28 @@ copy config.yaml.example config.yaml   # 复制配置模板
 #   ARK_API_KEY=ark-xxx
 
 # 4. 启动（终端 1 后端，终端 2 前端）
-python -m uvicorn novel_agent.api.app:app --host 0.0.0.0 --port 8000 --reload
+# 默认只监听本机 127.0.0.1（安全，仅本机/桌面客户端可访问）
+python -m uvicorn novel_agent.api.app:app --host 127.0.0.1 --port 8000 --reload
 cd frontend && npm run dev
 ```
 
 浏览器访问 **http://localhost:5173** 即可使用。
 
 > 也支持命令行：`novel-compose init` / `generate` / `plan` / `resume` / `serve`
+
+## 远程/局域网访问（可选）
+
+默认后端只监听 `127.0.0.1`。如需手机 App（Capacitor）或局域网访问：
+
+1. 启动时指定 `--host 0.0.0.0`，并设置一个随机 token 启用鉴权：
+   ```bash
+   # PowerShell: $env:NOVEL_API_TOKEN="<随机长串>"    bash: export NOVEL_API_TOKEN="<随机长串>"
+   python -m uvicorn novel_agent.api.app:app --host 0.0.0.0 --port 8000
+   ```
+2. 客户端访问时，在浏览器/App 的 localStorage 写入同一个 token（键名 `novel_api_token`），
+   前端会自动附在 `X-API-Token` 请求头；或直接用 `Authorization: Bearer <token>`。
+
+未设置 `NOVEL_API_TOKEN` 时 API 不鉴权（仅适合本机单机使用）。
 
 ## 使用文档
 

@@ -1,19 +1,17 @@
-"""规划三 agent：Planner（卷规划）/Architect（设定）/Outliner（章节细纲+伏笔）。
+"""规划 agent：Planner（卷规划）/Architect（设定）。
 
 每个 agent 调 LLM 产出结构化 JSON，经 DeltaApplier 写入圣经。
+（Outliner 章节细纲 agent 已移除：章节细纲走 routes_generation 的弧/章生成链路）
 """
 from __future__ import annotations
 
 import json
-import re
 import logging
 
 logger = logging.getLogger(__name__)
 
 from novel_agent.bible.models import Project
 from novel_agent.llm.client import LLMClient
-from novel_agent.references.search import canonical_genre
-from novel_agent.templates.loader import GenreLoader
 
 
 from novel_agent.utils.json_parser import parse_json_strict as _extract_json
@@ -27,7 +25,6 @@ PLANNER_SYSTEM = (
     "【禁忌】不写无冲突的过渡卷;不堆砌孤立地图;爽点不得偏离立意。只输出 JSON。"
 )
 ARCHITECT_SYSTEM = "你是网文设定师。设计世界观、角色、力量体系。只输出 JSON。"
-OUTLINER_SYSTEM = "你是网文大纲师。只输出JSON。严格遵守JSON格式：双引号、英文逗号和冒号、无注释、无尾逗号。"
 
 
 class Planner:
@@ -278,148 +275,6 @@ class Architect:
         foreshadows = existing.get("foreshadows", [])
         if foreshadows:
             parts.append(f"已有伏笔ID：{'、'.join(foreshadows)}")
-        if len(parts) == 1:
-            return ""
-        parts.append("")
-        return "\n".join(parts) + "\n"
-
-
-def _build_outliner_genre_context(genre_text: str) -> str:
-    """为 Outliner 注入题材模板的核心卖点、节奏建议、爽点套路。"""
-    cg = canonical_genre(genre_text)
-    if cg == "通用":
-        return ""
-    loader = GenreLoader()
-    if not loader.exists(cg):
-        return ""
-    parts = [
-        loader.extract_core_selling_point(cg),
-        loader.extract_rhythm_suggestions(cg),
-        loader.extract_classic_hooks(cg),
-    ]
-    context = "\n\n".join(p for p in parts if p)
-    if not context:
-        return ""
-    return f"【题材指令】\n{context}\n\n"
-
-
-class Outliner:
-    """大纲师：本卷章节细纲 + 伏笔布局。
-
-    读取已有角色名和伏笔 ID，避免造出不存在的角色或撞 ID 的伏笔。
-    """
-    def __init__(self, llm_client: LLMClient):
-        self.llm_client = llm_client
-
-    async def outline(self, project: Project, volume: str,
-                      chapter_count: int,
-                      existing: dict | None = None) -> dict:
-        existing = existing or {}
-        # 分批生成：每次最多5章，避免LLM输出过长导致JSON截断
-        BATCH_SIZE = 5
-        all_chapters = []
-        used_fids = list(existing.get("foreshadows", []))
-        
-        for start in range(1, chapter_count + 1, BATCH_SIZE):
-            end = min(start + BATCH_SIZE - 1, chapter_count)
-            batch_count = end - start + 1
-            batch_chapters = await self._outline_batch(
-                project, volume, start, end, batch_count, existing, used_fids)
-            all_chapters.extend(batch_chapters)
-            # 收集本批新增的伏笔ID，传给下一批避免重复
-            for ch in batch_chapters:
-                for f in ch.get("foreshadows", []):
-                    fid = f.get("id", "")
-                    if fid and fid not in used_fids:
-                        used_fids.append(fid)
-        
-        return {"chapters": all_chapters}
-
-    async def _outline_batch(self, project: Project, volume: str,
-                             start_ch: int, end_ch: int, batch_count: int,
-                             existing: dict, used_fids: list) -> list:
-        """生成一批章节细纲（最多10章）。"""
-        genre_context = _build_outliner_genre_context(project.genre)
-        existing_block = self._format_existing(existing)
-        # 立意贯通
-        concept_text = ""
-        if hasattr(project, 'central_concept') and project.central_concept:
-            try:
-                import json as _json
-                concept = _json.loads(project.central_concept) if isinstance(project.central_concept, str) else project.central_concept
-                taboos = concept.get('taboos', []) if isinstance(concept.get('taboos'), list) else []
-                concept_text = f"\n【全书立意】核心爽点：{concept.get('core_hook','')}\n主角目标：{concept.get('protagonist_goal','')}\n立意禁忌（违反则废稿）：{', '.join(taboos) if taboos else '无'}\n"
-            except Exception:
-                concept_text = f"\n【全书立意】{project.central_concept}\n"
-        
-        fid_block = ""
-        if used_fids:
-            fid_block = f"\n已有伏笔ID（不得重复）：{', '.join(used_fids)}\n"
-        
-        # 从CSV工艺库取候选桥段配方（含毒点警告）
-        trope_block = ""
-        try:
-            from novel_agent.references.search import ReferenceSearch, canonical_genre
-            ref = ReferenceSearch()
-            cg = canonical_genre(project.genre)
-            trope_candidates = ref.for_skill("webnovel-write", canonical_genre=cg, limit=8)
-            if trope_candidates:
-                trope_lines = []
-                for r in trope_candidates:
-                    kw = r.get("关键词", "")
-                    summary = r.get("核心摘要", "")
-                    detail = r.get("详细展开", "")
-                    trope_lines.append(f"  - {kw}: {summary}（{detail}）")
-                trope_block = "\n【候选桥段配方库（required_beats的type必须从中选）】\n" + "\n".join(trope_lines) + "\n"
-        except Exception as e:
-            logger.warning("Outliner 取候选桥段失败(%s)，降级无候选", e)
-        
-        prompt = (
-            f"为《{project.title}》{volume}规划第{start_ch}章到第{end_ch}章（共{batch_count}章）的细纲。\n\n"
-            f"类型：{project.genre}\n简介：{project.summary}\n"
-            f"{concept_text}"
-            f"{existing_block}"
-            f"{fid_block}"
-            f"{trope_block}"
-            f"只输出JSON，不要输出任何其他文字。\n"
-            f"JSON格式如下（每章一个对象）：\n"
-            f'{{"chapters":[{{"chapter":{start_ch},"title":"章节标题","summary":"200字剧情梗概",'
-            f'"narrative_function":"开篇钩子",'
-            f'"required_beats":[{{"type":"传承觉醒","tier":"高潮","intensity":"高","detail":"觉醒要有代价"}}],'
-            f'"owed_debts":[{{"type":"复仇","desc":"描述","debt_id":"F-003"}}],'
-            f'"required_hooks":{{"type":"悬念","target_strength":"强","foreshadow_id":"F-007"}},'
-            f'"phase":"opening"}}]}}\n'
-            f"narrative_function可选值：开篇钩子/揭示/铺垫/转折/冲突/高潮/收束/伏笔/人物塑造/悬念设置/挫折/战斗\n"
-            f"第1-3章narrative_function用开篇钩子。\n"
-            f"summary中角色名必须来自已有角色列表。\n"
-            f"required_beats的type必须从候选桥段配方库的关键词中选（不编造），detail填该配方的毒点警告。\n"
-            f"owed_debts的debt_id和required_hooks的foreshadow_id必须引用已存在的伏笔ID，没有可留空数组/空对象。\n"
-            f"phase值：第1-3章opening，第4-7章shangjia，其余regular。\n"
-            f"确保JSON格式正确：双引号、无尾逗号、无注释。"
-        )
-        # 重试3次，每次解析失败后在prompt中追加格式提醒
-        for attempt in range(3):
-            retry_hint = f"\n\n【重要】上次输出不是有效JSON。请严格输出有效JSON，确保：1) 所有字符串值用双引号 2) 不要用中文逗号或冒号 3) 每个key后面必须有:和value 4) 数组/对象不能有尾逗号 5) 不要输出注释" if attempt > 0 else ""
-            raw = await self.llm_client.generate(prompt + retry_hint, system=OUTLINER_SYSTEM)
-            result = _extract_json(raw)
-            chapters = result.get("chapters", [])
-            if chapters:
-                return chapters
-            logger.warning("Outliner batch %d-%d attempt %d 返回空chapters，raw前200字: %s", start_ch, end_ch, attempt + 1, raw[:200])
-        return []
-
-    @staticmethod
-    def _format_existing(existing: dict) -> str:
-        """把已有角色名/伏笔ID格式化为 prompt 片段。"""
-        if not existing:
-            return ""
-        parts = ["【已有资产约束】"]
-        chars = existing.get("characters", [])
-        if chars:
-            parts.append(f"已有角色（summary 中只能用这些名字）：{'、'.join(chars)}")
-        fids = existing.get("foreshadows", [])
-        if fids:
-            parts.append(f"已有伏笔ID（新伏笔 ID 不得与之重复）：{'、'.join(fids)}")
         if len(parts) == 1:
             return ""
         parts.append("")

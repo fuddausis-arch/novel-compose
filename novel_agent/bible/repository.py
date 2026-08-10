@@ -40,6 +40,18 @@ class BibleRepository:
             self.db.rollback()
             raise
 
+    def _bump_content(self) -> None:
+        """图谱脏标记：资产（角色/势力/怪物/伏笔/大纲）变更 → 内容版本 +1。
+
+        图谱页据此提示"剧情数据已更新，图谱还是旧快照"；失败仅记日志不阻塞写库。
+        测试内存库下 version.bump_content 自行跳过文件副作用。
+        """
+        try:
+            from novel_agent.graphs.version import bump_content
+            bump_content(self.project_id)
+        except Exception as e:
+            logger.warning("图谱脏标记 bump 失败: %s", e)
+
     @contextmanager
     def unit_of_work(self):
         """事务上下文：内部写操作只 flush 不 commit，退出统一 commit/rollback。
@@ -94,6 +106,7 @@ class BibleRepository:
             chapter=0, type="character_created",
             entity_id=c.name, payload={"role": c.role},
         )
+        self._bump_content()
         return c
 
     def list_characters(self) -> list[Character]:
@@ -178,6 +191,7 @@ class BibleRepository:
                 setattr(c, k, v)
         self._commit_or_flush()
         self.db.refresh(c)
+        self._bump_content()
         return c
 
     # ---- 伏笔 ----
@@ -190,6 +204,7 @@ class BibleRepository:
             chapter=0, type="foreshadow_created",
             entity_id=f.foreshadow_id, payload={"description": f.description},
         )
+        self._bump_content()
         return f
 
     def get_foreshadow(self, foreshadow_id: str) -> Foreshadow | None:
@@ -223,6 +238,7 @@ class BibleRepository:
         f.status = status
         self._commit_or_flush()
         self.db.refresh(f)
+        self._bump_content()
         return f
 
     def get_foreshadows_by_status(self, status: str) -> list[Foreshadow]:
@@ -368,6 +384,7 @@ class BibleRepository:
             self.db.add(o)
             self._commit_or_flush()
         self.db.refresh(o)
+        self._bump_content()
         return o
 
     def list_outlines(self, level: str | None = None,
@@ -435,6 +452,7 @@ class BibleRepository:
             if existing:
                 return existing
             raise
+        self._bump_content()
         return item
 
     def update_faction(self, faction_id: int, **kwargs) -> Faction | None:
@@ -451,6 +469,7 @@ class BibleRepository:
         except IntegrityError:
             self.db.rollback()
             raise
+        self._bump_content()
         return item
 
     def delete_faction(self, faction_id: int) -> bool:
@@ -463,6 +482,7 @@ class BibleRepository:
         ).delete(synchronize_session=False)
         self.db.delete(item)
         self._commit_or_flush()
+        self._bump_content()
         return True
 
     # ---- 势力关系 ----
@@ -572,6 +592,7 @@ class BibleRepository:
             if existing:
                 return existing
             raise
+        self._bump_content()
         return item
 
     def delete_monster(self, monster_id: int) -> bool:
@@ -580,6 +601,7 @@ class BibleRepository:
             return False
         self.db.delete(item)
         self._commit_or_flush()
+        self._bump_content()
         return True
 
     # ---- 副本/特殊场景 ----
@@ -655,12 +677,18 @@ class BibleRepository:
         return True
 
     def delete_entity_appearances_for_chapter(self, chapter: int) -> int:
-        deleted = self.db.query(EntityAppearance).filter(
+        # ORM 逐个删除（而非 bulk delete synchronize_session=False）：
+        # 删后同会话重建时 SQLite 会复用 rowid（如 1），若旧对象仍残留在 identity map，
+        # 新对象 flush 时触发 "Identity map already had an identity" 警告（潜在竞态）。
+        # ORM delete 后立即 flush 会同步清理 identity map，避免 PK 冲突。
+        rows = self.db.query(EntityAppearance).filter(
             EntityAppearance.project_id == self.project_id,
             EntityAppearance.chapter == chapter,
-        ).delete(synchronize_session=False)
+        ).all()
+        for ea in rows:
+            self.db.delete(ea)
         self._commit_or_flush()
-        return deleted
+        return len(rows)
 
     def record_appearances(self, chapter: int, appearance_list: list[dict]) -> list[EntityAppearance]:
         self.delete_entity_appearances_for_chapter(chapter)
@@ -669,6 +697,36 @@ class BibleRepository:
             a = {k: v for k, v in app.items() if k in {"entity_type", "entity_id", "role_in_chapter", "context_snippet"}}
             created.append(self.create_entity_appearance(chapter=chapter, **a))
         return created
+
+    def record_appearances_from_text(self, chapter: int, text: str) -> int:
+        """确定性出场记录：扫描正文中出现过的已登记实体名（角色/势力/怪物/地点）。
+
+        与 record_appearances（LLM 提取驱动）互补：LLM 提取更全但依赖 Data Agent
+        输出；本方法零成本、确定性强，用于手动保存/生成流/bridge 等没有 LLM
+        提取的入口。合并已有记录后按章重写（不丢 commit 时写入的出场）。
+        """
+        if not text or not text.strip():
+            return 0
+        from novel_agent.bible.models import Character, Faction, Location, Monster
+
+        found: dict[tuple[str, str], dict] = {}
+        for model, etype in ((Character, "character"), (Faction, "faction"),
+                             (Monster, "monster"), (Location, "location")):
+            names = [r[0] for r in self.db.query(model.name).filter(
+                model.project_id == self.project_id).all() if r[0]]
+            for name in names:
+                if name in text:
+                    found.setdefault((etype, name),
+                                     {"entity_type": etype, "entity_id": name})
+        # 合并该章已有记录（保留 commit 时 LLM 提取的出场）
+        for a in self.list_entity_appearances(chapter=chapter):
+            found.setdefault((a.entity_type, a.entity_id),
+                             {"entity_type": a.entity_type, "entity_id": a.entity_id})
+        if not found:
+            return 0
+        apps = [{"chapter": chapter, **v} for v in found.values()]
+        self.record_appearances(chapter, apps)
+        return len(apps)
 
     def get_appearances_for_entity(self, entity_type: str, entity_id) -> list[EntityAppearance]:
         return self.list_entity_appearances(entity_type=entity_type, entity_id=str(entity_id))
@@ -877,6 +935,7 @@ class BibleRepository:
         if not c: return False
         self._delete_character_refs(name)
         self.db.delete(c); self._commit_or_flush()
+        self._bump_content()
         return True
 
     def delete_character_by_id(self, character_id: int) -> bool:
@@ -884,6 +943,7 @@ class BibleRepository:
         if not c: return False
         self._delete_character_refs(c.name)
         self.db.delete(c); self._commit_or_flush()
+        self._bump_content()
         return True
 
     def delete_foreshadow(self, foreshadow_id: str) -> bool:
@@ -903,6 +963,7 @@ class BibleRepository:
         ).all():
             self.db.delete(no)
         self.db.delete(f); self._commit_or_flush()
+        self._bump_content()
         return True
 
     def delete_outline(self, outline_id: int) -> bool:
@@ -912,6 +973,7 @@ class BibleRepository:
         # 级联删除子级
         self._delete_outline_children(outline_id)
         self.db.delete(o); self._commit_or_flush()
+        self._bump_content()
         return True
 
     def delete_outlines_by_chapter(self, order: int) -> int:
@@ -923,6 +985,7 @@ class BibleRepository:
         ).delete(synchronize_session=False)
         if deleted:
             self._commit_or_flush()
+            self._bump_content()
         return deleted
 
     def _delete_outline_children(self, outline_id: int) -> None:
@@ -972,6 +1035,7 @@ class BibleRepository:
         for k, v in kwargs.items():
             if hasattr(f, k): setattr(f, k, v)
         self._commit_or_flush(); self.db.refresh(f)
+        self._bump_content()
         return f
 
     def update_outline(self, outline_id: int, **kwargs) -> Outline | None:
@@ -980,6 +1044,7 @@ class BibleRepository:
         for k, v in kwargs.items():
             if hasattr(o, k): setattr(o, k, v)
         self._commit_or_flush(); self.db.refresh(o)
+        self._bump_content()
         return o
 
     def get_outline(self, outline_id: int) -> Outline | None:
@@ -1114,6 +1179,44 @@ class BibleRepository:
         self.db.refresh(b)
         return b
 
+    # ---- 死表接入（P0#5）：情感弧线 / 角色交互矩阵 ----
+    def create_emotion_arc(self, character_name: str, chapter: int, event: str = "",
+                           emotion_before: str = "", emotion_after: str = "",
+                           growth: str = "") -> EmotionArc:
+        ea = EmotionArc(
+            project_id=self.project_id, character_name=character_name, chapter=chapter,
+            event=event, emotion_before=emotion_before, emotion_after=emotion_after,
+            growth=growth,
+        )
+        self.db.add(ea)
+        self._commit_or_flush()
+        self.db.refresh(ea)
+        return ea
+
+    def create_character_matrix(self, chapter: int, character_a: str, character_b: str = "",
+                                interaction_type: str = "", info_exchanged: str = "",
+                                relationship_change: str = "") -> CharacterMatrix:
+        cm = CharacterMatrix(
+            project_id=self.project_id, chapter=chapter, character_a=character_a,
+            character_b=character_b, interaction_type=interaction_type,
+            info_exchanged=info_exchanged, relationship_change=relationship_change,
+        )
+        self.db.add(cm)
+        self._commit_or_flush()
+        self.db.refresh(cm)
+        return cm
+
+    # ---- 伏笔植入方案（P0#5/#7：规划期伏笔计划落库） ----
+    def create_foreshadow_implant(self, foreshadow_id: str, chapter: int = 0,
+                                  implant_method: str = "") -> ForeshadowImplant:
+        fi = ForeshadowImplant(
+            project_id=self.project_id, foreshadow_id=foreshadow_id,
+            chapter=chapter, implant_method=implant_method,
+        )
+        self.db.add(fi)
+        self._commit_or_flush()
+        return fi
+
     def list_beats_for_chapter(self, chapter: int) -> list[PleasureBeat]:
         return self.db.query(PleasureBeat).filter(
             PleasureBeat.project_id == self.project_id,
@@ -1177,6 +1280,38 @@ class BibleRepository:
             d.status = "resolved"
             d.resolved_chapter = chapter
             self._commit_or_flush()
+
+    def list_all_debts(self, status: str | None = None) -> list[PlotDebt]:
+        """列出全部剧情债（可按状态过滤：open/resolved/abandoned）。"""
+        q = self.db.query(PlotDebt).filter(PlotDebt.project_id == self.project_id)
+        if status:
+            q = q.filter(PlotDebt.status == status)
+        return q.order_by(PlotDebt.status, PlotDebt.pressure.desc()).all()
+
+    def get_plot_debt(self, debt_id: int) -> PlotDebt | None:
+        return self.db.query(PlotDebt).filter(
+            PlotDebt.project_id == self.project_id,
+            PlotDebt.id == debt_id,
+        ).first()
+
+    def update_plot_debt(self, debt_id: int, **kwargs) -> PlotDebt | None:
+        d = self.get_plot_debt(debt_id)
+        if not d:
+            return None
+        for k, v in kwargs.items():
+            if hasattr(d, k) and k not in ("id", "project_id"):
+                setattr(d, k, v)
+        self._commit_or_flush()
+        self.db.refresh(d)
+        return d
+
+    def delete_plot_debt(self, debt_id: int) -> bool:
+        d = self.get_plot_debt(debt_id)
+        if not d:
+            return False
+        self.db.delete(d)
+        self._commit_or_flush()
+        return True
 
     # ---- 红线（RedLine）----
     def list_red_lines(self, scope: str | None = None,

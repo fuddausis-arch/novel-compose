@@ -486,6 +486,63 @@ def sync_character_state_to_db(project_id: int, chapter_num: str | int, workspac
         conn.close()
 
 
+def _record_appearances(conn: sqlite3.Connection, project_id: int, chapter: int, text: str) -> None:
+    """断链①：确定性出场记录（工作流桥接补写，正文匹配已登记实体名）。"""
+    if not text or not text.strip():
+        return
+    rows = conn.execute(
+        """SELECT 'character' AS et, name FROM characters WHERE project_id=?
+           UNION SELECT 'faction', name FROM factions WHERE project_id=?
+           UNION SELECT 'monster', name FROM monsters WHERE project_id=?
+           UNION SELECT 'location', name FROM locations WHERE project_id=?""",
+        (project_id, project_id, project_id, project_id),
+    ).fetchall()
+    found = [(r["et"], r["name"]) for r in rows if r["name"] and r["name"] in text]
+    if not found:
+        return
+    conn.execute(
+        "DELETE FROM entity_appearances WHERE project_id=? AND chapter=?", (project_id, chapter))
+    for et, name in found:
+        conn.execute(
+            """INSERT OR IGNORE INTO entity_appearances
+               (project_id, entity_type, entity_id, chapter, created_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (project_id, et, name, chapter),
+        )
+    print(f"  ✓ 出场记录已写入: {len(found)} 个实体（第{chapter}章）")
+
+
+def _light_scan_lines(conn: sqlite3.Connection, project_id: int, chapter: int, text: str) -> None:
+    """断链③：叙事线轻扫（零成本）——线 tags 出现在正文 → 更新 last_active_chapter/progress。
+
+    与后端 scanner.light_scan_chapter 同逻辑，纯 sqlite 实现（bridge 不依赖 SQLAlchemy）。
+    """
+    if not text or not text.strip():
+        return
+    import json as _json
+
+    rows = conn.execute(
+        "SELECT id, tags, progress FROM storylines WHERE project_id=?", (project_id,)
+    ).fetchall()
+    updated = 0
+    for r in rows:
+        try:
+            tags = _json.loads(r["tags"]) if r["tags"] else []
+        except (TypeError, ValueError):
+            tags = []
+        tags = [str(t).strip() for t in tags if t and str(t).strip()]
+        if tags and any(t in text for t in tags):
+            new_prog = max(0, min(100, int(r["progress"] or 0) + 1))
+            conn.execute(
+                """UPDATE storylines SET last_active_chapter=?, progress=?, updated_at=datetime('now')
+                   WHERE id=?""",
+                (chapter, new_prog, r["id"]),
+            )
+            updated += 1
+    if updated:
+        print(f"  ✓ 叙事线轻扫: {updated} 条线推进至第{chapter}章")
+
+
 def sync_chapter_to_db(project_id: int, chapter_num: str | int, workspace: Path) -> None:
     """读 story/{N}/chapter.md → 写入 chapter_commits 表。
 
@@ -509,6 +566,9 @@ def sync_chapter_to_db(project_id: int, chapter_num: str | int, workspace: Path)
 
     conn = _connect(project_id, workspace)
     try:
+        # 断链①③：工作流产出回流时补写出场记录 + 叙事线轻扫（写章即更新）
+        _record_appearances(conn, project_id, chapter_db, content)
+        _light_scan_lines(conn, project_id, chapter_db, content)
         # 检查是否已存在该章
         existing = conn.execute(
             "SELECT id FROM chapter_commits WHERE project_id=? AND chapter=?",

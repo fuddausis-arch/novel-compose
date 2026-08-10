@@ -1,1 +1,0 @@
-var e=`/favicon.svg`;export{e as t};

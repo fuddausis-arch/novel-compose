@@ -32,18 +32,3 @@ def test_get_chapter_summaries(repo):
     assert len(summaries) == 3
     # 最近 3 章按章节升序
     assert [s.chapter for s in summaries] == [3, 4, 5]
-
-
-def test_get_arc_summary_not_implemented_gracefully(repo):
-    tree = SummaryTree(repo)
-    # M1：弧/卷摘要暂不支持自动生成，返回空
-    arc_summary = tree.get_arc_summary(arc_chapters=[1, 2, 3])
-    # M1 至少返回章节摘要的拼接
-    assert "第1章" in arc_summary
-
-
-def test_get_full_summary(repo):
-    tree = SummaryTree(repo)
-    full = tree.get_full_summary()
-    assert "测试" in full  # 项目标题
-    assert "第5章" in full

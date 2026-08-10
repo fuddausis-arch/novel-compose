@@ -116,6 +116,9 @@ class Config:
     enable_genre_rag: bool = False
     # 章纲/细纲内容不足时，允许 AI 自行扩充剧情生成完整章节正文
     allow_auto_expand_chapter: bool = True
+    # AI 率达标线（百分数）：AI 率 ≤ 该值视为通过。旧值 20 对真人网文误拦率高，
+    # 默认放宽到 30；配合前端"显示概率+可疑段落，人工判断"使用。
+    ai_pass_ai_rate: int = 30
     # 角色 -> 采样参数覆盖（借鉴 bishu-novel 温度五级光谱）
     # 在 get_agent_llm 返回前应用，覆盖 base_config 的对应字段
     ROLE_PARAMS: dict[str, dict] = field(default_factory=lambda: {
@@ -252,6 +255,31 @@ def _expand_env_vars(text: str) -> str:
     return _ENV_VAR_RE.sub(lambda m: os.environ.get(m.group(1), ""), text)
 
 
+# 已知的 API Key 环境变量（save_config 回写占位符用）
+_KEY_ENV_VARS = ("ARK_API_KEY", "DEEPSEEK_API_KEY", "ARK_EMBEDDING_API_KEY", "NOVEL_LLM_API_KEY")
+
+
+def _placeholder_for_key(value: str) -> str:
+    """把真实 API Key 还原为 ${VAR} 占位符：config.yaml 只存占位符，明文只留 .env。"""
+    if value:
+        for var in _KEY_ENV_VARS:
+            if os.environ.get(var) == value:
+                return f"${{{var}}}"
+    return value
+
+
+def _mask_api_keys(data):
+    """递归把 dict 中 api_key 字段的明文值替换为 ${VAR} 占位符（防明文落盘 config.yaml）。"""
+    if isinstance(data, dict):
+        return {
+            k: (_placeholder_for_key(v) if k == "api_key" and isinstance(v, str) else _mask_api_keys(v))
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [_mask_api_keys(x) for x in data]
+    return data
+
+
 def _expand_env_in_obj(obj):
     """递归展开 dict/list/str 中的 ${VAR} 占位符。
 
@@ -362,6 +390,12 @@ def load_config(yaml_path: Path | None = None) -> Config:
         # 读取章纲扩充开关
         if "allow_auto_expand_chapter" in data:
             cfg.allow_auto_expand_chapter = _str2bool(data["allow_auto_expand_chapter"])
+        # 读取 AI 率达标线（整数百分数，范围 5-60 防止误配）
+        if "ai_pass_ai_rate" in data:
+            try:
+                cfg.ai_pass_ai_rate = max(5, min(60, int(data["ai_pass_ai_rate"])))
+            except (TypeError, ValueError):
+                pass
     # env 覆盖（仅在 env 非空时生效，避免空字符串覆盖 yaml 已保存的配置）
     _env_api_key = os.getenv("NOVEL_LLM_API_KEY", "")
     _env_base_url = os.getenv("NOVEL_LLM_BASE_URL", "")
@@ -445,6 +479,8 @@ def save_config(cfg: Config, yaml_path: Path | None = None) -> Path:
     data["enable_genre_rag"] = cfg.enable_genre_rag
     # 保存章纲扩充开关
     data["allow_auto_expand_chapter"] = cfg.allow_auto_expand_chapter
+    # 安全：真实 API Key 只存 .env，config.yaml 回写 ${VAR} 占位符（防分享配置时泄露明文）
+    data = _mask_api_keys(data)
     with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
     return yaml_path

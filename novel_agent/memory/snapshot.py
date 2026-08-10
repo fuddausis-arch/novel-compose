@@ -96,39 +96,20 @@ def build_snapshot(repo: BibleRepository, chapter: int) -> dict:
 def save_snapshot(repo: BibleRepository, chapter: int,
                   snapshot_data: dict, drift_score: int = 0,
                   is_full_resummary: bool = False) -> None:
-    """保存状态快照到数据库。"""
-    from novel_agent.bible.models import StateSnapshot
-    from sqlalchemy import select
-
-    # 删除同章旧快照
-    old = repo.db.query(StateSnapshot).filter(
-        StateSnapshot.project_id == repo.project_id,
-        StateSnapshot.chapter == chapter,
-    ).all()
-    for o in old:
-        repo.db.delete(o)
-
-    snap = StateSnapshot(
-        project_id=repo.project_id,
+    """保存状态快照到数据库（统一走 repository 入口，消除双轨写入）。"""
+    repo.save_state_snapshot(
         chapter=chapter,
         snapshot_data=snapshot_data,
         drift_score=drift_score,
         is_full_resummary=is_full_resummary,
     )
-    repo.db.add(snap)
-    repo.db.commit()
     logger.info("ch%d 状态快照已保存 (drift=%d, full=%s)",
                 chapter, drift_score, is_full_resummary)
 
 
 def get_latest_snapshot(repo: BibleRepository, chapter: int) -> dict | None:
     """读取最近的状态快照（chapter 或之前最近的）。"""
-    from novel_agent.bible.models import StateSnapshot
-
-    snap = repo.db.query(StateSnapshot).filter(
-        StateSnapshot.project_id == repo.project_id,
-        StateSnapshot.chapter <= chapter,
-    ).order_by(StateSnapshot.chapter.desc()).first()
+    snap = repo.get_latest_state_snapshot(chapter)
     if not snap:
         return None
     return snap.snapshot_data

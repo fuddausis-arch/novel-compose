@@ -27,6 +27,7 @@ class AgentDef(BaseModel):
     """Agent 创建时的完整定义。"""
     agent_type: str
     model: str = ""
+    description: str = ""
     temperature: float = 0.8
     top_p: float = 0.92
     max_turns: int = 10
@@ -39,6 +40,7 @@ class AgentDef(BaseModel):
 class AgentUpdate(BaseModel):
     """Agent 更新字段（全部可选，agent_type 不可变）。"""
     model: str | None = None
+    description: str | None = None
     temperature: float | None = None
     top_p: float | None = None
     max_turns: int | None = None

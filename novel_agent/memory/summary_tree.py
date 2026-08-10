@@ -18,15 +18,6 @@ class SummaryTree:
         recent = self.repo.list_chapter_summaries(limit=count)
         return sorted(recent, key=lambda s: s.chapter)
 
-    def get_arc_summary(self, arc_chapters: list[int]) -> str:
-        """某弧的摘要。M1：拼接该弧内各章摘要。"""
-        parts = []
-        for ch in arc_chapters:
-            s = self.repo.get_chapter_summary(ch)
-            if s:
-                parts.append(f"第{ch}章《{s.title}》：{s.core_events}")
-        return "\n".join(parts)
-
     def get_volume_summary(self, volume: int) -> str:
         """获取某卷的压缩摘要。
 
@@ -91,32 +82,3 @@ class SummaryTree:
             # fallback 到机械截断
             lines = [f"第{s.chapter}章：{s.core_events}" for s in volume_summaries[-20:]]
             return "【卷摘要】\n" + "\n".join(lines)
-
-    def get_full_summary(self) -> str:
-        """获取全量摘要：最近10章详细 + 更早的卷级压缩。"""
-        project = self.repo.get_project()
-        parts = [f"《{project.title}》"] if project else []
-        summaries = self.repo.list_chapter_summaries(limit=1000)
-        if not summaries:
-            return "\n".join(parts)
-        summaries.sort(key=lambda s: s.chapter)
-        if len(summaries) <= 10:
-            parts.append(
-                "\n".join(
-                    f"第{s.chapter}章《{s.title}》：{s.core_events}" for s in summaries
-                )
-            )
-            return "\n".join(parts)
-        recent = summaries[-10:]
-        older = summaries[:-10]
-        # 更早的取完整 core_events
-        older_text = "\n".join(
-            f"第{s.chapter}章《{s.title}》：{s.core_events}" for s in older
-        )
-        recent_text = "\n".join(
-            f"第{s.chapter}章《{s.title}》：{s.core_events}" for s in recent
-        )
-        parts.append(
-            f"【早期章节摘要】\n{older_text}\n\n【近期章节摘要】\n{recent_text}"
-        )
-        return "\n".join(parts)

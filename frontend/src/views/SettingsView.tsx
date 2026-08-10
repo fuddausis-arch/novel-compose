@@ -540,7 +540,7 @@ export function SettingsView() {
         <CardTitle>多 Agent 模型配置</CardTitle>
       </CardHeader>
       <CardContent className="max-w-2xl">
-        <p className="text-xs text-muted mb-3">为不同 Agent 指定独立模型，未自定义时继承主配置（base_url、api_key 共用主配置）。</p>
+        <p className="text-xs text-muted mb-3">为不同 Agent 指定独立模型，未自定义时继承主配置（base_url、api_key 共用主配置）。审校（auditor/审校员）模型也可在此面板配置。</p>
         <AgentLLMConfigPanel />
       </CardContent>
     </Card>

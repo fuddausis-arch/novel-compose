@@ -117,6 +117,20 @@ def get_timeline(project_id: int, db: Session = Depends(get_db)):
             "role": a.role_in_chapter or "mention",
             "snippet": (a.context_snippet or "")[:120],
         })
+    # 兜底：无出场记录时，用状态变更聚合"活跃角色"（至少让泳道有内容）
+    if not character_lane:
+        scs = db.query(StateChange).filter(
+            StateChange.project_id == project_id,
+            StateChange.entity_type.in_(["角色", "character"]),
+        ).all()
+        for sc in scs:
+            character_lane.append({
+                "chapter": sc.chapter,
+                "entity": sc.entity_id or "",
+                "entity_type": "角色",
+                "role": "活跃",
+                "snippet": f"{sc.field} 变化",
+            })
 
     # ---- 关系变更泳道 ----
     rel_changes = db.query(RelationshipChange).filter(
@@ -197,6 +211,20 @@ def get_timeline(project_id: int, db: Session = Depends(get_db)):
             "event": (e.event or "")[:120],
             "label": _emotion_label(e.emotion_after or ""),
         })
+    # 兜底：无情感弧线记录时，用状态变更里的情绪字段变化生成（field 含 emotion/情绪）
+    if not emotion_lane:
+        for sc in state_changes:
+            field = (sc.field or "").strip()
+            if "emotion" not in field and "情绪" not in field:
+                continue
+            emotion_lane.append({
+                "chapter": sc.chapter,
+                "character": sc.entity_id or "",
+                "emotion_before": sc.old_value or "",
+                "emotion_after": sc.new_value or "",
+                "event": (sc.entity_type or "")[:120],
+                "label": _emotion_label(sc.new_value or ""),
+            })
 
     # ---- 通用事件流 ----
     truth_events = db.query(TruthEvent).filter(

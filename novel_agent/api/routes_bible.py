@@ -44,6 +44,10 @@ def get_db(project_id: int):
             "ALTER TABLE outlines ADD COLUMN required_hooks TEXT DEFAULT ''",
             "ALTER TABLE outlines ADD COLUMN character_constraints TEXT DEFAULT ''",
             "ALTER TABLE outlines ADD COLUMN phase TEXT DEFAULT 'regular'",
+            # 卷纲 key_events / 细纲 key_characters、emotional_arc 落库列
+            "ALTER TABLE outlines ADD COLUMN key_events TEXT DEFAULT ''",
+            "ALTER TABLE outlines ADD COLUMN key_characters TEXT DEFAULT ''",
+            "ALTER TABLE outlines ADD COLUMN emotional_arc TEXT DEFAULT ''",
         ]
         with db_mod.engine.connect() as conn:
             for sql in migrations:
@@ -301,6 +305,25 @@ def update_foreshadow(project_id: int, foreshadow_id: str, data: ForeshadowInput
     # 以 URL 参数为准，从 kwargs 中排除。
     payload = data.model_dump(exclude_unset=True)
     payload.pop("foreshadow_id", None)
+    existing = repo.get_foreshadow(foreshadow_id)
+    if not existing:
+        raise HTTPException(404, "伏笔不存在")
+    # P0#3：REST PUT 走状态机（禁止随意跳变；pending 可任意进入 planted）
+    new_status = payload.get("status")
+    if new_status and new_status != existing.status:
+        allowed = {
+            "pending": {"planted", "abandoned"},
+            "planted": {"developing", "resolved", "abandoned"},
+            "developing": {"resolved", "abandoned"},
+            "resolved": set(),
+            "abandoned": set(),
+        }.get(existing.status, set())
+        if new_status not in allowed:
+            raise HTTPException(
+                400,
+                f"非法伏笔状态流转：{existing.status} → {new_status}"
+                f"（允许：{sorted(allowed) or '无'}）",
+            )
     f = repo.update_foreshadow(foreshadow_id, **payload)
     if not f:
         raise HTTPException(404, "伏笔不存在")
@@ -314,6 +337,52 @@ def delete_foreshadow(project_id: int, foreshadow_id: str, repo: BibleRepository
     return {"deleted": True}
 
 
+# ===== 剧情债（Plot Debt）=====
+def _plot_debt_dict(d):
+    return {"id": d.id, "debt_type": d.debt_type, "description": d.description,
+            "pressure": d.pressure, "term": d.term, "status": d.status,
+            "created_chapter": d.created_chapter, "resolved_chapter": d.resolved_chapter}
+
+
+class PlotDebtInput(BaseModel):
+    debt_type: str = "因果"
+    description: str = ""
+    pressure: int = 3
+    term: str = "short"
+    status: str = "open"
+    created_chapter: int = 0
+
+
+@router.get("/{project_id}/plot-debts")
+def list_plot_debts(project_id: int, status: str | None = None,
+                    repo: BibleRepository = Depends(get_repo)):
+    return [_plot_debt_dict(d) for d in repo.list_all_debts(status=status)]
+
+
+@router.post("/{project_id}/plot-debts")
+def create_plot_debt(project_id: int, data: PlotDebtInput, repo: BibleRepository = Depends(get_repo)):
+    if not data.description.strip():
+        raise HTTPException(400, "剧情债描述不能为空")
+    d = repo.create_plot_debt(**data.model_dump())
+    return _plot_debt_dict(d)
+
+
+@router.put("/{project_id}/plot-debts/{debt_id}")
+def update_plot_debt(project_id: int, debt_id: int, data: PlotDebtInput,
+                     repo: BibleRepository = Depends(get_repo)):
+    d = repo.update_plot_debt(debt_id, **data.model_dump(exclude_unset=True))
+    if not d:
+        raise HTTPException(404, "剧情债不存在")
+    return _plot_debt_dict(d)
+
+
+@router.delete("/{project_id}/plot-debts/{debt_id}")
+def delete_plot_debt(project_id: int, debt_id: int, repo: BibleRepository = Depends(get_repo)):
+    if not repo.delete_plot_debt(debt_id):
+        raise HTTPException(404, "剧情债不存在")
+    return {"deleted": True}
+
+
 # ---- 大纲 ----
 def _outline_dict(o):
     data = {"id": o.id, "level": o.level, "parent_id": o.parent_id, "order": o.order,
@@ -322,7 +391,10 @@ def _outline_dict(o):
             "owed_debts": o.owed_debts or "",
             "required_hooks": o.required_hooks or "",
             "character_constraints": o.character_constraints or "",
-            "phase": o.phase or "regular"}
+            "phase": o.phase or "regular",
+            "key_events": o.key_events or "",
+            "key_characters": o.key_characters or "",
+            "emotional_arc": o.emotional_arc or ""}
     # 卷大纲将规划章数存于 character_constraints JSON 中，解析后便于前端使用
     if o.level == "volume" and o.character_constraints:
         try:
@@ -1047,6 +1119,22 @@ def _merge_import_data(a: ImportData, b: ImportData) -> ImportData:
 def import_settings(project_id: int, data: ImportData, repo: BibleRepository = Depends(get_repo)):
     """批量导入世界观/设定数据。已存在的跳过。"""
     added = _apply_import_data(repo, data)
+    # P1#9：导入的章级大纲索引进向量库（记忆写入闭环），失败不阻塞主流程
+    try:
+        import re as _re
+        from novel_agent.memory.archival import ArchivalMemory
+        archival = ArchivalMemory(load_config(), project_id=project_id)
+        for o in data.outlines:
+            if o.level != "chapter":
+                continue
+            m = _re.match(r"^第?\s*(\d+)\s*章", o.title or "")
+            if not m:
+                continue
+            ch = int(m.group(1))
+            archival.index_chapter(chapter=ch, title=o.title or f"第{ch}章",
+                                   content=o.summary or "")
+    except Exception as e:
+        logger.warning("导入章节向量索引失败: %s", e)
     return {"imported": added}
 
 
@@ -2152,6 +2240,63 @@ def export_bible(project_id: int, repo: BibleRepository = Depends(get_repo)):
     project = repo.get_project()
     if not project:
         raise HTTPException(404, "项目不存在")
+    from novel_agent.bible.models import StateSnapshot, ChatSession, ChatMessage, PostHocResult
+
+    # 阶段4补全：摘要/快照/聊天记录/后验裁决（各块独立容错，不影响导出主结构）
+    def _safe_query(loader):
+        try:
+            return loader() or []
+        except Exception as e:
+            logger.warning("导出 %s 失败: %s", loader.__name__ if hasattr(loader, "__name__") else "数据块", e)
+            return []
+
+    chapter_summaries = _safe_query(lambda: [
+        {"chapter": s.chapter, "title": s.title, "time_location": s.time_location,
+         "core_events": s.core_events, "characters_present": s.characters_present,
+         "emotion_changes": s.emotion_changes, "foreshadow_dynamics": s.foreshadow_dynamics,
+         "subplot_progress": s.subplot_progress, "chapter_hook": s.chapter_hook,
+         "word_count": s.word_count}
+        for s in repo.list_chapter_summaries(limit=10000)
+    ])
+
+    snapshots = _safe_query(lambda: [
+        {"chapter": s.chapter, "snapshot_data": s.snapshot_data or {},
+         "drift_score": s.drift_score, "is_full_resummary": s.is_full_resummary,
+         "created_at": s.created_at.isoformat() if s.created_at else None}
+        for s in repo.db.query(StateSnapshot)
+        .filter(StateSnapshot.project_id == repo.project_id)
+        .order_by(StateSnapshot.chapter).all()
+    ])
+
+    chat_sessions = _safe_query(lambda: [
+        {"id": s.id, "session_type": s.session_type, "object_type": s.object_type,
+         "object_id": s.object_id, "title": s.title,
+         "created_at": s.created_at.isoformat() if s.created_at else None}
+        for s in repo.db.query(ChatSession)
+        .filter(ChatSession.project_id == repo.project_id)
+        .order_by(ChatSession.created_at).all()
+    ])
+
+    chat_messages = _safe_query(lambda: [
+        {"id": m.id, "session_id": m.session_id, "role": m.role, "content": m.content,
+         "actions": m.actions or [],
+         "created_at": m.created_at.isoformat() if m.created_at else None}
+        for m in repo.db.query(ChatMessage)
+        .filter(ChatMessage.session_id.in_([s["id"] for s in chat_sessions]))
+        .order_by(ChatMessage.created_at).all()
+    ])
+
+    post_hoc_results = _safe_query(lambda: [
+        {"chapter": p.chapter, "world_diff": p.world_diff or [], "story_diff": p.story_diff or [],
+         "character_diff": p.character_diff or [], "unplanned_events": p.unplanned_events or [],
+         "world_adjudication": p.world_adjudication or [], "story_adjudication": p.story_adjudication or [],
+         "event_classification": p.event_classification or [], "summary": p.summary or {},
+         "created_at": p.created_at.isoformat() if p.created_at else None}
+        for p in repo.db.query(PostHocResult)
+        .filter(PostHocResult.project_id == repo.project_id)
+        .order_by(PostHocResult.chapter).all()
+    ])
+
     return {
         "project": {
             "id": project.id,
@@ -2194,6 +2339,12 @@ def export_bible(project_id: int, repo: BibleRepository = Depends(get_repo)):
                      for o in repo.list_outlines()],
         "state_changes": [_state_change_dict(s) for s in repo.list_state_changes()],
         "events": [_event_dict(e) for e in repo.list_events()],
+        # ---- 阶段4补全：摘要/快照/聊天记录/后验裁决（新增 key，不破坏旧结构）----
+        "chapter_summaries": chapter_summaries,
+        "snapshots": snapshots,
+        "chat_sessions": chat_sessions,
+        "chat_messages": chat_messages,
+        "post_hoc_results": post_hoc_results,
     }
 
 
@@ -2642,6 +2793,16 @@ def import_folder(data: ImportFolderInput, db: Session = Depends(get_db_session)
     failed = []
     gags_imported = 0
 
+    # 向量库（惰性初始化一次，供各章正文索引复用；初始化失败则跳过索引）
+    _archival = None
+    try:
+        from novel_agent.bible.database import get_config
+        from novel_agent.memory.archival import ArchivalMemory
+        _archival = ArchivalMemory(get_config(), project_id=data.project_id)
+    except Exception as e:
+        logger.warning("向量库初始化失败，导入章节将跳过向量索引: %s", e)
+        _archival = None
+
     for f in all_files:
         try:
             raw_content = f.read_text(encoding="utf-8", errors="replace")
@@ -2675,6 +2836,37 @@ def import_folder(data: ImportFolderInput, db: Session = Depends(get_db_session)
                 shell_annotation=parsed["shell_annotation"],
                 raw_content=raw_content,
             )
+
+            # 向量化索引该章正文（导入进向量库，供检索/记忆召回；失败不影响导入）
+            if _archival is not None:
+                try:
+                    if _archival.is_available():
+                        _archival.index_chapter(
+                            chapter=chapter_num,
+                            title=parsed["title"] or f"第{chapter_num}章",
+                            content=raw_content,
+                        )
+                except Exception as e:
+                    logger.warning("导入章节 %d 向量化索引失败: %s", chapter_num, e)
+
+            # 章纲同步写入 Outline 表（level=chapter），供大纲视图与生成流程使用
+            try:
+                from novel_agent.bible.models import Outline as _OutlineModel
+                exists_outline = repo.db.query(_OutlineModel).filter(
+                    _OutlineModel.project_id == data.project_id,
+                    _OutlineModel.level == "chapter",
+                    _OutlineModel.title.like(f"第{chapter_num}章%"),
+                ).first()
+                if exists_outline is None:
+                    repo.create_outline(
+                        level="chapter",
+                        order=chapter_num,
+                        title=parsed["title"] or f"第{chapter_num}章",
+                        summary=parsed["chapter_outline"] or "",
+                    )
+            except Exception as e:
+                logger.warning("导入章节 %d 章纲写入 Outline 失败: %s", chapter_num, e)
+
             imported.append({
                 "id": ic.id,
                 "filename": f.name,

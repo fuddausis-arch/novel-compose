@@ -13,14 +13,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 interface RelationshipEditorViewProps {
   relationshipId: number;
   onBack?: () => void;
-  onGenerateRelationship?: () => void;
-  generatingRelationship?: boolean;
 }
 
 const RELATION_TYPES = ["亲情", "友情", "爱情", "师徒", "敌对", "竞争", "同门", "上下级", "同盟", "其他"];
 const STATUSES = ["active", "dormant", "resolved", "broken"];
 
-export function RelationshipEditorView({ relationshipId, onBack, onGenerateRelationship, generatingRelationship }: RelationshipEditorViewProps) {
+export function RelationshipEditorView({ relationshipId, onBack }: RelationshipEditorViewProps) {
   const store = useAppStore();
   const { showSuccess, showError } = useToast();
   const { confirm: confirmDelete, dialog: deleteDialog } = useConfirmDialog();
@@ -31,6 +29,7 @@ export function RelationshipEditorView({ relationshipId, onBack, onGenerateRelat
   );
 
   const [form, setForm] = useState<Partial<CharacterRelationship>>(() => relationship || {});
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     setForm(relationship || {});
@@ -46,6 +45,36 @@ export function RelationshipEditorView({ relationshipId, onBack, onGenerateRelat
     () => store.characters.map((c) => c.name).filter(Boolean),
     [store.characters]
   );
+
+  const handleAiGenerate = async () => {
+    if (!store.currentProject) return;
+    setGenerating(true);
+    try {
+      const created = await api.generateCharacterRelationship(store.currentProject.id, {
+        source_character: form.source_character || "",
+        target_character: form.target_character || "",
+        relation_type_hint: form.relation_type || "",
+      });
+      setForm({
+        ...form,
+        source_character: created.source_character,
+        target_character: created.target_character,
+        relation_type: created.relation_type,
+        relation_subtype: created.relation_subtype,
+        strength: created.strength,
+        description: created.description,
+        since_chapter: created.since_chapter,
+        status: created.status,
+        is_bidirectional: created.is_bidirectional,
+      });
+      await store.refreshCharacterRelationships();
+      showSuccess("AI 已生成关系设定，已填入表单，点击「保存」生效");
+    } catch (e: any) {
+      showError("AI 生成失败：" + e.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!store.currentProject) return;
@@ -88,12 +117,10 @@ export function RelationshipEditorView({ relationshipId, onBack, onGenerateRelat
               关系编辑
             </CardTitle>
             <div className="flex gap-2">
-              {onGenerateRelationship && (
-                <Button size="sm" variant="primary" onClick={onGenerateRelationship} disabled={generatingRelationship}>
-                  <Sparkles className="h-3.5 w-3.5 mr-1" />
-                  {generatingRelationship ? "生成中…" : "AI 生成关系"}
-                </Button>
-              )}
+              <Button size="sm" variant="primary" onClick={handleAiGenerate} disabled={generating}>
+                <Sparkles className="h-3.5 w-3.5 mr-1" />
+                {generating ? "生成中…" : "AI 生成关系"}
+              </Button>
               <Button size="sm" onClick={handleSave}><Save className="h-3.5 w-3.5 mr-1" /> 保存</Button>
               <Button size="sm" variant="danger" onClick={handleDelete}><Trash2 className="h-3.5 w-3.5 mr-1" /> 删除</Button>
             </div>

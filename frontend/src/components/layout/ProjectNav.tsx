@@ -43,6 +43,8 @@ const MORE_ITEMS = [
   { path: "references", label: "参考" },
   { path: "stats", label: "统计" },
   { path: "encyclopedia", label: "百科卡" },
+  { path: "ai-style", label: "AI 味检测" },
+  { path: "storyline", label: "叙事线" },
 ] as const;
 
 export interface ProjectNavProps {

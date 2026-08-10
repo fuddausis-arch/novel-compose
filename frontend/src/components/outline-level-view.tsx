@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { List, Plus, Sparkles, Trash2, Save, X, Edit2, Loader2, CheckSquare, Square, Hash } from "lucide-react";
 import { api } from "@/api";
+import { useAppStore } from "@/store";
+import { bumpDataVersion } from "@/store/slices/dataVersion";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog";
 import type { Project, Outline } from "@/types";
@@ -30,6 +32,12 @@ const STRANDS = [
   { value: "fire", label: "感情" },
   { value: "constellation", label: "世界观" },
 ];
+
+/** 大纲增删改后同步全局 store（工作台"大纲数"统计一致）+ 通知数据版本变化。 */
+function refreshGlobalOutlines() {
+  useAppStore.getState().refreshOutlines().catch(() => {});
+  bumpDataVersion("bible");
+}
 
 export function OutlineLevelView({ project, level, parentLevel, title, setLoading }: OutlineLevelViewProps) {
   const { showSuccess, showError } = useToast();
@@ -142,6 +150,12 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
     }
   };
 
+  // 变更操作统一走 loadAndSync：本地列表刷新 + 同步全局 store（大纲数统计）
+  const loadAndSync = async () => {
+    await load();
+    refreshGlobalOutlines();
+  };
+
   const loadParents = async () => {
     if (!parentLevel) {
       setParents([]);
@@ -235,12 +249,13 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
 
   // 流式生成完成/导入后刷新列表
   const handleStreamImport = async (_items: GenStreamItem[]) => {
-    await load();
+    await loadAndSync();
     if (_items.length > 0) showSuccess(`已导入 ${_items.length} 条${title}`);
   };
 
   const discardGenerated = async (items: Outline[]) => {
     await Promise.all(items.map((item) => item.id ? api.deleteOutline(project.id, item.id) : Promise.resolve()));
+    if (items.some((item) => item.id)) refreshGlobalOutlines();
   };
 
   const handleRenumber = async () => {
@@ -258,7 +273,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
       } else {
         showSuccess(`编号已连续，无需调整（共 ${r.total} 条）`);
       }
-      await load();
+      await loadAndSync();
     } catch (e: any) {
       showError("重新编号失败：" + e.message);
     }
@@ -314,7 +329,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
       )
     );
     await discardGenerated(discarded);
-    await load();
+    await loadAndSync();
     setPreviewOpen(false);
     setPreviewItems([]);
     showSuccess(`已导入 ${selected.length} 条${title}`);
@@ -322,7 +337,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
 
   const handlePreviewClose = async () => {
     await discardGenerated(previewItems);
-    await load();
+    await loadAndSync();
     setPreviewOpen(false);
     setPreviewItems([]);
   };
@@ -333,7 +348,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
       await api.createOutline(project.id, { ...newForm, level, parent_id: parentId });
       setAdding(false);
       setNewForm({ order: (sorted.length || 0) + 1, level, parent_id: parentId, title: "", summary: "", act: "发展", strand: "quest", required_beats: "", owed_debts: "", required_hooks: "", character_constraints: "", phase: "regular" });
-      await load();
+      await loadAndSync();
       showSuccess("创建成功");
     } catch (e: any) {
       showError("创建失败：" + e.message);
@@ -356,7 +371,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
       await api.updateOutline(project.id, editingId, editForm);
       setEditingId(null);
       setEditForm({});
-      await load();
+      await loadAndSync();
       showSuccess("保存成功");
     } catch (e: any) {
       showError("保存失败：" + e.message);
@@ -368,7 +383,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
     if (!ok) return;
     try {
       await api.deleteOutline(project.id, id);
-      await load();
+      await loadAndSync();
       showSuccess("删除成功");
     } catch (e: any) {
       showError("删除失败：" + e.message);
@@ -405,7 +420,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
       const result = await api.batchDeleteOutlines(project.id, ids);
       setSelectedIds(new Set());
       setBatchMode(false);
-      await load();
+      await loadAndSync();
       showSuccess(`已删除 ${result.deleted_count} 条${title}`);
     } catch (e: any) {
       showError("批量删除失败：" + e.message);
@@ -417,7 +432,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
     setEnrichingId(id);
     try {
       await api.enrichOutline(project.id, id);
-      await load();
+      await loadAndSync();
       showSuccess("大纲内容已丰富");
     } catch (e: any) {
       showError("丰富失败：" + e.message);
@@ -707,6 +722,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
         onClose={() => setSuggestOpen(false)}
         onAdopted={() => {
           load();
+          refreshGlobalOutlines();
           showSuccess("建议已采纳");
         }}
       />

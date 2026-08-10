@@ -1,14 +1,17 @@
 // 百科卡页：五类实体卡片浏览 + 出场场景索引（可视化融合 P5）。
 // 数据走后端 /api/encyclopedia/{project_id}，点击卡片复用 EntityCardDrawer 看全字段详情。
+// 附加 Tab：剧情债 / 关系变更 / 世界状态与事件（历史数据面板）。
 
-import { useCallback, useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { useCallback, useState } from "react";
+import { BookMarked, GitBranch, Loader2, ScrollText } from "lucide-react";
 import { EntityCardDrawer, type EntityCardType } from "@/components/entity/EntityCardDrawer";
 import { EntityCard } from "@/components/entity/entity-card";
 import { ENTITY_TYPE_META, FORESHADOW_STATUS_LABEL } from "@/components/entity/entity-meta";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { PlotDebtsView, RelationshipChangesView, StatesEventsView } from "@/components/bible-history-panels";
 import { useCurrentProject } from "@/hooks/useCurrentProject";
+import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { cn } from "@/lib/utils";
 
 // ==================== 类型定义 ====================
@@ -43,6 +46,13 @@ interface EncyclopediaData {
 }
 
 type SectionKey = "characters" | "factions" | "monsters" | "locations" | "foreshadows";
+type ExtraTab = "plotDebts" | "relationshipChanges" | "statesEvents";
+
+const EXTRA_TABS: { key: ExtraTab; label: string; icon: React.ReactNode }[] = [
+  { key: "plotDebts", label: "剧情债", icon: <BookMarked size={12} /> },
+  { key: "relationshipChanges", label: "关系变更", icon: <GitBranch size={12} /> },
+  { key: "statesEvents", label: "状态/事件", icon: <ScrollText size={12} /> },
+];
 
 /** 分类 Tab 元信息：由公共 ENTITY_TYPE_META 派生 */
 const SECTION_META: { key: SectionKey; entityType: EntityCardType; label: string; icon: React.ReactNode; badge: string }[] = (
@@ -75,6 +85,7 @@ export function EncyclopediaView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<keyof EncyclopediaData>("characters");
+  const [extraTab, setExtraTab] = useState<ExtraTab | null>(null);
   const [drawer, setDrawer] = useState<{ entityType: EntityCardType; entityId: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -96,16 +107,16 @@ export function EncyclopediaView() {
     }
   }, [projectId]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // 页面挂载 / 窗口 focus / bible·chapters 数据版本变化时自动重新拉取
+  useAutoRefresh(["bible", "chapters"], load, [load]);
 
   const openEntity = (item: EntityItem) => {
     if (!projectId) return;
     setDrawer({ entityType: item.entity_type, entityId: entityIdFor(item) });
   };
 
-  if (loading) {
+  // 仅首次加载时显示全屏 spinner，后台刷新（focus/版本变化）不闪屏
+  if (loading && !data) {
     return (
       <div className="flex h-full items-center justify-center text-muted" role="status">
         <Loader2 size={20} className="mr-2 animate-spin" aria-hidden="true" />
@@ -138,10 +149,10 @@ export function EncyclopediaView() {
             <button
               key={sec.key}
               type="button"
-              onClick={() => setActiveTab(sec.key)}
+              onClick={() => { setActiveTab(sec.key); setExtraTab(null); }}
               className={cn(
                 "flex cursor-pointer items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
-                activeTab === sec.key
+                activeTab === sec.key && !extraTab
                   ? "bg-primary text-primary-foreground"
                   : "text-muted hover:bg-surface-hover hover:text-foreground",
               )}
@@ -151,12 +162,35 @@ export function EncyclopediaView() {
               <span className="text-[10px] opacity-70">{data?.counts?.[sec.key] ?? 0}</span>
             </button>
           ))}
+          <div className="mx-1 w-px bg-border" aria-hidden="true" />
+          {EXTRA_TABS.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setExtraTab(tab.key)}
+              className={cn(
+                "flex cursor-pointer items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
+                extraTab === tab.key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted hover:bg-surface-hover hover:text-foreground",
+              )}
+            >
+              {tab.icon}
+              {tab.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* 实体卡片网格 */}
+      {/* 历史数据面板 / 实体卡片网格 */}
       <ScrollArea className="flex-1">
-        {items.length === 0 ? (
+        {extraTab === "plotDebts" && projectId ? (
+          <PlotDebtsView projectId={projectId} />
+        ) : extraTab === "relationshipChanges" && projectId ? (
+          <RelationshipChangesView projectId={projectId} />
+        ) : extraTab === "statesEvents" && projectId ? (
+          <StatesEventsView projectId={projectId} />
+        ) : items.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted">
             暂无{SECTION_META.find((m) => m.key === activeTab)?.label}，可先到「资产」页创建
           </div>

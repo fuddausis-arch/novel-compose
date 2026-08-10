@@ -178,6 +178,70 @@ def _clean_text(text: str | None) -> str:
     return cleaned
 
 
+def _save_foreshadow_plans(repo, plans: list, default_chapter: int = 0) -> int:
+    """P0#7：卷纲 foreshadow_plan / 章纲 new_foreshadows 落库到 ForeshadowImplant。
+
+    条目格式兼容：
+      - {action/status, foreshadow_id, tier, description, chapter}
+      - {foreshadow_id, description, ...}
+    返回写入数量。幂等：同 foreshadow_id + chapter 重复跳过（含同批次内重复）。
+    """
+    from novel_agent.bible.models import ForeshadowImplant
+
+    count = 0
+    seen: set[tuple[str, int]] = set()
+    for p in (plans or []):
+        if not isinstance(p, dict):
+            continue
+        fid = str(p.get("foreshadow_id") or "").strip()
+        if not fid:
+            continue
+        ch = int(p.get("chapter") or default_chapter or 0)
+        method = str(p.get("action") or p.get("implant_method") or "").strip()
+        desc = str(p.get("description") or "").strip()
+        if method and desc:
+            method = f"{method}: {desc}"
+        elif desc:
+            method = desc
+        key = (fid, ch)
+        if key in seen:
+            continue  # 同批次内重复（add 未 flush 查不到库，用内存 set 兜底）
+        seen.add(key)
+        dup = repo.db.query(ForeshadowImplant).filter(
+            ForeshadowImplant.project_id == repo.project_id,
+            ForeshadowImplant.foreshadow_id == fid,
+            ForeshadowImplant.chapter == ch,
+        ).first()
+        if dup:
+            continue
+        # 统一走 repository 入口（消除双轨写入）
+        repo.create_foreshadow_implant(foreshadow_id=fid, chapter=ch, implant_method=method)
+        count += 1
+    try:
+        repo.db.commit()
+    except Exception:
+        repo.db.rollback()
+    return count
+
+
+def _build_create_delta(entry: dict, chapter: int | None, delta_type: str,
+                        rename_type: str | None = None) -> dict:
+    """构造 create 类 delta，防止 LLM 条目里的 type 字段覆盖 delta 动作类型。
+
+    Data Agent 提取的势力条目带业务 type（如"宗门/世家"），与 delta 的
+    type（动作类型）同名冲突，直接 **entry 展开会把 delta.type 覆盖掉，
+    导致 applier 报「不支持的 delta 类型」。此处剔除 type，并把有业务含义的
+    type（势力类型）改名保留（rename_type）。
+    """
+    item = {k: v for k, v in (entry or {}).items() if k != "type"}
+    if rename_type and entry.get("type"):
+        item[rename_type] = entry.get("type")
+    delta = {"type": delta_type, **item}
+    if chapter is not None:
+        delta["chapter"] = chapter
+    return delta
+
+
 # 多层世界观题材：需要现实层/异能层/神明层
 _MULTI_LAYER_GENRES = {"都市异能", "规则怪谈", "悬疑脑洞", "无限流", "科幻未来"}
 
@@ -1259,7 +1323,10 @@ async def generate_volumes(request: Request, req: GenerateVolumesRequest):
                 summary=_clean_text(o.get("summary", "")),
                 act=_clean_text(o.get("act", "")),
                 strand="",
+                key_events=json.dumps(o.get("key_events") or [], ensure_ascii=False),
             )
+            # P0#7：卷纲伏笔计划落库（ForeshadowImplant）
+            _save_foreshadow_plans(repo, o.get("foreshadow_plan") or [])
             existing_titles.add(title)
             items.append({
                 "id": created.id, "level": "volume", "parent_id": None,
@@ -1490,6 +1557,8 @@ JSON：{{"blueprint": [{{"order": 1, "act": "开端", "title_hint": "", "plot_hi
                     summary=_clean_text(o.get("summary", "")),
                     act=_clean_text(o.get("act", "")),
                     strand=_clean_text(o.get("strand", "quest")),
+                    key_characters=json.dumps(o.get("key_characters") or [], ensure_ascii=False),
+                    emotional_arc=json.dumps(o.get("emotional_arc") or [], ensure_ascii=False),
                 )
                 existing_titles.add(title)
                 all_items.append({
@@ -2134,8 +2203,23 @@ async def enrich_outline(request: Request, req: EnrichOutlineRequest):
                     existing_cc["theme_progression"] = result["theme_progression"]
                 update_kwargs["character_constraints"] = json.dumps(existing_cc, ensure_ascii=False)
 
+        # B4：扩写不再只更新 summary——卷纲 key_events、细纲 key_characters/emotional_arc 一并落库
+        if "key_events" in result and outline.level == "volume":
+            update_kwargs["key_events"] = json.dumps(result["key_events"], ensure_ascii=False)
+        if "key_characters" in result and outline.level == "arc":
+            update_kwargs["key_characters"] = json.dumps(result["key_characters"], ensure_ascii=False)
+        if "emotional_arc" in result and outline.level == "arc":
+            update_kwargs["emotional_arc"] = json.dumps(result["emotional_arc"], ensure_ascii=False)
+
         if update_kwargs:
             repo.update_outline(outline.id, **update_kwargs)
+
+        # P0#7：章纲 new_foreshadows / 卷纲 foreshadow_plan 落库到 ForeshadowImplant
+        _save_foreshadow_plans(
+            repo,
+            result.get("new_foreshadows") or result.get("foreshadow_plan") or [],
+            default_chapter=outline.order if outline.level == "chapter" else 0,
+        )
 
         updated = repo.get_outline(outline.id)
         return {
@@ -2366,6 +2450,7 @@ async def review_chapter(req: ChapterReviewRequest):
             "continuity": "检查物品/功法/势力状态是否承接前文；角色位置/伤势/关系是否连续；未回收伏笔是否被遗忘。",
             "character": "检查角色行为是否符合人设、动机、情绪、信息边界；是否有 OOC；对话风格是否一致。",
             "logic": "检查剧情因果、爽点逻辑、决策合理性、是否机械降神、是否有未解释的便利。",
+            "stakes": "检查高潮赌注递进是否合理：本章/本卷高潮赌注等级（个人→团队→体系→区域→世界存亡）相较上一卷/上一高潮是否跳级超过一级或倒退；跳级过大或倒退则 blocking=true, severity=critical。",
             "constraints": "检查章节是否违反【全书铁律】/【立意禁忌】/【角色绝对禁令】/【世界设定】。任一违反则 blocking=true, severity=critical。",
         }
         dimension_text = "\n".join([f"{k}: {v}" for k, v in dimension_rules.items()])
@@ -2431,6 +2516,152 @@ async def review_chapter(req: ChapterReviewRequest):
         return result
     finally:
         db.close()
+
+
+async def chapter_postprocess(
+    repo,
+    cfg,
+    chapter: int,
+    content: str,
+    title: str = "",
+    client: LLMClient | None = None,
+    *,
+    write_summary: bool = False,
+    write_char_state: bool = False,
+    index: bool = True,
+) -> dict:
+    """统一「章节后处理」钩子（阶段0核心，计划书 P0#1/#2 + P1#8/#10/#11）。
+
+    正文落库后自动补齐数据闭环：
+      1. Data Agent 提取事实（复用 commit 的提取/自修复逻辑）
+      2. 出场记录 EntityAppearance：角色/势力/怪物（幂等，先删本章再写）
+      3. 关系落库：角色关系表 + 关系变更表（applier 内已补写，不再只写事件流）
+      4. 新实体/世界观/伏笔更新/事件 → DeltaApplier 落库
+      5. （可选）章节摘要 / 角色状态（summarize_chapter 已写时传 False 防双写）
+      6. （可选）Archival 索引供语义检索
+
+    幂等性：出场记录按章重写；新实体/世界观按名字去重；伏笔状态重复置位无害。
+    """
+    from novel_agent.memory.archival import ArchivalMemory
+    from novel_agent.protocol.applier import DeltaApplier
+
+    own_client = client is None
+    if own_client:
+        client = LLMClient(cfg.get_agent_llm("summarizer"))
+    try:
+        # ---- 1. Data Agent 提取 ----
+        prompt = (
+            "从以下正文中提取所有结构化事实，只输出 JSON，不要解释：\n"
+            "{\n"
+            ' "summary": "100字内核心剧情摘要",\n'
+            ' "state_deltas": [{"entity": "角色", "entity_id": "名字", "field": "current_location|current_emotion|known_info", "old_value": "", "new_value": ""}],\n'
+            ' "relationships": [{"character_a": "A", "character_b": "B", "relation": "师徒", "strength": 5, "description": "变化说明"}],\n'
+            ' "events": [{"event_type": "剧情|战斗|相遇|离别|其他", "subject": "谁", "description": "发生了什么"}],\n'
+            ' "foreshadow_updates": [{"foreshadow_id": "伏笔名", "status": "planted|developing|resolved"}],\n'
+            ' "new_characters": [{"name": "", "role": "配角", "appearance": "", "personality": "", "motivation": "", "current_location": ""}],\n'
+            ' "new_factions": [{"name": "", "type": "其他", "description": "", "goals": ""}],\n'
+            ' "new_monsters": [{"name": "", "species": "", "rank": "普通", "description": "", "habitats": ""}],\n'
+            ' "new_world_settings": [{"category": "力量体系|地理|势力|文化|其他", "title": "", "content": ""}]\n'
+            "}\n\n"
+            f"【正文】\n{content}\n\n只输出 JSON。"
+        )
+        result = await _generate_json_with_repair(
+            client, prompt,
+            system="你是小说事实提取器（Data Agent），从正文中提取所有结构化事实：出场角色、新角色、新组织、新怪物、新世界观设定、状态变更、关系、事件、伏笔更新。只输出 JSON。",
+        )
+        if not isinstance(result, dict):
+            return {"chapter": chapter, "ok": False, "error": "LLM 返回无法解析为有效 JSON"}
+
+        state_deltas = result.get("state_deltas") or []
+        relationships = result.get("relationships") or []
+        events = result.get("events") or []
+        fore_updates = result.get("foreshadow_updates") or []
+        new_characters = result.get("new_characters") or []
+        new_factions = result.get("new_factions") or []
+        new_monsters = result.get("new_monsters") or []
+        new_world_settings = result.get("new_world_settings") or []
+
+        applier = DeltaApplier(repo, archival=None)
+
+        # ---- 2. 出场记录（P0#1：全链路自动写入） ----
+        appearances = []
+        names: set[str] = set()
+        for s in state_deltas:
+            if s.get("entity_id") and str(s.get("entity_type") or s.get("entity") or "").strip() in ("角色", "character"):
+                names.add(str(s["entity_id"]).strip())
+        for c in new_characters:
+            if c.get("name"):
+                names.add(str(c["name"]).strip())
+        for n in sorted(names):
+            appearances.append({"entity_type": "character", "entity_id": n, "chapter": chapter})
+        for f in new_factions:
+            if f.get("name"):
+                appearances.append({"entity_type": "faction", "entity_id": str(f["name"]).strip(), "chapter": chapter})
+        for m in new_monsters:
+            if m.get("name"):
+                appearances.append({"entity_type": "monster", "entity_id": str(m["name"]).strip(), "chapter": chapter})
+        if appearances:
+            repo.record_appearances(chapter, appearances)
+
+        # ---- 3/4. 关系/新实体/事件/伏笔/世界观 → DeltaApplier 落库 ----
+        delta_list = []
+        if write_char_state:
+            delta_list += [{"type": "state_change", **s, "chapter": chapter} for s in state_deltas]
+        delta_list += [{"type": "relationship_update", **r, "chapter": chapter} for r in relationships]
+        delta_list += [
+            {"type": "event", "event_type": e.get("event_type", "剧情"), "subject": e.get("subject", ""),
+             "payload": e.get("payload") or {"description": e.get("description", "")}, "chapter": chapter}
+            for e in events
+        ]
+        delta_list += [
+            {"type": "foreshadow_update", "foreshadow_id": f.get("foreshadow_id", ""),
+             "status": f.get("status", "planted"), "chapter": chapter}
+            for f in fore_updates
+        ]
+        delta_list += [_build_create_delta(c, chapter, "character_create") for c in new_characters]
+        delta_list += [_build_create_delta(f, chapter, "faction_create", rename_type="faction_type") for f in new_factions]
+        delta_list += [_build_create_delta(m, chapter, "monster_create") for m in new_monsters]
+        delta_list += [_build_create_delta(w, chapter, "world_setting_create") for w in new_world_settings]
+        if delta_list:
+            applier.apply_deltas(delta_list, chapter=chapter)
+
+        # ---- 5. 摘要（可选） ----
+        if write_summary:
+            summary_text = _clean_text(result.get("summary", "")) or content[:200]
+            repo.create_or_update_chapter_summary(
+                chapter=chapter, title=title or f"第{chapter}章",
+                core_events=summary_text,
+                characters_present=", ".join(sorted(names)),
+                word_count=count_chinese_chars(content),
+            )
+
+        # ---- 6. 索引（可选） ----
+        archived = False
+        if index:
+            try:
+                archival = ArchivalMemory(cfg, project_id=repo.project_id)
+                archival.index_chapter(chapter, title or f"第{chapter}章", content)
+                archived = True
+            except Exception as e:
+                logger.warning("chapter_postprocess: archival 索引失败: %s", e)
+
+        return {
+            "chapter": chapter, "ok": True, "archived": archived,
+            "appearances": len(appearances),
+            "relationships": len(relationships),
+            "events": len(events),
+            "foreshadow_updates": len(fore_updates),
+            "new_characters": len(new_characters),
+            "new_factions": len(new_factions),
+            "new_monsters": len(new_monsters),
+            "new_world_settings": len(new_world_settings),
+        }
+    finally:
+        if own_client and client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
 
 
 @router.post("/chapter/commit")
@@ -2515,10 +2746,10 @@ async def commit_chapter(request: Request, req: ChapterCommitRequest):
             }
             for f in fore_updates
         ]
-        delta_list += [{"type": "character_create", **c, "chapter": req.chapter} for c in new_characters]
-        delta_list += [{"type": "faction_create", **f, "chapter": req.chapter} for f in new_factions]
-        delta_list += [{"type": "monster_create", **m, "chapter": req.chapter} for m in new_monsters]
-        delta_list += [{"type": "world_setting_create", **w, "chapter": req.chapter} for w in new_world_settings]
+        delta_list += [_build_create_delta(c, req.chapter, "character_create") for c in new_characters]
+        delta_list += [_build_create_delta(f, req.chapter, "faction_create", rename_type="faction_type") for f in new_factions]
+        delta_list += [_build_create_delta(m, req.chapter, "monster_create") for m in new_monsters]
+        delta_list += [_build_create_delta(w, req.chapter, "world_setting_create") for w in new_world_settings]
         delta_list.append(
             {
                 "type": "chapter_commit",
@@ -2602,6 +2833,35 @@ async def commit_chapter(request: Request, req: ChapterCommitRequest):
         with repo.unit_of_work():
             applier.apply_deltas(delta_list, chapter=req.chapter)
 
+            # P0#1：自动写出场记录（幂等，先删本章再写）
+            appearances = []
+            pp_names: set[str] = set()
+            for s in deltas:
+                if s.get("entity_id") and str(s.get("entity_type") or s.get("entity") or "").strip() in ("角色", "character"):
+                    pp_names.add(str(s["entity_id"]).strip())
+            for c in new_characters:
+                if c.get("name"):
+                    pp_names.add(str(c["name"]).strip())
+            for n in sorted(pp_names):
+                appearances.append({"entity_type": "character", "entity_id": n, "chapter": req.chapter})
+            for f in new_factions:
+                if f.get("name"):
+                    appearances.append({"entity_type": "faction", "entity_id": str(f["name"]).strip(), "chapter": req.chapter})
+            for m in new_monsters:
+                if m.get("name"):
+                    appearances.append({"entity_type": "monster", "entity_id": str(m["name"]).strip(), "chapter": req.chapter})
+            if appearances:
+                repo.record_appearances(req.chapter, appearances)
+
+            # 断链③：提交后叙事线轻扫（写章即更新线进度/断线预警，LLM 深度扫描仍手动）
+            try:
+                from novel_agent.bible.models import Storyline
+                from novel_agent.storyline.scanner import light_scan_chapter
+                _lines = db.query(Storyline).filter_by(project_id=req.project_id).all()
+                light_scan_chapter(db, req.project_id, req.chapter, text or "", _lines)
+            except Exception as _e:
+                logger.warning("提交第%d章后叙事线轻扫失败: %s", req.chapter, _e)
+
             # 生成/更新章节摘要
             repo.create_or_update_chapter_summary(
                 chapter=req.chapter,
@@ -2611,6 +2871,16 @@ async def commit_chapter(request: Request, req: ChapterCommitRequest):
                 foreshadow_dynamics=", ".join([f"{fu.get('foreshadow_id', '')}->{fu.get('status', '')}" for fu in fore_updates]),
                 word_count=count_chinese_chars(text),
             )
+
+            # 地图联动：本章正文出现的地点标记为"第 N 章起解锁"（只保留最早解锁章节）。
+            # 世界地图据此显示剧情解锁进度：第一章到过的区/街道 → 地图上点亮。
+            from novel_agent.bible.models import Location
+            if text:
+                locs = db.query(Location).filter(Location.project_id == req.project_id).all()
+                for loc in locs:
+                    if loc.name and loc.name in text:
+                        if not loc.unlocked_chapter or req.chapter < loc.unlocked_chapter:
+                            loc.unlocked_chapter = req.chapter
 
         # 提交成功后索引到 ArchivalMemory，供后续语义检索
         try:
@@ -5122,6 +5392,27 @@ async def _interactive_summarize_and_commit(
             archival.index_chapter(chapter, title, content)
         except Exception as e:
             logger.warning("interactive commit: archival 索引失败: %s", e)
+
+        # 阶段0：统一章节后处理——补出场记录/新实体/关系/事件/世界观/伏笔更新（P0#1/#2、P1#8/#10/#11）
+        # summarize_chapter 已写摘要与角色状态，这里传 False 防双写；archival 已索引，index=False
+        pp_stats: dict = {}
+        try:
+            pp_client = LLMClient(cfg.get_agent_llm("summarizer"))
+            try:
+                pp = await chapter_postprocess(
+                    repo, cfg, chapter, content, title,
+                    client=pp_client, write_summary=False, write_char_state=False, index=False,
+                )
+                if pp.get("ok"):
+                    pp_stats = {k: pp.get(k, 0) for k in (
+                        "appearances", "relationships", "events", "foreshadow_updates",
+                        "new_characters", "new_factions", "new_monsters", "new_world_settings",
+                    )}
+            finally:
+                await pp_client.close()
+        except Exception as e:
+            logger.warning("interactive commit: 章节后处理失败（不影响提交）: %s", e)
+
         return {
             "status": result.get("status", "completed"),
             "summary": summary_text,
@@ -5133,6 +5424,7 @@ async def _interactive_summarize_and_commit(
                 "chapter_hook": cs.chapter_hook if cs else "",
                 "word_count": cs.word_count if cs else 0,
             } if cs else {},
+            "postprocess": pp_stats,
         }
     finally:
         await summarizer_client.close()
@@ -5853,6 +6145,8 @@ JSON：{{"blueprint": [{{"order": 1, "act": "开端", "title_hint": "", "plot_hi
                         summary=_clean_text(o.get("summary", "")),
                         act=_clean_text(o.get("act", "")),
                         strand=_clean_text(o.get("strand", "quest")),
+                        key_characters=json.dumps(o.get("key_characters") or [], ensure_ascii=False),
+                        emotional_arc=json.dumps(o.get("emotional_arc") or [], ensure_ascii=False),
                     )
                     existing_titles.add(title)
                     item_data = {
@@ -5999,7 +6293,10 @@ async def generate_volumes_stream(request: Request, project_id: int,
                     summary=_clean_text(o.get("summary", "")),
                     act=_clean_text(o.get("act", "")),
                     strand="",
+                    key_events=json.dumps(o.get("key_events") or [], ensure_ascii=False),
                 )
+                # B2：SSE 流式卷纲的伏笔计划也要落库（POST 版已落库）
+                _save_foreshadow_plans(repo, o.get("foreshadow_plan") or [])
                 existing_titles.add(title)
                 item_data = {
                     "id": created.id, "level": "volume", "parent_id": None,

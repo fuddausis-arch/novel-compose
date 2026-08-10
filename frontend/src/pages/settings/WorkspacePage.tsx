@@ -1,8 +1,14 @@
-/** 全局设置 · 工作区页：左侧文件树 + 右侧文件内容查看 */
+/** 全局设置 · 工作区页：左侧文件树 + 右侧文件内容查看 + 会话树/附件/分支 */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { File, FolderClosed, FolderOpen, Loader2 } from "lucide-react";
+import { File, FolderClosed, FolderOpen, GitBranch, Loader2, MessageSquare, Paperclip } from "lucide-react";
+import { api } from "@/api";
+import { useToast } from "@/hooks/useToast";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Select } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 interface FileNode {
@@ -15,6 +21,20 @@ interface FileNode {
 interface FileContent {
   path: string;
   content: string;
+}
+
+interface SessionTreeNode {
+  id: string;
+  title: string;
+  session_type?: string;
+  children?: SessionTreeNode[];
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -87,6 +107,176 @@ function TreeNode({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * 会话与附件管理：
+ * - 会话树 GET /api/workspace/sessions/{project_id}/tree
+ * - 附件列表 GET /api/workspace/attachments/{session_id}
+ * - 会话分支 POST /api/workspace/sessions/{session_id}/branch
+ */
+function SessionWorkspaceSection() {
+  const { showSuccess, showError } = useToast();
+  const [projects, setProjects] = useState<{ id: number; title: string }[]>([]);
+  const [projectId, setProjectId] = useState<number>(0);
+  const [sessions, setSessions] = useState<SessionTreeNode[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [attachments, setAttachments] = useState<Record<string, { filename: string; size: number }[]>>({});
+  const [branchTitles, setBranchTitles] = useState<Record<string, string>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [attachingId, setAttachingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listProjects()
+      .then((list) => {
+        setProjects(list);
+        if (list.length > 0) setProjectId(list[0].id);
+      })
+      .catch(() => { /* 忽略 */ });
+  }, []);
+
+  const loadTree = useCallback(async () => {
+    if (!projectId) {
+      setSessions([]);
+      return;
+    }
+    setLoading(true);
+    try {
+      const data = await api.getSessionTree(projectId);
+      setSessions(data.sessions || []);
+    } catch (e: any) {
+      showError("加载会话树失败：" + e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId, showError]);
+
+  useEffect(() => {
+    void loadTree();
+  }, [loadTree]);
+
+  const loadAttachments = async (sessionId: string) => {
+    setAttachingId(sessionId);
+    try {
+      const data = await api.listWorkspaceAttachments(projectId, sessionId);
+      setAttachments((prev) => ({ ...prev, [sessionId]: data.attachments || [] }));
+    } catch (e: any) {
+      showError("加载附件失败：" + e.message);
+    } finally {
+      setAttachingId(null);
+    }
+  };
+
+  const handleBranch = async (sessionId: string) => {
+    setBusyId(sessionId);
+    try {
+      const title = (branchTitles[sessionId] || "").trim();
+      const r = await api.branchSession(sessionId, projectId, title);
+      showSuccess(`已创建分支会话：${r.title}`);
+      setBranchTitles((prev) => ({ ...prev, [sessionId]: "" }));
+      await loadTree();
+    } catch (e: any) {
+      showError("创建分支失败：" + e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const renderSession = (s: SessionTreeNode, depth: number) => {
+    const attachList = attachments[s.id];
+    const attachLoaded = attachList !== undefined;
+    return (
+      <div key={s.id} style={{ paddingLeft: depth * 16 }}>
+        <div className="rounded-lg border border-border bg-surface-elevated p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted" />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{s.title || s.id}</span>
+            {s.session_type && <Badge variant="default">{s.session_type}</Badge>}
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={attachingId === s.id}
+              onClick={() => void loadAttachments(s.id)}
+              title="查看附件列表"
+            >
+              <Paperclip className="h-3.5 w-3.5 mr-1" />
+              {attachLoaded ? `附件（${attachList.length}）` : "附件"}
+            </Button>
+          </div>
+
+          {/* 附件列表 */}
+          {attachLoaded && (
+            <div className="mt-2 space-y-1 rounded-lg bg-surface/50 p-2">
+              {attachList.length === 0 ? (
+                <div className="text-xs text-muted">暂无附件</div>
+              ) : (
+                attachList.map((a) => (
+                  <div key={a.filename} className="flex items-center gap-2 text-xs text-muted">
+                    <File className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{a.filename}</span>
+                    <span className="ml-auto shrink-0">{formatBytes(a.size)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* 分支表单 */}
+          <div className="mt-2 flex items-center gap-2">
+            <Input
+              className="h-8 text-xs"
+              placeholder="分支标题（可选）"
+              value={branchTitles[s.id] || ""}
+              onChange={(e) => setBranchTitles((prev) => ({ ...prev, [s.id]: e.target.value }))}
+            />
+            <Button size="sm" variant="outline" disabled={busyId === s.id} onClick={() => void handleBranch(s.id)}>
+              <GitBranch className="h-3.5 w-3.5 mr-1" />
+              {busyId === s.id ? "创建中…" : "创建分支"}
+            </Button>
+          </div>
+        </div>
+        {s.children && s.children.length > 0 && (
+          <div className="mt-2 space-y-2">{s.children.map((c) => renderSession(c, depth + 1))}</div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <MessageSquare className="h-4 w-4 text-primary" />
+          <h3 className="text-sm font-semibold text-foreground">会话与附件</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted">项目</span>
+          <Select
+            className="w-52"
+            value={String(projectId || "")}
+            onChange={(e) => setProjectId(Number(e.target.value) || 0)}
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.title}</option>
+            ))}
+          </Select>
+        </div>
+      </div>
+      <p className="mt-1 text-xs text-muted">查看会话树、各会话附件，并可基于任一会话创建分支讨论。</p>
+
+      <div className="mt-3">
+        {loading ? (
+          <div className="flex items-center gap-2 py-8 text-sm text-muted">
+            <Loader2 className="h-4 w-4 animate-spin" /> 加载会话树…
+          </div>
+        ) : sessions.length === 0 ? (
+          <EmptyState icon={<MessageSquare className="h-8 w-8 text-muted" />} title="暂无会话" description="该项目还没有会话记录" />
+        ) : (
+          <div className="space-y-2">{sessions.map((s) => renderSession(s, 0))}</div>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -203,6 +393,7 @@ export default function WorkspacePage() {
       <div className="mx-auto max-w-6xl space-y-6 p-6">
         {header}
         {body}
+        <SessionWorkspaceSection />
       </div>
     </div>
   );
