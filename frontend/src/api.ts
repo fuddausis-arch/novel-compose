@@ -623,6 +623,54 @@ export const api = {
     return controller;
   },
 
+  /** LLM 识别创建叙事线（SSE）：从大纲识别主线/支线并自动建线，返回 AbortController 可中断 */
+  llmCreateStorylines: (
+    projectId: number,
+    onCollectDone: (d: { chars: number }) => void,
+    onSuggestions: (d: { storylines: any[] }) => void,
+    onDone: (d: { created_lines: number; skipped_lines: number; created_nodes: number }) => void,
+    onError: (msg: string) => void,
+  ): AbortController => {
+    const controller = new AbortController();
+    fetch("/api/storylines/" + projectId + "/storylines/llm-create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const t = await res.text().catch(() => "");
+          throw new Error(extractErrorMessage(res.status, t));
+        }
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) return;
+        let buffer = "", currentEvent = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) currentEvent = line.slice(7).trim();
+            else if (line.startsWith("data: ")) {
+              try {
+                const d = JSON.parse(line.slice(6));
+                if (currentEvent === "collect_done") onCollectDone(d);
+                else if (currentEvent === "suggestions") onSuggestions(d);
+                else if (currentEvent === "done") onDone(d);
+                else if (currentEvent === "error") onError(d.message || "识别失败");
+              } catch { /* ignore */ }
+            }
+          }
+        }
+      })
+      .catch((e: any) => { if (e?.name !== "AbortError") onError(e?.message || "识别失败"); });
+    return controller;
+  },
+
   deleteChapter: (projectId: number, chapter: number) => request<void>(`/api/chapters/${chapter}?project_id=${projectId}`, { method: "DELETE" }),
   exportTxt: (projectId: number) => `${API_BASE}/api/chapters/export/txt?project_id=${projectId}`,
   exportBible: (projectId: number) =>

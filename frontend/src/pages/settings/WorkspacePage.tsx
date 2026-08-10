@@ -351,9 +351,9 @@ export default function WorkspacePage() {
     );
   } else {
     body = (
-      <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
-        <Card className="p-2">
-          <div className="max-h-[60vh] overflow-y-auto">
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[300px_1fr]">
+        <Card className="p-2 lg:h-full">
+          <div className="max-h-[60vh] overflow-y-auto lg:max-h-none lg:h-full">
             {tree.map((node) => (
               <TreeNode
                 key={node.path}
@@ -365,7 +365,7 @@ export default function WorkspacePage() {
             ))}
           </div>
         </Card>
-        <Card className="p-4">
+        <Card className="p-4 lg:h-full lg:overflow-y-auto">
           {!selected ? (
             <div className="flex min-h-[320px] items-center justify-center text-sm text-muted">
               选择左侧文件查看内容
@@ -378,7 +378,7 @@ export default function WorkspacePage() {
           ) : (
             <div className="space-y-2">
               <div className="font-mono text-xs text-muted">{selected.path}</div>
-              <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-background p-3 text-xs text-muted">
+              <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-background p-3 text-xs text-muted lg:max-h-none">
                 {content ?? "（空文件）"}
               </pre>
             </div>
@@ -389,11 +389,15 @@ export default function WorkspacePage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-6xl space-y-6 p-6">
+    <div className="flex h-full flex-col overflow-y-auto lg:overflow-hidden">
+      <div className="mx-auto w-full max-w-6xl shrink-0 space-y-6 p-6 lg:pb-3">
         {header}
+      </div>
+      <div className="mx-auto flex w-full max-w-6xl min-h-0 flex-1 flex-col gap-6 px-6 pb-6">
         {body}
-        <SessionWorkspaceSection />
+        <div className="shrink-0 lg:max-h-[45vh] lg:overflow-y-auto">
+          <SessionWorkspaceSection />
+        </div>
       </div>
     </div>
   );

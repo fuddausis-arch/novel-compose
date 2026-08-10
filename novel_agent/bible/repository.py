@@ -1076,6 +1076,42 @@ class BibleRepository:
             q = q.limit(limit)
         return q.all()
 
+    # ---- 设定提炼日志（白盒溯源）----
+    def record_memory_refinement(self, chapter: int, entity_type: str, entity_id: str,
+                                 field: str, new_value: str, source_preview: str = "",
+                                 method: str = "refine") -> "MemoryRefinement":
+        """记录一次设定更新（来源溯源：哪一章把什么写回了设定库）。"""
+        from novel_agent.bible.models import MemoryRefinement
+        rec = MemoryRefinement(
+            project_id=self.project_id, chapter=chapter,
+            entity_type=entity_type, entity_id=entity_id,
+            field=field, new_value=new_value,
+            source_preview=source_preview or "", method=method,
+        )
+        self.db.add(rec)
+        self._commit_or_flush()
+        self.db.refresh(rec)
+        return rec
+
+    def list_memory_refinements(self, entity_type: str | None = None,
+                                entity_id: str | None = None,
+                                chapter: int | None = None,
+                                limit: int = 100) -> list:
+        """查询设定更新日志，可按实体/章节过滤（新→旧）。"""
+        from novel_agent.bible.models import MemoryRefinement
+        q = self.db.query(MemoryRefinement).filter(
+            MemoryRefinement.project_id == self.project_id)
+        if entity_type:
+            q = q.filter(MemoryRefinement.entity_type == entity_type)
+        if entity_id:
+            q = q.filter(MemoryRefinement.entity_id == entity_id)
+        if chapter:
+            q = q.filter(MemoryRefinement.chapter == chapter)
+        q = q.order_by(MemoryRefinement.id.desc())
+        if limit:
+            q = q.limit(limit)
+        return q.all()
+
     # ---- 关系变化 ----
     def create_relationship_change(self, chapter: int, entity_type: str, source_id: str,
                                    target_id: str, field: str, old_value: str,

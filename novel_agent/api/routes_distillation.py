@@ -55,8 +55,9 @@ class DistillRequest(BaseModel):
     """蒸馏请求。"""
     rounds: int = 7  # 每片段的蒸馏轮数（维度数），兼容旧调用；dimensions 存在时以 dimensions 为准
     levels: int = 1  # 蒸馏级数：1=一次蒸馏（碎片）；2=二次蒸馏（浓缩提炼）；3=三次蒸馏（再浓缩）
-    dimensions: list[int] | None = None  # 要蒸馏的维度编号列表（1-12，见 ROUND_DIMENSIONS）；None=全部维度
+    dimensions: list[int] | None = None  # 要蒸馏的维度编号列表（1-15，见 ROUND_DIMENSIONS）；None=全部维度
     retry_failed: bool = False  # 补蒸馏模式：只重跑失败的片段/轮次，跳过已成功的
+    skip_done_rounds: bool = False  # 隔离模式：跳过已成功完成的维度（同书多次蒸馏不同维度时不重复、不覆盖）
     agent_role: str = "auditor"  # 蒸馏是分析型任务，用低温度角色
     # 模型设置（可选）：不填则跟随 config.yaml 的 agent_role 配置
     provider: str | None = None          # 供应商名（从 model_providers.json 读真实 base_url/api_key）
@@ -333,7 +334,8 @@ async def distill_work(work_id: int, req: DistillRequest):
                 engine = DistillationEngine(get_store())
                 await engine.distill_work(
                     work_id, client, dimensions=req.dimensions, levels=req.levels,
-                    retry_failed=req.retry_failed, on_event=on_event,
+                    retry_failed=req.retry_failed, skip_done_rounds=req.skip_done_rounds,
+                    on_event=on_event,
                     is_cancelled=lambda: work_id in _CANCELLED_WORKS,
                 )
             except Exception as e:

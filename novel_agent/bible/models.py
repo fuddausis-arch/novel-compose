@@ -366,6 +366,26 @@ class StateChange(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class MemoryRefinement(Base):
+    """设定提炼日志（白盒溯源）：记录"哪一章/哪个提炼器把什么信息写回了设定库"。
+
+    来源溯源：角色卡/世界观/故事线的每次自动更新都留一条记录，
+    前端可按实体查看"这条设定是哪章定的"，设定冲突时可下钻原文。
+    """
+    __tablename__ = "memory_refinements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter = Column(Integer, nullable=False, index=True)     # 来源章节
+    entity_type = Column(String(50), default="")              # character / worldsetting / storyline / plot_debt
+    entity_id = Column(String(200), default="", index=True)   # 角色名 / 设定标题 / 线名
+    field = Column(String(100), default="")                   # 更新的字段，如 notes / location / summary
+    new_value = Column(Text, default="")
+    source_preview = Column(Text, default="")                 # 正文/摘要中对应的原句（溯源用）
+    method = Column(String(50), default="refine")             # refine=提炼器自动 / manual=人工
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ChapterCommit(Base):
     """章节提交记录：标记本章已提取事实并落库。"""
     __tablename__ = "chapter_commits"

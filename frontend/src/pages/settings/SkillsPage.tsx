@@ -1,6 +1,6 @@
 /** 全局设置 · Skills 管理页：列表 + 详情，支持创建/编辑/删除/启停/自动注入/工作流专属 */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { BookOpen, FileText, Loader2, Pencil, Plus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { BookOpen, FileText, GitMerge, Loader2, Pencil, Plus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -113,11 +113,10 @@ function SkillEditorDialog({
               id="skill-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              disabled={isEdit}
-              placeholder="仅允许字母数字下划线横线，如 my_skill-1"
+              placeholder="支持中文，如：我的融合总纲"
               className="mt-1 font-mono"
             />
-            {isEdit && <p className="mt-1 text-xs text-muted">名称创建后不可修改</p>}
+            {isEdit && <p className="mt-1 text-xs text-muted">改名会同步更新 Skill 文件名</p>}
           </div>
           <div>
             <Label htmlFor="skill-desc">描述</Label>
@@ -365,6 +364,177 @@ function BookImportDialog({
   );
 }
 
+/** 多选 Skill 融合弹窗：POST /api/distillation/fuse（SSE 进度，可中断） */
+function FusionDialog({
+  open,
+  names,
+  onClose,
+  onDone,
+}: {
+  open: boolean;
+  names: string[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { showError, showSuccess } = useToast();
+  const [fusionName, setFusionName] = useState("");
+  const [description, setDescription] = useState("");
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<string>("");
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setFusionName(`Skill融合（${names.length} 个）`);
+      setDescription("");
+      setRunning(false);
+      setProgress("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const stopFusion = () => {
+    abortRef.current?.abort();
+    setRunning(false);
+    setProgress("已中断");
+  };
+
+  const startFusion = async () => {
+    if (!fusionName.trim()) return;
+    setRunning(true);
+    setProgress("准备中…");
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const resp = await fetch("/api/distillation/fuse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: fusionName.trim(),
+          description,
+          skill_ids: [],
+          skill_files: names,
+        }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        let msg = `融合请求失败（HTTP ${resp.status}）`;
+        try { const j = JSON.parse(text); if (j.detail) msg = String(j.detail); } catch {}
+        throw new Error(msg);
+      }
+      const reader = resp.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let done = false;
+      while (reader && !done) {
+        const { done: rDone, value } = await reader.read();
+        if (rDone) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const dataStr = line.slice(5).trim();
+          if (!dataStr) continue;
+          let data: any;
+          try { data = JSON.parse(dataStr); } catch { continue; }
+          const t = data.type || "";
+          if (t === "fuse_start") {
+            setProgress(`共 ${data.skill_count} 个 Skill，开始融合…`);
+          } else if (t === "fuse_batch_start") {
+            setProgress(`正在提炼第 ${data.batch}/${data.total} 批…`);
+          } else if (t === "fuse_batch_done") {
+            setProgress(`第 ${data.batch}/${data.total} 批完成`);
+          } else if (t === "fuse_done") {
+            done = true;
+            setProgress("融合完成");
+            setRunning(false);
+            showSuccess(`融合完成！已生成 ${data.fusion?.skill_file || "新 Skill"}`);
+            onClose();
+            onDone();
+            return;
+          } else if (t === "error") {
+            throw new Error(data.error || "融合失败");
+          }
+        }
+      }
+      setRunning(false);
+    } catch (e) {
+      if ((e as Error).name === "AbortError") return;
+      showError(e instanceof Error ? e.message : "融合失败");
+      setRunning(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && !running && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <GitMerge className="h-5 w-5 text-primary" />
+            融合所选 Skill（{names.length} 个）
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <p className="text-sm text-muted">
+            将所选 Skill 交给 LLM 提炼浓缩为一份精炼总纲（非简单拼接）。选中的 Skill：
+          </p>
+          <div className="max-h-32 overflow-y-auto rounded-lg border border-border bg-background p-2 text-xs text-muted">
+            {names.map((n) => (
+              <div key={n} className="truncate py-0.5">{n}</div>
+            ))}
+          </div>
+          <div>
+            <Label htmlFor="fusion-name">融合方案名称</Label>
+            <Input
+              id="fusion-name"
+              value={fusionName}
+              onChange={(e) => setFusionName(e.target.value)}
+              className="mt-1"
+              placeholder="如：我的风格总纲"
+            />
+          </div>
+          <div>
+            <Label htmlFor="fusion-desc">描述（可选）</Label>
+            <Input
+              id="fusion-desc"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="mt-1"
+              placeholder="简短说明这份总纲的用途"
+            />
+          </div>
+          {running && (
+            <div className="rounded-lg border border-border bg-background p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted">{progress}</span>
+                <span className="flex items-center gap-1 text-primary">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> 提炼中
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="mt-6 flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={running ? stopFusion : onClose} disabled={false}>
+            {running ? "中断" : "取消"}
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => void startFusion()}
+            disabled={!fusionName.trim() || running}
+          >
+            {running ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <GitMerge className="mr-1 h-4 w-4" />}
+            {running ? "融合中..." : "开始融合"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function SkillsPage() {
   const { showError, showSuccess } = useToast();
   const { confirm: confirmDelete, dialog: deleteDialog } = useConfirmDialog();
@@ -382,6 +552,19 @@ export default function SkillsPage() {
   const [editorInitial, setEditorInitial] = useState<SkillDetail | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
   const [bookImportOpen, setBookImportOpen] = useState(false);
+
+  // 多选融合状态
+  const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
+  const [fuseOpen, setFuseOpen] = useState(false);
+
+  const toggleSelect = (name: string) => {
+    setSelectedNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -492,10 +675,11 @@ export default function SkillsPage() {
         references: [],
       };
       if (isEdit) {
-        // 编辑：PUT（name 不变，只改其他字段）
-        await fetchJson(`/api/skills/${encodeURIComponent(data.name)}`, {
+        // 编辑：PUT（支持改名，name 变化时后端同步文件名 + 蒸馏 DB）
+        await fetchJson(`/api/skills/${encodeURIComponent(editorInitial.name)}`, {
           method: "PUT",
           body: JSON.stringify({
+            name: data.name,
             description: data.description,
             enabled: data.enabled,
             sections: skillData.sections,
@@ -504,8 +688,12 @@ export default function SkillsPage() {
           }),
         });
         showSuccess("已保存");
-        // 刷新详情
-        if (selectedId === data.name) void loadDetail(data.name);
+        // 刷新详情（改名后选中新名称）
+        if (selectedId === data.name || selectedId === editorInitial.name) {
+          setSelectedId(data.name);
+        } else {
+          void loadDetail(data.name);
+        }
       } else {
         // 创建：POST
         await fetchJson("/api/skills", {
@@ -521,6 +709,38 @@ export default function SkillsPage() {
       showError(e instanceof Error ? e.message : "保存失败");
     } finally {
       setEditorSaving(false);
+    }
+  };
+
+  // ---- 批量删除 ----
+  const handleBatchDelete = async () => {
+    const names = Array.from(selectedNames);
+    if (names.length === 0) return;
+    const ok = await confirmDelete({
+      title: "批量删除 Skill",
+      description: `确定要删除选中的 ${names.length} 个 Skill 吗？此操作不可撤销。`,
+      confirmText: "确认删除",
+      cancelText: "取消",
+      variant: "danger",
+    });
+    if (!ok) return;
+    try {
+      const res = await fetchJson<{ deleted: string[]; failed: Array<{ name: string; error: string }> }>(
+        "/api/skills/batch-delete",
+        { method: "POST", body: JSON.stringify({ names }) },
+      );
+      setSelectedNames(new Set());
+      if (selectedId && res.deleted.includes(selectedId)) {
+        setSelectedId(null);
+        setDetail(null);
+      }
+      await load();
+      if (res.deleted.length > 0) showSuccess(`已删除 ${res.deleted.length} 个 Skill`);
+      if (res.failed.length > 0) {
+        showError(`部分删除失败：${res.failed.map((f) => `${f.name}（${f.error}）`).join("；")}`);
+      }
+    } catch (e) {
+      showError(e instanceof Error ? e.message : "批量删除失败");
     }
   };
 
@@ -569,6 +789,27 @@ export default function SkillsPage() {
         </div>
       </div>
       <div className="flex gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setFuseOpen(true)}
+          disabled={selectedNames.size === 0}
+          title={selectedNames.size === 0 ? "先勾选要融合的 Skill" : `融合选中的 ${selectedNames.size} 个 Skill`}
+        >
+          <GitMerge className="h-4 w-4" />
+          融合选中{selectedNames.size > 0 ? `（${selectedNames.size}）` : ""}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void handleBatchDelete()}
+          disabled={selectedNames.size === 0}
+          className="text-destructive hover:bg-destructive/10"
+          title={selectedNames.size === 0 ? "先勾选要删除的 Skill" : `删除选中的 ${selectedNames.size} 个 Skill`}
+        >
+          <Trash2 className="h-4 w-4" />
+          删除选中{selectedNames.size > 0 ? `（${selectedNames.size}）` : ""}
+        </Button>
         <Button variant="default" size="sm" onClick={() => setBookImportOpen(true)}>
           <FileText className="h-4 w-4" />
           拆书导入
@@ -648,7 +889,26 @@ export default function SkillsPage() {
                 )}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate font-mono text-sm font-medium">{s.name}</span>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span
+                      role="checkbox"
+                      aria-checked={selectedNames.has(s.name)}
+                      tabIndex={-1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleSelect(s.name);
+                      }}
+                      className={cn(
+                        "flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded border transition-colors",
+                        selectedNames.has(s.name)
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border bg-background hover:border-primary",
+                      )}
+                    >
+                      {selectedNames.has(s.name) && <span className="text-[10px] leading-none">✓</span>}
+                    </span>
+                    <span className="truncate font-mono text-sm font-medium">{s.name}</span>
+                  </span>
                   <Badge variant={s.enabled ? "success" : "default"}>{s.enabled ? "启用" : "禁用"}</Badge>
                 </div>
                 <p className="mt-1 line-clamp-1 text-xs text-muted">{s.description || "（无描述）"}</p>
@@ -758,6 +1018,15 @@ export default function SkillsPage() {
         open={bookImportOpen}
         onClose={() => setBookImportOpen(false)}
         onDone={() => void load()}
+      />
+      <FusionDialog
+        open={fuseOpen}
+        names={Array.from(selectedNames)}
+        onClose={() => setFuseOpen(false)}
+        onDone={() => {
+          setSelectedNames(new Set());
+          void load();
+        }}
       />
     </div>
   );

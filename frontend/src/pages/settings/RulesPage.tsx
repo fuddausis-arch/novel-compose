@@ -387,9 +387,9 @@ export default function RulesPage() {
     );
   } else {
     body = (
-      <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-        {/* 左：列表 */}
-        <div className="space-y-3">
+      <div className="grid gap-4 lg:h-full lg:grid-cols-[320px_1fr]">
+        {/* 左：列表（桌面独立滚动） */}
+        <div className="space-y-3 lg:h-full lg:overflow-y-auto lg:pr-1">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
             <Input
@@ -427,8 +427,8 @@ export default function RulesPage() {
           </div>
         </div>
 
-        {/* 右：详情 */}
-        <Card className="p-5">
+        {/* 右：详情（桌面独立滚动） */}
+        <Card className="p-5 lg:h-full lg:overflow-y-auto">
           {!selectedId ? (
             <div className="flex min-h-[320px] items-center justify-center text-sm text-muted">
               选择左侧规则查看详情，或点击「新建规则」创建
@@ -489,10 +489,12 @@ export default function RulesPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-6xl space-y-6 p-6">
+    <div className="flex h-full flex-col overflow-y-auto lg:overflow-hidden">
+      <div className="mx-auto w-full max-w-6xl space-y-6 p-6 lg:pb-3">
         {header}
         {stats}
+      </div>
+      <div className="mx-auto w-full max-w-6xl min-h-0 flex-1 px-6 pb-6">
         {body}
       </div>
       <RuleEditorDialog

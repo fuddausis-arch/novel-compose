@@ -15,6 +15,55 @@ from novel_agent.memory.summary_tree import SummaryTree
 logger = logging.getLogger(__name__)
 
 
+def format_active_storylines(repo, chapter: int, max_lines: int = 6) -> str:
+    """格式化当前故事线：主线必带 + 断线预警 + 最近推进的支线。
+
+    与叙事线系统（storylines 表）联动：写手需要知道主线在哪、
+    哪条线正在推进、哪条线快断了。断线阈值默认 5 章。
+    独立函数供标准生成（core memory）与交互式创作两条路径共用。
+    """
+    try:
+        from novel_agent.bible.models import Storyline
+        lines = repo.db.query(Storyline).filter(
+            Storyline.project_id == repo.project_id,
+            Storyline.status == "active",
+        ).all()
+    except Exception:
+        return ""
+    if not lines:
+        return ""
+
+    def _is_main(l) -> bool:
+        tags = l.tags or []
+        return "主线" in tags or (l.line_type and "主线" in l.line_type)
+
+    mains = [l for l in lines if _is_main(l)]
+    stalled = [l for l in lines if chapter - (l.last_active_chapter or 0) >= 5]
+    recent = [l for l in lines
+              if not _is_main(l) and (l.last_active_chapter or 0) >= chapter - 3]
+
+    picked: list = []
+    for l in mains + stalled + recent:
+        if l not in picked:
+            picked.append(l)
+        if len(picked) >= max_lines:
+            break
+
+    out = ["【当前故事线】"]
+    for l in picked:
+        gap = chapter - (l.last_active_chapter or 0)
+        flag = "主线" if _is_main(l) else (f"⚠断线{gap}章" if gap >= 5 else "支线")
+        line = f"- [{flag}] {l.name}"
+        if l.progress:
+            line += f"（进度{l.progress}%）"
+        if gap > 0 and flag != "主线":
+            line += f" 最近推进第{l.last_active_chapter}章"
+        if l.summary:
+            line += f" | {l.summary}"
+        out.append(line)
+    return "\n".join(out)
+
+
 class CoreMemoryAssembler:
     """装配某章生成时的常驻上下文。"""
 
@@ -119,6 +168,18 @@ class CoreMemoryAssembler:
             sections.append(overdue_text)
             remaining -= len(overdue_text) + 2
 
+        # 2.7 当前故事线（主线/支线 + 断线预警）— 与叙事线系统联动，硬约束
+        storyline_text = self._format_active_storylines(chapter)
+        if storyline_text:
+            sections.append(storyline_text)
+            remaining -= len(storyline_text) + 2
+
+        # 2.8 剧情债（按压力排序，硬约束）— 上一章欠的账本章要还
+        debt_text = self._format_open_debts()
+        if debt_text:
+            sections.append(debt_text)
+            remaining -= len(debt_text) + 2
+
         # 3. 前文摘要（独立子预算：阶段感知，防止长篇后期撑爆）
         prev_budget = int(max_chars * prev_budget_ratio)
         if prev_summary:
@@ -194,8 +255,24 @@ class CoreMemoryAssembler:
                 elif remaining > 150:
                     sections.append(recent_events[:remaining])
 
-        # 9. archival 语义检索 — 已从热路径移出（冷路径工具，供 DedupScanner/auditor 按需使用，
-        # 不进写作热路径，避免每章生成都做一次向量检索拖慢速度）。
+        # 8. archival 语义检索 — 按需回热路径（长篇小说后期一致性关键）：
+        # 章节 >= 阈值才开，每章仅检索一次（query=细纲+故事线名，top3+缓存），
+        # 预算充足时注入；命中内容是整章，只取头部预览，写手可跳转看全文。
+        if remaining > 400:
+            try:
+                from novel_agent.config import load_config
+                cfg = load_config()
+                if cfg.memory_semantic_retrieve and chapter >= cfg.memory_semantic_min_chapter:
+                    archival_text = self._cached(
+                        "archival", lambda: self._retrieve_archival(chapter, query))
+                    if archival_text:
+                        if len(archival_text) + 2 <= remaining:
+                            sections.append(archival_text)
+                            remaining -= len(archival_text) + 2
+                        elif remaining > 300:
+                            sections.append(archival_text[:remaining])
+            except Exception as e:
+                logger.debug("archival 热路径检索失败: %s", e)
 
         return "\n\n".join(sections)
 
@@ -337,13 +414,90 @@ class CoreMemoryAssembler:
             lines.append(f"- {f.foreshadow_id}：{f.description}")
         return "\n".join(lines)
 
-    def _format_archival(self, slices: list[dict]) -> str:
-        """格式化 archival 切片（已从热路径移出，保留供冷路径工具使用）。"""
-        lines = ["【相关历史切片】（按语义相关性召回）"]
+    def _format_active_storylines(self, chapter: int, max_lines: int = 6) -> str:
+        """格式化当前故事线（委托独立函数，与交互式创作路径共用）。"""
+        return format_active_storylines(self.repo, chapter, max_lines=max_lines)
+
+    def _format_open_debts(self, max_debts: int = 5) -> str:
+        """格式化未还剧情债（按压力降序 top5）— 上一章欠的账本章要还。"""
+        try:
+            debts = self.repo.list_open_debts()
+        except Exception:
+            return ""
+        if not debts:
+            return ""
+        out = ["【剧情债】以下欠账请在本章或近期还清："]
+        for d in debts[:max_debts]:
+            line = f"- [{d.debt_type}] {d.description or ''}（压力{d.pressure or 3}/5）"
+            if d.created_chapter:
+                line += f"，欠自第{d.created_chapter}章"
+            out.append(line)
+        return "\n".join(out)
+
+    def _archival_query(self, chapter: int, query: str | None) -> str:
+        """构造语义检索 query：本章细纲概要 + 当前故事线名 + 传入 query（截断 500 字）。"""
+        parts: list[str] = []
+        try:
+            outline = self.repo.get_outline_by_chapter(chapter)
+            if outline and outline.summary:
+                parts.append(outline.summary[:200])
+        except Exception:
+            pass
+        try:
+            from novel_agent.bible.models import Storyline
+            lines = self.repo.db.query(Storyline).filter(
+                Storyline.project_id == self.repo.project_id,
+                Storyline.status == "active",
+            ).limit(6).all()
+            names = [l.name for l in lines if l.name]
+            if names:
+                parts.append("、".join(names))
+        except Exception:
+            pass
+        if query:
+            parts.append(query)
+        joined = " ".join(parts).strip()
+        return joined[:500] if joined else "相关前文"
+
+    def _retrieve_archival(self, chapter: int, query: str | None) -> str:
+        """按需检索相关历史切片并格式化（供写作热路径使用，每章一次）。"""
+        if self.archival is None or not self.archival.is_available():
+            return ""
+        q = self._archival_query(chapter, query)
+        try:
+            res = self.archival.retrieve(q, top_k=3, chapter_filter=chapter - 1)
+        except Exception:
+            return ""
+        docs = res.get("documents", [[]])[0] or []
+        metas = res.get("metadatas", [[]])[0] or []
+        if not docs:
+            return ""
+        slices = []
+        for doc, meta in zip(docs, metas):
+            m = meta or {}
+            slices.append({
+                "content": doc,
+                "chapter": m.get("chapter"),
+                "title": m.get("title", ""),
+            })
+        return self._format_archival(slices)
+
+    def _format_archival(self, slices: list[dict], preview_chars: int = 250) -> str:
+        """格式化 archival 切片（整章只取头部预览，写手可跳转看全文）。"""
+        lines = ["【相关历史切片】（语义检索，按相关性召回；整章取预览，可在章节页看全文）"]
         for s in slices:
             chapter = s.get("chapter")
             tag = f"第{chapter}章" if chapter else "设定"
-            lines.append(f"- [{tag}] {s['content']}")
+            content = s.get("content") or ""
+            content = content.strip()
+            # 去掉开头的 "第X章《标题》" 前缀（那是索引时加的文件头）
+            import re as _re
+            content = _re.sub(r"^第\d+章《[^》]*》\n?", "", content)
+            content = _re.sub(r"\s+", "", content)
+            if len(content) > preview_chars:
+                content = content[:preview_chars] + "…"
+            title = s.get("title") or ""
+            lines.append(f"- [{tag}] {content}" + (f"（《{title}》预览）" if title and len(content) >= preview_chars else ""))
         return "\n".join(lines)
 
     def _format_snapshot(self, chapter: int) -> str:

@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  GitMerge, Loader2, Plus, ScanSearch, Search, Square, Trash2, X,
+  GitMerge, Loader2, Plus, ScanSearch, Search, Sparkles, Square, Trash2, X,
 } from "lucide-react";
 import { api } from "@/api";
 import type {
@@ -68,6 +68,11 @@ export default function StorylineView() {
   const [scanning, setScanning] = useState(false);
   const [scanLog, setScanLog] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+
+  // LLM 识别创建
+  const [creating, setCreating] = useState(false);
+  const [createLog, setCreateLog] = useState<{ icon: string; text: string }[]>([]);
+  const createAbortRef = useRef<AbortController | null>(null);
 
   const loadLines = useCallback(async () => {
     if (!projectId) return;
@@ -198,12 +203,49 @@ export default function StorylineView() {
     setScanning(false);
   };
 
+  const runCreate = () => {
+    if (!projectId) return;
+    setCreating(true);
+    setCreateLog([]);
+    createAbortRef.current = api.llmCreateStorylines(
+      projectId,
+      (d) => setCreateLog((prev) => [...prev.slice(-60),
+        { icon: "📖", text: `已收集大纲 ${d.chars} 字，识别中...` }]),
+      (d) => {
+        const items = d.storylines || [];
+        const logs = items.map((l: any) => ({
+          icon: l.line_type === "主线" ? "⭐" : "➤",
+          text: `${l.name}（${(l.tags || []).join("/")}）· ${(l.nodes || []).length} 节点`,
+        }));
+        setCreateLog((prev) => [...prev.slice(-60),
+          { icon: "✨", text: `识别到 ${items.length} 条线：` }, ...logs]);
+      },
+      (d) => {
+        setCreateLog((prev) => [...prev.slice(-60), {
+          icon: "✅",
+          text: `已建 ${d.created_lines} 条线 · 跳过重复 ${d.skipped_lines} 条 · 新建节点 ${d.created_nodes} 个`,
+        }]);
+        setCreating(false);
+        showSuccess(`AI 已建 ${d.created_lines} 条线`);
+        loadLines();
+      },
+      (msg) => { setCreating(false); showError(msg); },
+    );
+  };
+
+  const stopCreate = () => {
+    createAbortRef.current?.abort();
+    createAbortRef.current = null;
+    setCreating(false);
+  };
+
   const tags = meta?.tags || [];
   const relTypes = meta?.relation_types || [];
 
   return (
-    <div className="mx-auto w-full max-w-7xl p-4 md:p-6">
-      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <div className="flex h-full flex-col overflow-y-auto lg:overflow-hidden">
+      <div className="mx-auto w-full max-w-7xl shrink-0 space-y-4 p-4 md:p-6 lg:pb-3">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-lg font-semibold text-foreground">叙事线</h1>
           <p className="text-sm text-muted">主线/支线 × 明线/暗线 + 自定义线，防断线防伏笔烂尾</p>
@@ -237,6 +279,15 @@ export default function StorylineView() {
           <Button variant="ghost" onClick={() => runScan(true)} disabled={scanning}>
             全书扫描
           </Button>
+          {creating ? (
+            <Button variant="danger" onClick={stopCreate}>
+              <Square className="h-4 w-4" /> 中断
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={runCreate} disabled={scanning}>
+              <Sparkles className="h-4 w-4" /> AI 识别
+            </Button>
+          )}
         </div>
       </div>
 
@@ -257,9 +308,29 @@ export default function StorylineView() {
         <span className="ml-auto text-xs text-muted">{lines.length} 条线</span>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
-        {/* ── 左栏：线看板 ── */}
-        <div className="space-y-2">
+      {/* LLM 识别建线日志 */}
+      {createLog.length > 0 && (
+        <Card>
+          <CardContent className="space-y-1 py-3">
+            {creating && (
+              <div className="mb-1 flex items-center gap-2 text-xs text-muted">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> LLM 正在从大纲识别叙事线并建线...
+              </div>
+            )}
+            <div className="max-h-40 overflow-y-auto space-y-0.5 text-xs">
+              {createLog.map((s, i) => (
+                <div key={i} className="text-muted">{s.icon} {s.text}</div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      </div>
+
+      <div className="mx-auto w-full max-w-7xl min-h-0 flex-1 px-4 pb-6 md:px-6">
+      <div className="grid h-full gap-4 lg:grid-cols-[300px_1fr]">
+        {/* ── 左栏：线看板（桌面独立滚动） ── */}
+        <div className="space-y-2 lg:h-full lg:overflow-y-auto lg:pr-1">
           {lines.length === 0 && (
             <Card className="border-dashed">
               <CardContent className="py-8 text-center text-sm text-muted">
@@ -321,8 +392,8 @@ export default function StorylineView() {
           })}
         </div>
 
-        {/* ── 右栏：选中线网络 ── */}
-        <div className="space-y-4">
+        {/* ── 右栏：选中线网络（桌面独立滚动） ── */}
+        <div className="space-y-4 lg:h-full lg:overflow-y-auto lg:pl-1">
           {!detail && (
             <Card className="flex min-h-[40vh] items-center justify-center border-dashed">
               <CardContent className="text-center text-muted">
@@ -447,6 +518,7 @@ export default function StorylineView() {
             </>
           )}
         </div>
+      </div>
       </div>
 
       {/* 新建/编辑线 Dialog */}

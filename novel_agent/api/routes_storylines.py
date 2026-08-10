@@ -387,10 +387,80 @@ async def scan_storylines(project_id: int, req: ScanRequest,
 @router.post("/{project_id}/storylines/generate-plan")
 async def generate_plan(project_id: int, req: PlanRequest,
                         db: Session = Depends(get_story_db)):
-    """AI 生成线规划蓝图（SSE 流式）。当前为占位实现，P1-1 完善。"""
+    """AI 生成线规划蓝图（SSE 流式）。复用 llm-create 的识别建线逻辑。"""
     async def event_gen():
-        yield {"event": "error", "data": json.dumps(
-            {"message": "线规划蓝图功能在 P1 阶段实现"}, ensure_ascii=False)}
+        cfg = load_config()
+        if not cfg.llm.api_key:
+            yield {"event": "error", "data": json.dumps(
+                {"message": "未配置 LLM API Key"}, ensure_ascii=False)}
+            return
+        from novel_agent.llm.client import LLMClient
+        from novel_agent.storyline.creator import (
+            apply_storylines, build_outline_text, suggest_storylines,
+        )
+        from novel_agent.bible.repository import BibleRepository
+        client = LLMClient(cfg.get_agent_llm("summarizer"))
+        try:
+            repo = BibleRepository(db, project_id=project_id)
+            outline_text = build_outline_text(repo)
+            yield {"event": "collect_done", "data": json.dumps(
+                {"chars": len(outline_text)}, ensure_ascii=False)}
+            existing = db.query(Storyline).filter_by(project_id=project_id).all()
+            suggestions = await suggest_storylines(
+                client, outline_text, [l.name for l in existing])
+            yield {"event": "suggestions", "data": json.dumps(
+                suggestions, ensure_ascii=False)}
+            stats = apply_storylines(db, project_id, suggestions, existing)
+            yield {"event": "done", "data": json.dumps(stats, ensure_ascii=False)}
+        except Exception as e:
+            logger.warning("generate-plan 失败: %s", e)
+            yield {"event": "error", "data": json.dumps(
+                {"message": f"线规划失败：{e}"}, ensure_ascii=False)}
+        finally:
+            await client.close()
+
+    return EventSourceResponse(event_gen())
+
+
+@router.post("/{project_id}/storylines/llm-create")
+async def llm_create_storylines(project_id: int,
+                                db: Session = Depends(get_story_db)):
+    """LLM 识别创建叙事线（SSE）：从卷纲/弧段/章纲/摘要识别主线支线暗线并建线。
+
+    事件：collect_done / suggestions / done / error。
+    与 generate-plan 同一实现，独立入口便于前端语义化调用。
+    """
+    async def event_gen():
+        cfg = load_config()
+        if not cfg.llm.api_key:
+            yield {"event": "error", "data": json.dumps(
+                {"message": "未配置 LLM API Key"}, ensure_ascii=False)}
+            return
+        from novel_agent.llm.client import LLMClient
+        from novel_agent.storyline.creator import (
+            apply_storylines, build_outline_text, suggest_storylines,
+        )
+        from novel_agent.bible.repository import BibleRepository
+        client = LLMClient(cfg.get_agent_llm("summarizer"))
+        try:
+            repo = BibleRepository(db, project_id=project_id)
+            outline_text = build_outline_text(repo)
+            yield {"event": "collect_done", "data": json.dumps(
+                {"chars": len(outline_text)}, ensure_ascii=False)}
+            existing = db.query(Storyline).filter_by(project_id=project_id).all()
+            suggestions = await suggest_storylines(
+                client, outline_text, [l.name for l in existing])
+            yield {"event": "suggestions", "data": json.dumps(
+                suggestions, ensure_ascii=False)}
+            stats = apply_storylines(db, project_id, suggestions, existing)
+            yield {"event": "done", "data": json.dumps(stats, ensure_ascii=False)}
+        except Exception as e:
+            logger.warning("llm-create 失败: %s", e)
+            yield {"event": "error", "data": json.dumps(
+                {"message": f"叙事线识别创建失败：{e}"}, ensure_ascii=False)}
+        finally:
+            await client.close()
+
     return EventSourceResponse(event_gen())
 
 

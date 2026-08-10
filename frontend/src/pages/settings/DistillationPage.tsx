@@ -157,6 +157,9 @@ const DIMENSIONS: Array<{ id: number; name: string; points: string }> = [
   { id: 10, name: "章节钩子", points: "断章技巧、结尾悬念、金句钩子、开篇抓人" },
   { id: 11, name: "对话与台词", points: "对话占比、角色语言辨识度、对话推动剧情、潜台词" },
   { id: 12, name: "反派与配角", points: "反派动机自洽、不降智、配角功能、关系张力" },
+  { id: 13, name: "节奏与句长指纹", points: "句长分布、对话占比、段落长短变化（AI 检测器第一信号）" },
+  { id: 14, name: "禁词与套路词表", points: "原书回避的 AI 高频词与套路句式，生成时禁用" },
+  { id: 15, name: "密度目标", points: "形容词/破折号/连接词/重复词密度控制习惯" },
 ];
 
 /** 全部维度编号 */
@@ -252,6 +255,8 @@ async function streamDistill(
       levels,
       dimensions,
       retry_failed: retryFailed,
+      // 隔离模式：同一本书多次蒸馏时跳过已完成的维度，旧产物原样保留、不重复不覆盖
+      skip_done_rounds: true,
       ...modelConfigFields(modelConfig),
     }),
     signal,

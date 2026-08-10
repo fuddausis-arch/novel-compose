@@ -4964,6 +4964,14 @@ async def interactive_chat_stream(request: Request, req: InteractiveChatRequest)
         subplot_text = _format_subplots_for_prompt(repo)
         if subplot_text:
             prompt += f"{subplot_text}\n\n"
+        # 动态注入：当前故事线（主线 + 断线预警 + 最近支线，与叙事线系统联动）
+        try:
+            from novel_agent.memory.core import format_active_storylines
+            storyline_text = format_active_storylines(repo, chapter_num)
+            if storyline_text:
+                prompt += f"{storyline_text}\n\n"
+        except Exception as e:
+            logger.debug("交互式创作注入故事线失败: %s", e)
         # 动态注入：上一章结尾
         if prev_ending:
             prompt += (

@@ -863,6 +863,30 @@ def create_relationship_change(project_id: int, data: RelationshipChangeInput,
     return _relationship_change_dict(rc)
 
 
+@router.get("/{project_id}/memory-refinements")
+def list_memory_refinements(project_id: int, entity_type: str = "",
+                            entity_id: str = "", chapter: int = 0,
+                            repo: BibleRepository = Depends(get_repo)):
+    """设定提炼日志（白盒溯源）：查看某角色/设定/故事线的自动更新记录。
+    前端角色卡/世界观详情可挂这个接口，展示"这条设定是哪章定的"。
+    """
+    recs = repo.list_memory_refinements(
+        entity_type=entity_type or None,
+        entity_id=entity_id or None,
+        chapter=chapter or None,
+    )
+    return {"items": [
+        {
+            "id": r.id, "chapter": r.chapter,
+            "entity_type": r.entity_type, "entity_id": r.entity_id,
+            "field": r.field, "new_value": r.new_value,
+            "source_preview": r.source_preview, "method": r.method,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in recs
+    ]}
+
+
 # ===== AI 生成（AI Generation）=====
 class GenerateFactionRequest(BaseModel):
     name_hint: str = ""

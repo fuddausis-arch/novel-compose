@@ -1954,6 +1954,17 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
         except Exception as e:
             logger.warning("ch%d 快照保存失败: %s", chapter, e)
 
+    # P0-② 记忆提炼回流：本章新增设定 → 写回角色/世界观/故事线 + 溯源日志。
+    # 只追加不覆盖、失败不阻塞主流程；开关在配置 memory_refine_enabled。
+    if repo and llm_client:
+        try:
+            from novel_agent.config import load_config
+            if load_config().memory_refine_enabled:
+                from novel_agent.memory.refine import refine_memories
+                await refine_memories(repo, llm_client, chapter, content, core_events)
+        except Exception as e:
+            logger.warning("ch%d 记忆提炼回流失败（不阻塞）: %s", chapter, e)
+
     # 正文已落盘成功，消费用户反馈（C2：失败不消费，反馈可重跑复用）
     _mark_feedbacks_applied(state, repo)
 

@@ -252,9 +252,9 @@ function PromptSectionsTab() {
     );
 
   return (
-    <div className="space-y-3">
+    <div className="flex h-full min-h-0 flex-col space-y-3">
       {/* agent 选择 + 新建按钮 */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Label htmlFor="agent-select" className="text-xs text-muted">Agent:</Label>
           <select
@@ -275,9 +275,9 @@ function PromptSectionsTab() {
         </Button>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
-        {/* 左：列表 */}
-        <div className="space-y-2">
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[260px_1fr]">
+        {/* 左：列表（桌面独立滚动） */}
+        <div className="space-y-2 lg:h-full lg:overflow-y-auto lg:pr-1">
           {sections.map((s) => (
             <div
               key={s.name}
@@ -323,8 +323,8 @@ function PromptSectionsTab() {
           ))}
         </div>
 
-        {/* 右：编辑器 */}
-        <Card className="space-y-3 p-4">
+        {/* 右：编辑器（桌面独立滚动） */}
+        <Card className="space-y-3 p-4 lg:h-full lg:overflow-y-auto">
           {current ? (
             <>
               <div className="flex items-center justify-between">
@@ -438,6 +438,7 @@ function SectionCreateDialog({
 interface AgentDef {
   agent_type: string;
   model: string;
+  description?: string;
   temperature: number;
   top_p: number;
   max_turns: number;
@@ -455,6 +456,7 @@ function AgentDefinitionsTab() {
   );
   const agents = Object.entries(data?.agents || {}).map(([k, v]) => ({ ...v, agent_type: k }));
   const [selectedType, setSelectedType] = useState<string | null>(null);
+  const [editDescription, setEditDescription] = useState("");
   const [editModel, setEditModel] = useState("");
   const [editTemp, setEditTemp] = useState(0.8);
   const [editTopP, setEditTopP] = useState(0.92);
@@ -472,6 +474,7 @@ function AgentDefinitionsTab() {
 
   useEffect(() => {
     if (current) {
+      setEditDescription(current.description || "");
       setEditModel(current.model || "");
       setEditTemp(current.temperature ?? 0.8);
       setEditTopP(current.top_p ?? 0.92);
@@ -489,6 +492,7 @@ function AgentDefinitionsTab() {
       await fetchJson(`/api/agents/${encodeURIComponent(current.agent_type)}`, {
         method: "PUT",
         body: JSON.stringify({
+          description: editDescription,
           model: editModel,
           temperature: editTemp,
           top_p: editTopP,
@@ -572,16 +576,16 @@ function AgentDefinitionsTab() {
     );
 
   return (
-    <div className="space-y-3">
-      <div className="flex justify-end">
+    <div className="flex h-full min-h-0 flex-col space-y-3">
+      <div className="flex shrink-0 justify-end">
         <Button size="sm" onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" />
           新建 Agent
         </Button>
       </div>
-      <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
-        {/* 左：列表 */}
-        <div className="space-y-2">
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[260px_1fr]">
+        {/* 左：列表（桌面独立滚动） */}
+        <div className="space-y-2 lg:h-full lg:overflow-y-auto lg:pr-1">
           {agents.map((a) => (
             <div
               key={a.agent_type}
@@ -609,6 +613,11 @@ function AgentDefinitionsTab() {
                   删除
                 </button>
               </div>
+              {a.description && (
+                <p className="mt-1 line-clamp-2 text-xs text-muted" title={a.description}>
+                  {a.description}
+                </p>
+              )}
               <div className="mt-0.5 text-[10px] text-muted">
                 {a.model || "默认模型"} · T={a.temperature}
               </div>
@@ -616,13 +625,24 @@ function AgentDefinitionsTab() {
           ))}
         </div>
 
-        {/* 右：编辑器 */}
-        <Card className="space-y-4 p-4">
+        {/* 右：编辑器（桌面独立滚动） */}
+        <Card className="space-y-4 p-4 lg:h-full lg:overflow-y-auto">
           {current ? (
             <>
               <div className="flex items-center gap-2 border-b border-border pb-3">
                 <Bot className="h-4 w-4 text-primary" />
                 <span className="font-mono text-sm font-semibold">{current.agent_type}</span>
+              </div>
+              <div>
+                <Label htmlFor="ag-description" className="text-xs text-muted">中文说明（这个 Agent 是干什么的）</Label>
+                <Textarea
+                  id="ag-description"
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  className="mt-1 font-mono text-xs"
+                  rows={3}
+                  placeholder="如：写手——根据章纲写出章节正文"
+                />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -907,8 +927,8 @@ const TABS = [
 
 export default function OrchestrationPage() {
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-6xl space-y-6 p-6">
+    <div className="flex h-full flex-col overflow-y-auto lg:overflow-hidden">
+      <div className="mx-auto w-full max-w-6xl space-y-6 p-6 lg:pb-3">
         <div className="flex items-center gap-3">
           <div className="rounded-lg border border-border bg-primary-muted p-2 text-primary">
             <FileCode className="h-5 w-5" />
@@ -918,9 +938,11 @@ export default function OrchestrationPage() {
             <p className="text-sm text-muted">提示词 Sections、Agent 定义、工具与用户注入的统一编排（可编辑）</p>
           </div>
         </div>
+      </div>
 
-        <Tabs defaultValue="sections">
-          <TabsList aria-label="编排子页面">
+      <div className="mx-auto flex w-full max-w-6xl min-h-0 flex-1 flex-col px-6 pb-6">
+        <Tabs defaultValue="sections" className="flex min-h-0 flex-1 flex-col">
+          <TabsList aria-label="编排子页面" className="shrink-0">
             {TABS.map(({ key, label, icon: Icon }) => (
               <TabsTrigger key={key} value={key} className="cursor-pointer gap-1.5">
                 <Icon className="h-3.5 w-3.5" />
@@ -928,10 +950,10 @@ export default function OrchestrationPage() {
               </TabsTrigger>
             ))}
           </TabsList>
-          <TabsContent value="sections"><PromptSectionsTab /></TabsContent>
-          <TabsContent value="agents"><AgentDefinitionsTab /></TabsContent>
-          <TabsContent value="tools"><ToolsTab /></TabsContent>
-          <TabsContent value="injection"><UserInjectionTab /></TabsContent>
+          <TabsContent value="sections" className="min-h-0 flex-1"><PromptSectionsTab /></TabsContent>
+          <TabsContent value="agents" className="min-h-0 flex-1"><AgentDefinitionsTab /></TabsContent>
+          <TabsContent value="tools" className="min-h-0 flex-1"><ToolsTab /></TabsContent>
+          <TabsContent value="injection" className="min-h-0 flex-1"><UserInjectionTab /></TabsContent>
         </Tabs>
       </div>
     </div>

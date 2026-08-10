@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -332,6 +333,7 @@ class DistillationEngine:
                            dimensions: list[int] | None = None,
                            levels: int = 1,
                            retry_failed: bool = False,
+                           skip_done_rounds: bool = False,
                            on_event: OnEvent | None = None,
                            is_cancelled=None) -> dict:
         """对整部作品的所有片段执行多轮蒸馏，逐事件回调进度。
@@ -393,8 +395,9 @@ class DistillationEngine:
                     cancelled = True
                     chunk_ok = False
                     break
-                # 补蒸馏模式：该轮已完成则跳过（不重复调用 LLM）
-                if retry_failed:
+                # 隔离模式：该轮已成功完成则跳过（不重复调用 LLM，不产生冗余记录）。
+                # 用于"同一本书多次蒸馏不同维度"场景——每次只跑新维度，旧产物原样保留。
+                if retry_failed or skip_done_rounds:
                     existing = self.store.get_round(chunk_id, round_num)
                     if existing and existing["status"] == DistillStatus.DONE.value:
                         continue
@@ -485,6 +488,8 @@ class DistillationEngine:
     # 多级蒸馏：浓缩提炼
     # ------------------------------------------------------------------
     _CONDENSE_BATCH_BUDGET = 40000  # 每批输入字符预算（分批控制上下文）
+    _FUSE_MAX_BLOCKS = 40  # 融合时每批最多块数，超出自动分批递归融合（数量不限）
+    _FUSE_CONCURRENCY = 4  # 并行融合的并发数（多批同时提炼，受 LLM API 限流与连接池约束）
 
     async def condense_skills(self, skills: list[dict], client: LLMClient,
                               level: int, on_event: OnEvent | None = None) -> dict | None:
@@ -594,7 +599,8 @@ class DistillationEngine:
             + "\n\n---\n\n".join(batch_texts)
             + "\n\n" + _CONDENSE_OUTPUT_SPEC
         )
-        return await client.generate(user, system=_CONDENSE_SYSTEM, node_name="distill_condense")
+        return await client.generate(user, system=_CONDENSE_SYSTEM, node_name="distill_condense",
+                                     thinking=False)
 
     @staticmethod
     def _render_style_body(skill_data: dict) -> list[str]:
@@ -919,7 +925,9 @@ class DistillationEngine:
                 blocks.append(f"【来源：《{skill.get('work_title', '')}》{chunk_info} · 权重 {weight:.0%}】\n{body}")
             if blocks:
                 try:
-                    final_text = await self._fuse_to_one(blocks, client, on_event)
+                    final_text = await self._fuse_all(blocks, client, on_event)
+                    if final_text is None:
+                        raise RuntimeError("LLM 融合提炼失败（所有批次均失败）")
                     parsed = parse_json_safe(final_text)
                     if isinstance(parsed, dict) and parsed:
                         content = self._compose_fusion_content(fusion_name, description, parsed)
@@ -963,6 +971,52 @@ class DistillationEngine:
             "refined": refined,
         }
 
+    async def _fuse_all(self, blocks: list[str], client: LLMClient,
+                        on_event: OnEvent | None = None) -> str | None:
+        """递归分批融合：块数过多时先分批提炼为子总纲，再融合子总纲。
+
+        skill 数量不限（如"全选 282 个"也直接跑）：超出 _FUSE_MAX_BLOCKS 时
+        按序切批，**各批并行提炼**（并发数 _FUSE_CONCURRENCY，受 LLM API 限流约束），
+        再递归融合子总纲，直到剩下 1 份。
+        任一批提炼失败不阻断整体：该批以原始拼接文本保底，继续参与上层融合；
+        所有批次都无法提炼时返回 None（由调用方走明确标注的回退路径）。
+        """
+        if len(blocks) <= self._FUSE_MAX_BLOCKS:
+            return await self._fuse_to_one(blocks, client, on_event)
+        total_batches = (len(blocks) + self._FUSE_MAX_BLOCKS - 1) // self._FUSE_MAX_BLOCKS
+        sem = asyncio.Semaphore(self._FUSE_CONCURRENCY)
+
+        async def _process(start: int) -> str:
+            batch = blocks[start:start + self._FUSE_MAX_BLOCKS]
+            batch_no = start // self._FUSE_MAX_BLOCKS + 1
+            await self._emit(on_event, {
+                "type": "fuse_sub_batch_start", "batch": batch_no,
+                "total": total_batches, "count": len(batch),
+            })
+            async with sem:  # 限流：最多 _FUSE_CONCURRENCY 批同时调 LLM
+                try:
+                    text = await self._fuse_to_one(batch, client, on_event)
+                except Exception as e:
+                    logger.warning("融合子批 %d/%d 提炼异常，回退为该批拼接: %s",
+                                   batch_no, total_batches, e)
+                    text = None
+            if text:
+                result = text
+            else:
+                # 该批提炼失败：以原始拼接保底参与上层融合（不静默丢弃）
+                logger.warning("融合子批 %d/%d 提炼失败，以原始内容保底", batch_no, total_batches)
+                result = "\n\n".join(batch)
+            await self._emit(on_event, {
+                "type": "fuse_sub_batch_done", "batch": batch_no, "total": total_batches,
+            })
+            return result
+
+        # 并行提炼所有子批；asyncio.gather 保持输入顺序，归并顺序稳定
+        sub_blocks = await asyncio.gather(*(
+            _process(start) for start in range(0, len(blocks), self._FUSE_MAX_BLOCKS)
+        ))
+        return await self._fuse_all(list(sub_blocks), client, on_event)
+
     async def _fuse_to_one(self, blocks: list[str], client: LLMClient,
                            on_event: OnEvent | None = None) -> str:
         """多 Skill 融合提炼：分批 → 每批 LLM 提炼 → 递归归并直到剩 1 块。"""
@@ -987,7 +1041,9 @@ class DistillationEngine:
                         "type": "fuse_batch_done", "batch": i + 1, "total": len(batches),
                     })
             blocks = new_blocks if new_blocks else ["\n\n".join(blocks)]
-        return blocks[0]
+        if len(blocks) == 1 and blocks[0] and blocks[0].count("【来源：") <= 1:
+            return blocks[0]
+        return None
 
     async def _llm_fusion(self, batch_texts: list[str], client: LLMClient) -> str:
         """单批融合提炼：LLM 把多个 Skill 浓缩成精炼总纲（权重越高越优先保留）。"""
@@ -1001,7 +1057,8 @@ class DistillationEngine:
             + "\n\n---\n\n".join(batch_texts)
             + "\n\n" + _CONDENSE_OUTPUT_SPEC
         )
-        return await client.generate(user, system=_CONDENSE_SYSTEM, node_name="distill_fuse")
+        return await client.generate(user, system=_CONDENSE_SYSTEM, node_name="distill_fuse",
+                                     thinking=False)
 
     @staticmethod
     def _compose_fusion_content(fusion_name: str, description: str, data: dict) -> str:

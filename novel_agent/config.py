@@ -119,6 +119,13 @@ class Config:
     # AI 率达标线（百分数）：AI 率 ≤ 该值视为通过。旧值 20 对真人网文误拦率高，
     # 默认放宽到 30；配合前端"显示概率+可疑段落，人工判断"使用。
     ai_pass_ai_rate: int = 30
+    # 记忆语义检索：写作热路径按需检索相关前文（长篇小说后期一致性关键）。
+    # 每章仅检索一次（细纲+故事线为 query，top3+缓存），早期章节默认关闭。
+    memory_semantic_retrieve: bool = True
+    memory_semantic_min_chapter: int = 11
+    # 记忆提炼回流：summarize 后把本章新增设定追加写回角色/世界观/故事线，
+    # 并记溯源日志（只追加不覆盖，失败不阻塞主流程）。
+    memory_refine_enabled: bool = True
     # 角色 -> 采样参数覆盖（借鉴 bishu-novel 温度五级光谱）
     # 在 get_agent_llm 返回前应用，覆盖 base_config 的对应字段
     ROLE_PARAMS: dict[str, dict] = field(default_factory=lambda: {
@@ -396,6 +403,17 @@ def load_config(yaml_path: Path | None = None) -> Config:
                 cfg.ai_pass_ai_rate = max(5, min(60, int(data["ai_pass_ai_rate"])))
             except (TypeError, ValueError):
                 pass
+        # 读取记忆语义检索开关与最小章节
+        if "memory_semantic_retrieve" in data:
+            cfg.memory_semantic_retrieve = _str2bool(data["memory_semantic_retrieve"])
+        if "memory_semantic_min_chapter" in data:
+            try:
+                cfg.memory_semantic_min_chapter = max(1, int(data["memory_semantic_min_chapter"]))
+            except (TypeError, ValueError):
+                pass
+        # 读取记忆提炼回流开关
+        if "memory_refine_enabled" in data:
+            cfg.memory_refine_enabled = _str2bool(data["memory_refine_enabled"])
     # env 覆盖（仅在 env 非空时生效，避免空字符串覆盖 yaml 已保存的配置）
     _env_api_key = os.getenv("NOVEL_LLM_API_KEY", "")
     _env_base_url = os.getenv("NOVEL_LLM_BASE_URL", "")

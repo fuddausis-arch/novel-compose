@@ -47,7 +47,8 @@ class SkillBase(BaseModel):
 
 
 class SkillUpdate(BaseModel):
-    """Skill 更新字段（name 不可变，其余可选）。"""
+    """Skill 更新字段（name 可选，传了则重命名）。"""
+    name: str | None = None
     description: str | None = None
     enabled: bool | None = None
     auto_inject: bool | None = None
@@ -68,11 +69,18 @@ def _skills_dir() -> Path:
 
 
 def _skill_path(name: str) -> Path:
-    """获取单个 skill 的 JSON 文件路径。"""
-    # 防止路径遍历：只允许字母数字下划线横线
-    safe = "".join(c for c in name if c.isalnum() or c in ("-", "_"))
-    if not safe or safe != name:
-        raise HTTPException(400, f"无效的 skill 名称: {name}")
+    """获取单个 skill 的 JSON 文件路径。
+
+    防止路径遍历：禁止路径分隔符、Windows 非法字符、控制字符、`.`/`..`。
+    允许中文等任意安全字符（文件名层面），支持用户给 skill 起中文名。
+    """
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "skill 名称不能为空")
+    if name in (".", ".."):
+        raise HTTPException(400, "无效的 skill 名称")
+    if any(ord(ch) < 32 or ch in '/\\:*?"<>|' for ch in name):
+        raise HTTPException(400, f"无效的 skill 名称（不能包含路径分隔符或特殊符号）: {name}")
     return _skills_dir() / f"{name}.json"
 
 
@@ -233,6 +241,43 @@ def list_skills():
     return {"skills": skills}
 
 
+class SkillBatchDelete(BaseModel):
+    """批量删除请求体。"""
+    names: list[str] = []
+
+
+@router.post("/batch-delete")
+def batch_delete_skills(req: SkillBatchDelete):
+    """批量删除 skill（内置 Skill 不可删，逐条尝试，失败不阻塞其余）。
+
+    必须在 /{name} 路由之前定义，否则 batch-delete 会被当 name 匹配。
+    """
+    names = [n.strip() for n in req.names if n.strip()]
+    deleted: list[str] = []
+    failed: list[dict] = []
+    for name in names:
+        path = _skill_path(name)
+        if not path.exists():
+            failed.append({"name": name, "error": "不存在"})
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("is_builtin"):
+                failed.append({"name": name, "error": "内置 Skill 不可删除，可禁用"})
+                continue
+        except (json.JSONDecodeError, OSError):
+            pass
+        try:
+            path.unlink()
+            deleted.append(name)
+        except OSError as e:
+            failed.append({"name": name, "error": str(e)})
+    if deleted:
+        rebuild_skill_index()
+    return {"deleted": deleted, "failed": failed, "deleted_count": len(deleted)}
+
+
 @router.get("/search")
 def search_skills(q: str = "", limit: int = 20, enabled_only: bool = False):
     """跨 skill 统一搜索（必须在 /{name} 路由之前定义，否则 search 会被当 name 匹配）。"""
@@ -289,13 +334,44 @@ def create_skill(skill: SkillBase):
 
 @router.put("/{name}")
 def update_skill(name: str, updates: SkillUpdate):
-    """更新 skill（toggle enabled 等）。"""
+    """更新 skill（支持重命名：传 name 字段则改文件名并同步蒸馏 DB）。"""
     existing = _load_skill(name)
     update_data = updates.model_dump(exclude_unset=True)
+    new_name = update_data.pop("name", None)
+    renamed = False
+    if new_name is not None:
+        new_name = new_name.strip()
+        if new_name and new_name != name:
+            new_path = _skill_path(new_name)  # 校验 + 构造路径
+            if new_path.exists():
+                raise HTTPException(409, f"Skill 已存在: {new_name}")
+            existing["name"] = new_name
+            update_data["name"] = new_name
+            renamed = True
     existing.update(update_data)
-    _save_skill(existing)
+    _save_skill(existing)  # 按新名写文件
+    if renamed:
+        old_path = _skill_path(name)
+        if old_path.exists():
+            try:
+                old_path.unlink()
+            except OSError as e:
+                logger.warning("删除旧 skill 文件失败: %s", e)
+        _sync_db_skill_name(name, new_name)
     rebuild_skill_index()
     return {"updated": True, "skill": existing}
+
+
+def _sync_db_skill_name(old_name: str, new_name: str) -> None:
+    """蒸馏 DB 中同名 skill 记录同步改名（失败仅记日志，不阻塞）。"""
+    try:
+        from novel_agent.distillation.store import get_store
+        store = get_store()
+        for s in store.list_skills():
+            if s.get("name") == old_name:
+                store.update_skill(s["id"], name=new_name)
+    except Exception as e:
+        logger.warning("同步蒸馏 DB 改名失败: %s", e)
 
 
 @router.delete("/{name}")
