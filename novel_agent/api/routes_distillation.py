@@ -741,7 +741,8 @@ async def compare(req: CompareRequest):
         logger.exception("效果对比生成异常")
         raise HTTPException(500, f"生成失败: {e}")
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
     skill = result.get("skill")
     return {
         "baseline": result["baseline"],
@@ -862,7 +863,8 @@ async def blind_evaluate(req: BlindEvalRequest):
         logger.exception("盲测评估异常")
         raise HTTPException(500, f"评估失败: {e}")
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
     return {
         "baseline": result["baseline"],
         "with_style": result["with_style"],

@@ -409,6 +409,7 @@ async def _generate_json_with_repair(
 @limiter.limit("10/minute")
 async def generate_world(request: Request, req: GenerateWorldRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
+    client = None
     try:
         client = LLMClient(cfg.get_agent_llm("architect"))
         # 注入已有设定约束 + 世界观设计指南
@@ -448,7 +449,8 @@ async def generate_world(request: Request, req: GenerateWorldRequest):
         warning = _check_title_content_consistency(items)
         return GenerateWorldResponse(created=len(items), items=items, warning=warning)
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
         db.close()
 
 
@@ -456,6 +458,7 @@ async def generate_world(request: Request, req: GenerateWorldRequest):
 @limiter.limit("10/minute")
 async def generate_characters(request: Request, req: GenerateCharactersRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
+    client = None
     try:
         client = LLMClient(cfg.get_agent_llm("architect"))
         # 注入已有设定约束 + 角色设计指南
@@ -501,7 +504,8 @@ async def generate_characters(request: Request, req: GenerateCharactersRequest):
             })
         return GenerateCharactersResponse(created=len(items), items=items)
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
         db.close()
 
 
@@ -1349,6 +1353,7 @@ async def generate_volumes(request: Request, req: GenerateVolumesRequest):
 @limiter.limit("10/minute")
 async def generate_arcs(request: Request, req: GenerateArcsRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
+    client = None
     try:
         volume = repo.get_outline(req.parent_id)
         if not volume or volume.level != "volume":
@@ -1578,7 +1583,8 @@ JSON：{{"blueprint": [{{"order": 1, "act": "开端", "title_hint": "", "plot_hi
             warning = f"已分 {batch_no} 批生成完成，共 {len(all_items)} 个细纲。"
         return GenerateOutlinesResponse(created=len(all_items), items=all_items, warning=warning)
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
         db.close()
 
 
@@ -2005,7 +2011,8 @@ async def generate_chapters_by_volume(request: Request, req: GenerateChaptersByV
         warning = " ".join(warning_parts)
         return GenerateOutlinesResponse(created=len(all_items), items=all_items, warning=warning)
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
         db.close()
 
 
@@ -2042,6 +2049,7 @@ class EnrichOutlineRequest(BaseModel):
 async def enrich_outline(request: Request, req: EnrichOutlineRequest):
     """丰富单条大纲内容：对已有大纲的 summary 进行扩写和结构化补充。"""
     db, repo, project, cfg = _get_repo(req.project_id)
+    client = None
     try:
         outline = repo.get_outline(req.outline_id)
         if not outline:
@@ -2233,7 +2241,8 @@ async def enrich_outline(request: Request, req: EnrichOutlineRequest):
             "summary": updated.summary,
         }
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
         db.close()
 
 
@@ -2938,6 +2947,7 @@ def get_genre_context(req: GenreContextRequest):
 @limiter.limit("10/minute")
 async def suggest(request: Request, req: SuggestRequest):
     db, repo, project, cfg = _get_repo(req.project_id)
+    client = None
     try:
         client = LLMClient(cfg.get_agent_llm("architect"))
         consistency = _build_consistency_constraint(repo, project)
@@ -3000,7 +3010,8 @@ async def suggest(request: Request, req: SuggestRequest):
             ))
         return SuggestResponse(suggestions=items)
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
         db.close()
 
 
@@ -5621,10 +5632,11 @@ async def interactive_chat_resume(request: Request, req: InteractiveResumeReques
                     ))
                     return
                 finally:
-                    try:
-                        await client.close()
-                    except Exception as e:
-                        logger.warning("LLM client关闭失败: %s", e)
+                    if client is not None:
+                        try:
+                            await client.close()
+                        except Exception as e:
+                            logger.warning("LLM client关闭失败: %s", e)
 
             # ── polish 分支：再润色 -> audit -> review_pending（给人再审） ──
             if decision == "polish":
@@ -5860,7 +5872,8 @@ async def interactive_variant_resume(request: Request, req: InteractiveVariantRe
                 ):
                     yield evt
             finally:
-                await client.close()
+                if client is not None:
+                    await client.close()
                 client = None
         except Exception as e:
             logger.error("interactive_variant_resume: 未捕获异常: %s", e, exc_info=True)

@@ -3054,7 +3054,8 @@ async def scan_folder(project_id: int, data: ScanFolderInput,
             except Exception as e:
                 logger.warning("scan-folder: 分批 %d/%d 解析失败，跳过此批: %s", i, len(batches), e)
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
 
     total_merged_chars = sum(len(_build_merged_text(b)) for b in batches)
     logger.info("scan-folder: %d 个文件共 %d 字符, 分 %d 批解析完成",
