@@ -99,6 +99,8 @@ qa_*.py
 test[0-9]*.js
 test[0-9]*.ps1
 screenshot-*.png
+# 测试截图（test3_4_screenshot.png 等）
+test*_screenshot*.png
 # scripts/ 下的开发调试脚本（含 API Key 测试脚本，严禁公开）
 scripts/test_*.py
 scripts/e2e_*.py
@@ -113,3 +115,5 @@ scripts/analyze_*.py
 scripts/verify_*.py
 scripts/extract_*.py
 scripts/build_*.py
+# scripts/ 下的个人 QA 脚本（含本机路径，不公开）
+scripts/cleanup_*.ps1
