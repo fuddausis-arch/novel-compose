@@ -27,6 +27,9 @@ class CharacterDelta(BaseModel):
     current_location: str = ""
     current_emotion: str = ""
     known_info: str = ""
+    core_contradiction: str = ""
+    sensory_memories: str = ""
+    absolute_taboos: str = ""
 
 
 class SummaryDelta(BaseModel):
@@ -45,6 +48,7 @@ class OutlineDelta(BaseModel):
     level: Literal["volume", "arc", "chapter"]
     order: int = 0
     act: str = ""
+    strand: str = ""
     title: str = ""
     summary: str = ""
 

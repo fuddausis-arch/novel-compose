@@ -8,13 +8,15 @@ interface UseChatOptions {
   objectType: ChatObjectType | "";
   objectId: string | number;
   title?: string;
+  onRewriteChapter?: (chapter: number, title: string) => void;
 }
 
-export function useChat({ projectId, objectType, objectId, title }: UseChatOptions) {
+export function useChat({ projectId, objectType, objectId, title, onRewriteChapter }: UseChatOptions) {
   const [mode, setMode] = useState<ChatSessionType>("object");
   const [messages, setMessages] = useState<ChatMessageItem[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [streamReasoning, setStreamReasoning] = useState("");
   const [sessions, setSessions] = useState<{ id: string; title: string; session_type: ChatSessionType }[]>([]);
   const { showError } = useToast();
 
@@ -65,6 +67,7 @@ export function useChat({ projectId, objectType, objectId, title }: UseChatOptio
       { id: "user-" + Date.now(), session_id: "", role: "user", content: userMsg, actions: [], created_at: new Date().toISOString() },
     ]);
     setLoading(true);
+    setStreamReasoning("");
     let assistantText = "";
     const assistantId = "assistant-" + Date.now();
     try {
@@ -95,13 +98,27 @@ export function useChat({ projectId, objectType, objectId, title }: UseChatOptio
                 : m
             )
           );
+          // rewrite_chapter 返回 redirect 时，触发 generate/stream 走节点进度
+          const result = action.result as { status?: string; chapter?: number; title?: string } | undefined;
+          if (result?.status === "redirect" && result.chapter && onRewriteChapter) {
+            onRewriteChapter(result.chapter, result.title || `第${result.chapter}章`);
+          }
+        },
+        (reasoning) => {
+          setStreamReasoning((prev) => prev + (reasoning.content || ""));
         }
       );
       await loadHistory();
+      setLoading(false);
+      setStreamReasoning("");
     } catch (e: any) {
       showError("发送失败：" + e.message);
-    } finally {
-      setLoading(false);
+      // 断线重连：3秒后重新加载消息，检查后端是否已完成
+      setTimeout(async () => {
+        await loadHistory();
+        setLoading(false);
+        setStreamReasoning("");
+      }, 3000);
     }
   }, [input, loading, projectId, mode, effectiveObjectType, effectiveObjectId, title, loadHistory, showError]);
 
@@ -134,5 +151,6 @@ export function useChat({ projectId, objectType, objectId, title }: UseChatOptio
     send,
     sessions,
     clearSession,
+    streamReasoning,
   };
 }

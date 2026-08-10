@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -112,21 +113,19 @@ def _metric_parallelism_runs(text: str) -> dict:
         return {"metric": "parallelism_runs", "value": 0, "band": _BAND_MILD,
                 "threshold": "≤2 mild / 3-4 moderate / ≥5 severe"}
 
-    # 提取每段前 6 字作为模板指纹
+    # 提取每段前 3 字作为模板指纹
     templates = []
     for p in paras:
-        head = re.findall(r'[\u4e00-\u9fff]', p)[:6]
+        head = re.findall(r'[\u4e00-\u9fff]', p)[:3]
         templates.append("".join(head))
 
     max_run = 1
     cur_run = 1
     for i in range(1, len(templates)):
-        # 模板相似度：前 3 字完全相同 或 模板完全相同
-        # 前 3 字相同覆盖"越来越X""放弃X""他感到X"等典型排比模板
-        if templates[i] and templates[i - 1] and (
-            templates[i] == templates[i - 1]
-            or templates[i][:3] == templates[i - 1][:3]
-        ):
+        # 模板相似度：前 3 字相同即视为连续排比。
+        # "越来越冷/越来越暗/越来越累"（变化词在后）前 3 字均为"越来越"，应被识别为排比。
+        # 仅 2 段相同前缀仍为 mild，不会误伤常见的"他缓缓起身/他缓缓点头"两段动作描写。
+        if templates[i] and templates[i - 1] and templates[i] == templates[i - 1]:
             cur_run += 1
             max_run = max(max_run, cur_run)
         else:
@@ -679,8 +678,13 @@ async def run_deslop_postprocess(
             metrics_summary=metrics_summary,
         )
         try:
-            rewritten = await llm_client.generate(
-                prompt, system=DESLOP_SYSTEM_PROMPT,
+            # 单遍改写加超时保护（120s）：之前 7 Gate 每遍无独立超时，
+            # LLM 卡住时最长可挂到配置级超时（可达 30 分钟），是"润色长时间未完成"的根因之一。
+            rewritten = await asyncio.wait_for(
+                llm_client.generate(
+                    prompt, system=DESLOP_SYSTEM_PROMPT,
+                ),
+                timeout=120,
             )
             if rewritten and len(rewritten.strip()) > 0:
                 # 删除比例校验：不应大幅缩短

@@ -48,9 +48,15 @@ DIMENSIONS: list[Dimension] = [
     Dimension("爽点分布", AuditCategory.PLOT, "高潮间隔合理性"),
     Dimension("读者期待管理", AuditCategory.PLOT, "章末钩子强度"),
     Dimension("大纲偏离度", AuditCategory.PLOT, "是否偏离本章大纲"),
-    # 文风（spec 15维）
+    # 文风（spec 15维 + 反AI味六维度）
     Dimension("文风统一", AuditCategory.STYLE, "文风指纹一致性"),
     Dimension("AI标记词检测", AuditCategory.STYLE, "禁止句式/转折词限频"),
+    Dimension("反AI味-句式工整度", AuditCategory.STYLE, "句子长度是否过于均匀？高潮段应有3-7字超短句"),
+    Dimension("反AI味-修辞均匀度", AuditCategory.STYLE, "比喻/形容词是否全程一致？战斗密集过渡段应零修辞"),
+    Dimension("反AI味-情感正确度", AuditCategory.STYLE, "角色情感是否过于合理？应有反直觉反应"),
+    Dimension("反AI味-过渡平滑度", AuditCategory.STYLE, "场景切换是否太多过渡词？应硬切场景"),
+    Dimension("反AI味-描写全面度", AuditCategory.STYLE, "每段是否感官齐全？应只保留1-2种感官"),
+    Dimension("反AI味-对话功能化", AuditCategory.STYLE, "所有对话是否都在推动剧情？应有10-20%废话闲聊"),
     # 物理（Acid Test 物理维）
     Dimension("物理一致性", AuditCategory.PHYSICAL, "身体/伤/年龄/生死（死后不能行动）", critical=True),
     # 环境（Acid Test 环境维）

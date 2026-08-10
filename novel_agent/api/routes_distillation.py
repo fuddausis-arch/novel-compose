@@ -1,0 +1,719 @@
+"""去除AI味蒸馏法 API：作品导入 / 多轮蒸馏 / Skill 管理 / 技能融合 / 效果对比。
+
+- GET    /api/distillation/works                  列出所有作品
+- POST   /api/distillation/works                  导入作品（title + content 或 file_path）
+- GET    /api/distillation/works/{id}             作品详情（含 chunks 元信息）
+- DELETE /api/distillation/works/{id}             删除作品（级联删除 chunks/rounds/skills）
+- POST   /api/distillation/works/{id}/distill     开始蒸馏（SSE 流式进度）
+- GET    /api/distillation/works/{id}/skills      该作品生成的所有 Skill
+- GET    /api/distillation/skills                 列出所有蒸馏 Skill
+- GET    /api/distillation/skills/{id}            Skill 详情
+- PUT    /api/distillation/skills/{id}            更新 Skill（名称/描述/内容/标签/状态）
+- DELETE /api/distillation/skills/{id}            删除 Skill（同时删除 Skills 系统 JSON 文件）
+- POST   /api/distillation/fuse                   融合 Skill（skill_ids + weights + name）
+- GET    /api/distillation/fusions                列出所有融合方案
+- POST   /api/distillation/compare                效果对比（prompt + skill_id?）
+- GET    /api/distillation/status/{work_id}       蒸馏进度
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
+
+from novel_agent.config import load_config, LLMConfig
+from novel_agent.distillation.engine import DistillationEngine
+from novel_agent.api.routes_skills import rebuild_skill_index
+from novel_agent.distillation.store import get_store
+from novel_agent.llm.client import LLMClient
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+# ---- Pydantic 模型 ----
+
+
+class WorkImport(BaseModel):
+    """作品导入请求：content 与 file_path 二选一。"""
+    title: str
+    content: str | None = None
+    file_path: str | None = None
+
+
+class DistillRequest(BaseModel):
+    """蒸馏请求。"""
+    rounds: int = 7  # 每片段的蒸馏轮数（维度数），兼容旧调用；dimensions 存在时以 dimensions 为准
+    levels: int = 1  # 蒸馏级数：1=一次蒸馏（碎片）；2=二次蒸馏（浓缩提炼）；3=三次蒸馏（再浓缩）
+    dimensions: list[int] | None = None  # 要蒸馏的维度编号列表（1-12，见 ROUND_DIMENSIONS）；None=全部维度
+    retry_failed: bool = False  # 补蒸馏模式：只重跑失败的片段/轮次，跳过已成功的
+    agent_role: str = "auditor"  # 蒸馏是分析型任务，用低温度角色
+    # 模型设置（可选）：不填则跟随 config.yaml 的 agent_role 配置
+    provider: str | None = None          # 供应商名（从 model_providers.json 读真实 base_url/api_key）
+    model: str | None = None             # 供应商模式下的模型名
+    custom_base_url: str | None = None   # 自定义模式：接口地址
+    custom_api_key: str | None = None    # 自定义模式：API Key（仅本次使用，不落盘）
+    custom_model: str | None = None      # 自定义模式：模型名
+
+
+class SkillUpdate(BaseModel):
+    """Skill 更新字段（均可选）。"""
+    name: str | None = None
+    description: str | None = None
+    content: str | None = None
+    tags: list[str] | None = None
+    status: str | None = None
+
+
+class FuseRequest(BaseModel):
+    """Skill 融合请求。"""
+    skill_ids: list[int] = []           # 蒸馏 DB skill ID
+    skill_files: list[str] = []         # 拆书 skill 文件名（非 DB 记录）
+    weights: list[float] | None = None
+    name: str
+    description: str = ""
+
+
+class CompareRequest(BaseModel):
+    """效果对比请求。"""
+    prompt: str
+    skill_id: int | None = None
+    agent_role: str = "writer"  # 对比生成是创作型任务，用高温度角色
+
+
+# ---- 辅助 ----
+
+
+def _engine() -> DistillationEngine:
+    return DistillationEngine(get_store())
+
+
+def _resolve_llm_config(cfg, req) -> LLMConfig:
+    """按请求体解析蒸馏用 LLM 配置。
+
+    优先级（低→高）：
+    1. 跟随全局：cfg.get_agent_llm(req.agent_role)（config.yaml）
+    2. 供应商模型：req.provider（从 model_providers.json 读真实 base_url/api_key，
+       不经过前端脱敏，密钥不出服务端）+ req.model
+    3. 自定义：req.custom_base_url / custom_api_key / custom_model（api_key 仅本次使用）
+    最后应用 auditor 角色采样参数（低温度，蒸馏是分析型任务）。
+    """
+    import copy
+
+    base: LLMConfig | None = None
+    if req.provider:
+        # 供应商模式：从 model_providers.json 读取完整配置（api_key 真实值，不经前端）
+        from novel_agent.api.routes_models import _load_providers
+
+        for p in _load_providers():
+            if p.get("name") == req.provider:
+                models = p.get("models") or []
+                base = LLMConfig(
+                    base_url=str(p.get("base_url", "")).rstrip("/") or "https://api.openai.com/v1",
+                    api_key=str(p.get("api_key", "")),
+                    model=req.model or (models[0] if models else ""),
+                )
+                break
+        if base is None:
+            raise HTTPException(400, f"供应商不存在: {req.provider}")
+    elif req.custom_base_url or req.custom_model:
+        # 自定义模式：直接传接口地址/密钥/模型名
+        fallback = cfg.get_agent_llm(req.agent_role)
+        base = LLMConfig(
+            base_url=(req.custom_base_url or "").rstrip("/") or "https://api.openai.com/v1",
+            api_key=req.custom_api_key or fallback.api_key,
+            model=req.custom_model or req.model or fallback.model,
+            max_tokens=fallback.max_tokens,
+        )
+    else:
+        # 跟随全局：config.yaml 中 agent_role 的配置
+        base = cfg.get_agent_llm(req.agent_role)
+
+    # 统一应用 auditor 采样参数（温度五级光谱：分析/裁决用低温度）
+    result = copy.copy(base)
+    for key, value in cfg.ROLE_PARAMS.get("auditor", {}).items():
+        setattr(result, key, value)
+    return result
+
+
+def _skill_view(skill: dict) -> dict:
+    """Skill dict 视图：tags 反序列化为 list。"""
+    view = dict(skill)
+    try:
+        view["tags"] = json.loads(view.get("tags") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        view["tags"] = []
+    return view
+
+
+def _fusion_view(fusion: dict) -> dict:
+    """融合方案视图：JSON 字段反序列化 + 附带融合 Skill 文件名。"""
+    view = dict(fusion)
+    try:
+        view["skill_ids"] = json.loads(view.pop("skill_ids_json") or "[]")
+        view["weights"] = json.loads(view.pop("weights_json") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        view.setdefault("skill_ids", [])
+        view.setdefault("weights", [])
+    view["skill_file"] = f"distill_fusion_{view['id']}"
+    return view
+
+
+def _remove_skill_file(name: str) -> None:
+    """删除 Skills 系统中对应的 JSON 文件（若存在）。"""
+    safe = "".join(c for c in name if c.isalnum() or c in ("-", "_"))
+    if not safe:
+        return
+    path = load_config().project_data_dir / "skills" / f"{safe}.json"
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError as e:
+        logger.warning("删除 skill 文件失败 %s: %s", path, e)
+
+
+# ---- 作品管理 ----
+
+
+@router.get("/works")
+def list_works():
+    """列出所有蒸馏作品。"""
+    return {"works": get_store().list_works()}
+
+
+@router.post("/works")
+def import_work(req: WorkImport):
+    """导入作品：直接传 content，或给 file_path 由服务端读取。"""
+    if not req.title.strip():
+        raise HTTPException(400, "标题不能为空")
+    content = req.content
+    source_type = "corpus"
+    if not content:
+        if not req.file_path:
+            raise HTTPException(400, "content 与 file_path 必须提供一个")
+        path = Path(req.file_path)
+        if not path.exists() or not path.is_file():
+            raise HTTPException(404, f"文件不存在: {req.file_path}")
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError as e:
+            raise HTTPException(500, f"读取文件失败: {e}")
+        source_type = "file"
+    try:
+        result = _engine().import_text(
+            title=req.title.strip(), content=content,
+            source_type=source_type, file_path=req.file_path,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    work = get_store().get_work(result["work_id"])
+    return {"created": True, "work": work}
+
+
+@router.post("/works/upload")
+async def import_work_upload(
+    file: UploadFile = File(...),
+    title: str = Form(""),
+):
+    """上传文件（PDF/EPUB/DOCX/TXT）导入蒸馏作品。
+
+    复用 file_extract 提取文本，再走蒸馏 import_text 管线。
+    """
+    from novel_agent.utils.file_extract import extract_text_or_image
+
+    content, is_image = await extract_text_or_image(file)
+    if is_image or not content.strip():
+        raise HTTPException(400, "文件内容为空或为图片")
+
+    book_title = title or (file.filename or "").rsplit(".", 1)[0] or "未命名作品"
+    try:
+        result = _engine().import_text(
+            title=book_title, content=content,
+            source_type="upload", file_path=file.filename,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    work = get_store().get_work(result["work_id"])
+    return {"created": True, "work": work}
+
+
+@router.get("/works/{work_id}")
+def get_work(work_id: int):
+    """作品详情（含 chunks 元信息 + 内容预览）。"""
+    store = get_store()
+    work = store.get_work(work_id)
+    if not work:
+        raise HTTPException(404, f"作品不存在: {work_id}")
+    chunks = store.list_chunks(work_id)
+    # 附带每个片段的内容预览（前 200 字），不回传全量内容
+    full = store.list_chunks(work_id, include_content=True)
+    preview_map = {c["id"]: c["content"][:200] for c in full}
+    for c in chunks:
+        c["preview"] = preview_map.get(c["id"], "")
+    return {"work": work, "chunks": chunks}
+
+
+@router.delete("/works/{work_id}")
+def delete_work(work_id: int):
+    """删除作品（级联删除 chunks/rounds/skills，并清理 Skills 系统文件）。"""
+    store = get_store()
+    work = store.get_work(work_id)
+    if not work:
+        raise HTTPException(404, f"作品不存在: {work_id}")
+    for skill in store.list_skills(work_id):
+        _remove_skill_file(skill["name"])
+    store.delete_work(work_id)
+    return {"deleted": True, "work_id": work_id}
+
+
+# ---- 蒸馏 ----
+
+
+@router.post("/works/{work_id}/distill")
+async def distill_work(work_id: int, req: DistillRequest):
+    """SSE 流式蒸馏整部作品。
+
+    事件类型：
+    - chunk_start {chunk_id, chunk_index, char_count}
+    - round_start {chunk_id, round_num, dimension}
+    - round_done {chunk_id, round_num, round_id}
+    - round_failed {chunk_id, round_num, error}
+    - skill_created {skill_id, skill_name, chunk_index, round_num}
+    - chunk_done {chunk_id, status}
+    - work_done {status, done_rounds, total_rounds, skills_count, ...}
+    - error {error}
+    """
+    store = get_store()
+    if not store.get_work(work_id):
+        raise HTTPException(404, f"作品不存在: {work_id}")
+    if req.rounds < 1:
+        raise HTTPException(400, "rounds 必须 ≥ 1")
+    if req.levels < 1:
+        raise HTTPException(400, "levels 必须 ≥ 1")
+    # 校验维度编号：必须在 ROUND_DIMENSIONS 范围内（1-12）
+    from novel_agent.distillation.engine import ROUND_DIMENSIONS
+
+    if req.dimensions is not None:
+        invalid = [d for d in req.dimensions if d not in ROUND_DIMENSIONS]
+        if invalid:
+            raise HTTPException(400, f"无效的蒸馏维度编号: {invalid}（可选范围 1-{len(ROUND_DIMENSIONS)}）")
+
+    cfg = load_config()
+
+    async def event_gen():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_event(event: dict) -> None:
+            await queue.put(event)
+
+        async def _run():
+            client = None
+            try:
+                # client 构造必须在 try 内：非法 agent_role / 供应商时解析抛错，
+                # 否则任务死亡、queue 收不到哨兵，SSE 生成器永久挂死
+                client = LLMClient(_resolve_llm_config(cfg, req))
+                engine = DistillationEngine(get_store())
+                await engine.distill_work(
+                    work_id, client, dimensions=req.dimensions, levels=req.levels,
+                    retry_failed=req.retry_failed, on_event=on_event,
+                )
+            except Exception as e:
+                logger.exception("蒸馏执行异常 (work_id=%d)", work_id)
+                try:
+                    get_store().update_work_status(work_id, "failed")
+                except Exception:
+                    pass
+                await queue.put({"type": "error", "error": str(e)})
+            finally:
+                if client is not None:
+                    await client.close()
+                # 蒸馏可能产出/更新 skill JSON，重建索引（含向量层）保证可搜
+                try:
+                    rebuild_skill_index()
+                except Exception as e:
+                    logger.warning("蒸馏后重建 skill 索引失败: %s", e)
+                await queue.put(None)  # 结束哨兵
+
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                etype = event.get("type", "message")
+                yield {"event": etype, "data": json.dumps(event, ensure_ascii=False)}
+        finally:
+            if not task.done():
+                task.cancel()
+
+    # ping=15：单轮 LLM 调用可达数分钟，期间无字节会被代理/浏览器掐断
+    return EventSourceResponse(event_gen(), ping=15)
+
+
+@router.get("/status/{work_id}")
+def distill_status(work_id: int):
+    """获取蒸馏进度。"""
+    store = get_store()
+    if not store.get_work(work_id):
+        raise HTTPException(404, f"作品不存在: {work_id}")
+    return store.progress(work_id)
+
+
+# ---- Skill 管理 ----
+
+
+@router.get("/works/{work_id}/skills")
+def list_work_skills(work_id: int):
+    """获取该作品生成的所有 Skill。"""
+    store = get_store()
+    if not store.get_work(work_id):
+        raise HTTPException(404, f"作品不存在: {work_id}")
+    skills = [_skill_view(s) for s in store.list_skills(work_id)]
+    return {"skills": skills}
+
+
+@router.get("/skills")
+def list_skills():
+    """列出所有蒸馏 Skill + 拆书 Skill（供融合选择）。"""
+    store = get_store()
+    skills = [_skill_view(s) for s in store.list_skills()]
+
+    # 也扫描 Skills 系统中的拆书 skill（source="book-to-skill"）
+    skills_dir = load_config().project_data_dir / "skills"
+    if skills_dir.exists():
+        import json as _json
+        for p in sorted(skills_dir.glob("*.json")):
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+                if data.get("source") != "book-to-skill":
+                    continue
+                # 构造与蒸馏 skill 兼容的视图
+                sections = data.get("sections", [])
+                content_parts = []
+                for sec in sections:
+                    if isinstance(sec, dict) and sec.get("content"):
+                        content_parts.append(sec["content"])
+                skills.append({
+                    "id": -1,  # 非 DB 记录，用 -1 标记
+                    "work_id": -1,
+                    "work_title": "拆书导入",
+                    "chunk_index": -1,
+                    "round_num": 0,
+                    "name": data.get("name", ""),
+                    "description": data.get("description", ""),
+                    "content": "\n\n".join(content_parts) or data.get("overview", ""),
+                    "tags": [],
+                    "status": "active",
+                    "source": "book-to-skill",
+                    "file_name": data.get("name", ""),
+                })
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    return {"skills": skills}
+
+
+@router.get("/skills/{skill_id}")
+def get_skill(skill_id: int):
+    """Skill 详情。"""
+    skill = get_store().get_skill(skill_id)
+    if not skill:
+        raise HTTPException(404, f"Skill 不存在: {skill_id}")
+    return _skill_view(skill)
+
+
+@router.put("/skills/{skill_id}")
+def update_skill(skill_id: int, req: SkillUpdate):
+    """更新 Skill（名称/描述/内容/标签/状态），同步更新 Skills 系统 JSON 文件。"""
+    store = get_store()
+    skill = store.get_skill(skill_id)
+    if not skill:
+        raise HTTPException(404, f"Skill 不存在: {skill_id}")
+    updates = req.model_dump(exclude_unset=True)
+    # name 是 Skills 系统文件名，只允许字母数字下划线横线
+    new_name = updates.get("name")
+    if new_name:
+        safe = "".join(c for c in new_name if c.isalnum() or c in ("-", "_"))
+        if safe != new_name:
+            raise HTTPException(400, f"无效的 skill 名称（仅允许字母数字-_）: {new_name}")
+    store.update_skill(skill_id, **updates)
+    updated = store.get_skill(skill_id)
+    # 同步 Skills 系统文件：改名则移动文件，改内容/描述则重写
+    if new_name and new_name != skill["name"]:
+        _remove_skill_file(skill["name"])
+    if updates.keys() & {"name", "description", "content", "tags"}:
+        view = _skill_view(updated)
+        DistillationEngine(get_store())._write_skill_file(
+            view["name"], view["name"], view["description"],
+            view["content"], view["tags"],
+        )
+        rebuild_skill_index()
+    return {"updated": True, "skill": _skill_view(updated)}
+
+
+@router.delete("/skills/{skill_id}")
+def delete_skill(skill_id: int):
+    """删除 Skill（同时删除 Skills 系统 JSON 文件）。"""
+    store = get_store()
+    skill = store.get_skill(skill_id)
+    if not skill:
+        raise HTTPException(404, f"Skill 不存在: {skill_id}")
+    _remove_skill_file(skill["name"])
+    store.delete_skill(skill_id)
+    rebuild_skill_index()
+    return {"deleted": True, "skill_id": skill_id}
+
+
+# ---- 融合 ----
+
+
+@router.post("/fuse")
+def fuse_skills(req: FuseRequest):
+    """融合多个 Skill（蒸馏 DB skill + 拆书 skill 均可，支持"九合一"等模式）。"""
+    if not req.name.strip():
+        raise HTTPException(400, "融合方案名称不能为空")
+    if not req.skill_ids and not req.skill_files:
+        raise HTTPException(400, "至少选择一个 Skill")
+
+    store = get_store()
+    engine = _engine()
+
+    # 收集 DB skill
+    db_skills = []
+    for sid in req.skill_ids:
+        skill = store.get_skill(sid)
+        if not skill:
+            raise HTTPException(404, f"蒸馏 Skill 不存在: id={sid}")
+        db_skills.append(skill)
+
+    # 收集拆书 skill（从文件加载）
+    file_skills = []
+    skills_dir = load_config().project_data_dir / "skills"
+    for fname in req.skill_files:
+        path = skills_dir / f"{fname}.json"
+        if not path.exists():
+            raise HTTPException(404, f"拆书 Skill 文件不存在: {fname}")
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            sections = data.get("sections", [])
+            content_parts = [s["content"] for s in sections if isinstance(s, dict) and s.get("content")]
+            file_skills.append({
+                "name": data.get("name", fname),
+                "description": data.get("description", ""),
+                "content": "\n\n".join(content_parts) or data.get("overview", ""),
+                "work_title": "拆书导入",
+                "chunk_index": -1,
+                "round_num": 0,
+                "tags": [],
+                "source": "book-to-skill",
+            })
+        except (json.JSONDecodeError, OSError) as e:
+            raise HTTPException(500, f"读取拆书 Skill 失败: {e}")
+
+    # 合并 + 权重
+    all_skills = db_skills + file_skills
+    if req.weights and len(req.weights) == len(all_skills):
+        w = [max(0.0, float(x)) for x in req.weights]
+    else:
+        w = [1.0] * len(all_skills)
+    total = sum(w) or 1.0
+    w = [x / total for x in w]
+
+    # 写入融合产物
+    fusion_id = store.create_fusion(
+        name=req.name.strip(), skill_ids=req.skill_ids, weights=w,
+        description=req.description,
+    )
+    ordered = sorted(zip(all_skills, w), key=lambda x: x[1], reverse=True)
+    lines = [
+        f"# 融合技能：{req.name.strip()}",
+        "",
+        f"本 Skill 由 {len(all_skills)} 个 Skill 融合而成"
+        f"（蒸馏 {len(db_skills)} + 拆书 {len(file_skills)}），"
+        "权重越高对生成结果影响越大。",
+        "",
+    ]
+    for skill, weight in ordered:
+        source_label = "拆书" if skill.get("source") == "book-to-skill" else "蒸馏"
+        lines.append("---")
+        ci = skill.get("chunk_index", -1)
+        rn = skill.get("round_num", 0)
+        chunk_info = f"片段{ci + 1} 第{rn}轮" if ci >= 0 else ""
+        lines.append(f"## 来源：{source_label} · 《{skill['work_title']}》{chunk_info}（权重 {weight:.0%}）")
+        lines.append("")
+        lines.append(skill["content"])
+        lines.append("")
+
+    content = "\n".join(lines)
+    file_name = f"distill_fusion_{fusion_id}"
+    engine._write_skill_file(
+        file_name, req.name.strip(),
+        req.description or f"{len(all_skills)} 个 Skill 的加权融合",
+        content, tags=["融合", f"{len(all_skills)}合一"],
+    )
+    rebuild_skill_index()
+    logger.info("Skill 融合完成: fusion_id=%d name=%s (蒸馏 %d + 拆书 %d)",
+                fusion_id, req.name, len(db_skills), len(file_skills))
+    fusion = store.get_fusion(fusion_id)
+    return {"created": True, "fusion": _fusion_view(fusion)}
+
+
+@router.get("/fusions")
+def list_fusions():
+    """列出所有融合方案。"""
+    fusions = [_fusion_view(f) for f in get_store().list_fusions()]
+    return {"fusions": fusions}
+
+
+# ---- 效果对比 ----
+
+
+@router.post("/compare")
+async def compare(req: CompareRequest):
+    """效果对比：同一 prompt 下，"无章纲直出" vs "加载蒸馏 Skill 直出"。"""
+    if not req.prompt.strip():
+        raise HTTPException(400, "prompt 不能为空")
+    cfg = load_config()
+    client = LLMClient(cfg.get_agent_llm(req.agent_role))
+    try:
+        result = await _engine().compare_generate(
+            req.prompt, client, skill_id=req.skill_id,
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.exception("效果对比生成异常")
+        raise HTTPException(500, f"生成失败: {e}")
+    finally:
+        await client.close()
+    skill = result.get("skill")
+    return {
+        "baseline": result["baseline"],
+        "with_skill": result["with_skill"],
+        "skill": _skill_view(skill) if skill else None,
+    }
+
+
+# ---- 人物级蒸馏 ----
+
+
+class CharacterDistillRequest(BaseModel):
+    """角色蒸馏请求。"""
+    work_id: int
+    character_name: str
+    agent_role: str = "auditor"
+    # 模型设置（可选）：不填则跟随 config.yaml 的 agent_role 配置
+    provider: str | None = None
+    model: str | None = None
+    custom_base_url: str | None = None
+    custom_api_key: str | None = None
+    custom_model: str | None = None
+
+
+@router.post("/distill-character")
+async def distill_character(req: CharacterDistillRequest):
+    """蒸馏单个角色的对话风格（SSE 流式）。
+
+    从作品中提取该角色的出场段落，让 LLM 分析说话风格，
+    生成 character-style skill 供对话写作时注入。
+    """
+    store = get_store()
+    if not store.get_work(req.work_id):
+        raise HTTPException(404, f"作品不存在: {req.work_id}")
+    if not req.character_name.strip():
+        raise HTTPException(400, "角色名不能为空")
+
+    cfg = load_config()
+
+    async def event_gen():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_event(event: dict) -> None:
+            await queue.put(event)
+
+        async def _run():
+            client = None
+            try:
+                client = LLMClient(_resolve_llm_config(cfg, req))
+                engine = DistillationEngine(get_store())
+                await engine.distill_character(
+                    req.work_id, req.character_name.strip(), client,
+                    on_event=on_event,
+                )
+            except Exception as e:
+                logger.exception("角色蒸馏异常 (work_id=%d char=%s)",
+                                 req.work_id, req.character_name)
+                await queue.put({"type": "error", "error": str(e)})
+            finally:
+                if client is not None:
+                    await client.close()
+                # 角色蒸馏可能产出 skill JSON，重建索引保证可搜
+                try:
+                    rebuild_skill_index()
+                except Exception as e:
+                    logger.warning("角色蒸馏后重建 skill 索引失败: %s", e)
+                await queue.put(None)
+
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                etype = event.get("type", "message")
+                yield {"event": etype, "data": json.dumps(event, ensure_ascii=False)}
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return EventSourceResponse(event_gen(), ping=15)
+
+
+# ---- 盲测评估 ----
+
+
+class BlindEvalRequest(BaseModel):
+    """盲测评估请求。"""
+    skill_id: int
+    prompt: str
+    agent_role: str = "writer"
+
+
+@router.post("/blind-eval")
+async def blind_evaluate(req: BlindEvalRequest):
+    """对蒸馏 Skill 做盲测评估。
+
+    1. 用 skill 和不用 skill 分别生成一段文字
+    2. 随机打乱顺序让 LLM 盲评
+    3. 返回评估结果（哪段更接近原作风格、评分、理由）
+    """
+    if not req.prompt.strip():
+        raise HTTPException(400, "prompt 不能为空")
+    cfg = load_config()
+    client = LLMClient(cfg.get_agent_llm(req.agent_role))
+    try:
+        result = await _engine().blind_evaluate(
+            skill_id=req.skill_id,
+            prompt=req.prompt.strip(),
+            client=client,
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.exception("盲测评估异常")
+        raise HTTPException(500, f"评估失败: {e}")
+    finally:
+        await client.close()
+    return {
+        "baseline": result["baseline"],
+        "with_style": result["with_style"],
+        "judgment": result["judgment"],
+        "skill": _skill_view(result.get("skill")),
+    }

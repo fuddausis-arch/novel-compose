@@ -4,7 +4,7 @@ import re
 import shutil
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from novel_agent.bible.database import SessionLocal, set_config
 from novel_agent.bible.models import Base, Project
 from novel_agent.bible.repository import BibleRepository
@@ -14,11 +14,18 @@ router = APIRouter()
 
 
 class ProjectCreate(BaseModel):
-    title: str
-    genre: str = ""
-    summary: str = ""
-    style: str = ""
+    title: str = Field(min_length=1, max_length=500)
+    genre: str = Field(default="", max_length=200)
+    summary: str = Field(default="", max_length=10000)
+    style: str = Field(default="", max_length=2000)
     template_key: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("标题不能为空")
+        return v.strip()
 
 
 def _setup_db():
@@ -36,8 +43,8 @@ def _template_dir() -> Path:
 def _load_template_text(template_key: str | None) -> str | None:
     if not template_key:
         return None
-    # 防路径穿越：只允许字母数字下划线横线
-    if not re.match(r'^[a-zA-Z0-9_\-]+$', template_key):
+    # 防路径穿越：禁止 / \ .. 等路径分隔符
+    if any(c in template_key for c in '/\\') or template_key.startswith('.'):
         return None
     template_path = _template_dir() / f"{template_key}.md"
     # 确保路径在模板目录内
@@ -59,7 +66,21 @@ def list_genre_templates():
     templates = []
     for p in sorted(d.glob("*.md")):
         key = p.stem
-        templates.append({"key": key, "title": key, "description": ""})
+        # 从模板文件提取标题和核心卖点作为 description
+        text = p.read_text(encoding="utf-8")
+        title = key
+        desc = ""
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("# "):
+                title = line[2:].strip()
+            elif line.startswith("## 核心卖点") :
+                # 取下一行
+                idx = text.splitlines().index([l for l in text.splitlines() if l.strip().startswith("## 核心卖点")][0])
+                if idx + 1 < len(text.splitlines()):
+                    desc = text.splitlines()[idx + 1].strip()
+                break
+        templates.append({"key": key, "title": title, "description": desc})
     return templates
 
 
@@ -69,16 +90,23 @@ def create_project(data: ProjectCreate):
     db = _setup_db()
     try:
         style = data.style
-        # 如果选择了模板且没填自定义风格，把模板内容追加到 style
+        genre = data.genre
+        # 如果选择了模板，把模板的 genre 作为项目 genre，模板内容追加到 style
         template_text = _load_template_text(data.template_key)
         if template_text:
-            style = f"{style}\n\n【模板要求】\n{template_text}".strip()
-        p = Project(title=data.title, genre=data.genre, summary=data.summary, style=style)
+            # 从模板标题提取题材名
+            for line in template_text.splitlines():
+                line = line.strip()
+                if line.startswith("# "):
+                    genre = genre or line[2:].strip()
+                    break
+            style = f"{style}\n\n【题材模板】\n{template_text}".strip()
+        p = Project(title=data.title, genre=genre, summary=data.summary, style=style)
         db.add(p); db.commit(); db.refresh(p)
         # 创建项目专属目录
         cfg.project_dir(p.id).mkdir(parents=True, exist_ok=True)
         cfg.project_chapters_dir(p.id).mkdir(parents=True, exist_ok=True)
-        return {"id": p.id, "title": p.title, "genre": p.genre, "summary": p.summary, "style": style}
+        return _project_to_dict(p)
     finally:
         db.close()
 
@@ -88,8 +116,7 @@ def list_projects():
     db = _setup_db()
     try:
         projects = db.query(Project).order_by(Project.id.desc()).all()
-        return [{"id": p.id, "title": p.title, "genre": p.genre, "summary": p.summary}
-                for p in projects]
+        return [_project_to_dict(p) for p in projects]
     finally:
         db.close()
 
@@ -101,16 +128,41 @@ def get_project(project_id: int):
         p = db.query(Project).filter(Project.id == project_id).first()
         if not p:
             raise HTTPException(404, "项目不存在")
-        return {"id": p.id, "title": p.title, "genre": p.genre, "summary": p.summary, "style": p.style}
+        return _project_to_dict(p)
     finally:
         db.close()
 
 
 class ProjectUpdate(BaseModel):
-    title: str | None = None
-    genre: str | None = None
-    summary: str | None = None
-    style: str | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    genre: str | None = Field(default=None, max_length=200)
+    summary: str | None = Field(default=None, max_length=10000)
+    style: str | None = Field(default=None, max_length=2000)
+    constitution: str | None = None
+    target_audience: str | None = None
+    central_concept: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            raise ValueError("标题不能为空")
+        return v.strip() if v is not None else None
+    word_count_target: int | None = None
+    target_volumes: int | None = None
+    golden_finger: str | None = None
+
+
+def _project_to_dict(p: Project) -> dict:
+    return {"id": p.id, "title": p.title, "genre": p.genre, "summary": p.summary, "style": p.style,
+            "constitution": p.constitution or "",
+            "target_audience": p.target_audience or "",
+            "central_concept": p.central_concept or "",
+            "word_count_target": p.word_count_target or 0,
+            "target_volumes": p.target_volumes or 0,
+            "golden_finger": p.golden_finger or "",
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "updated_at": p.updated_at.isoformat() if p.updated_at else None}
 
 
 @router.put("/{project_id}")
@@ -120,12 +172,14 @@ def update_project(project_id: int, data: ProjectUpdate):
         p = db.query(Project).filter(Project.id == project_id).first()
         if not p:
             raise HTTPException(404, "项目不存在")
-        for k in ("title", "genre", "summary", "style"):
+        for k in ("title", "genre", "summary", "style", "constitution",
+                  "target_audience", "central_concept", "word_count_target",
+                  "target_volumes", "golden_finger"):
             v = getattr(data, k)
             if v is not None:
                 setattr(p, k, v)
         db.commit(); db.refresh(p)
-        return {"id": p.id, "title": p.title, "genre": p.genre, "summary": p.summary, "style": p.style}
+        return _project_to_dict(p)
     finally:
         db.close()
 
@@ -159,10 +213,11 @@ class BatchDeleteRequest(BaseModel):
 
 @router.post("/batch/delete")
 def batch_delete_projects(req: BatchDeleteRequest):
-    """批量删除项目。"""
+    """批量删除项目。单项目失败不阻塞其余删除。"""
     cfg = load_config()
     db = _setup_db()
     deleted_ids = []
+    failed_ids: list[dict] = []
     try:
         for pid in req.project_ids:
             p = db.query(Project).filter(Project.id == pid).first()
@@ -171,14 +226,17 @@ def batch_delete_projects(req: BatchDeleteRequest):
             try:
                 repo = BibleRepository(db, project_id=pid)
                 repo.delete_all_project_data()
-            except Exception:
-                pass
-            db.delete(p)
+                db.delete(p)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                failed_ids.append({"project_id": pid, "error": str(e)})
+                continue
             project_dir = cfg.project_dir(pid)
             if project_dir.exists():
                 shutil.rmtree(project_dir, ignore_errors=True)
             deleted_ids.append(pid)
-        db.commit()
-        return {"deleted": True, "project_ids": deleted_ids, "count": len(deleted_ids)}
+        return {"deleted": True, "project_ids": deleted_ids,
+                "count": len(deleted_ids), "failed": failed_ids}
     finally:
         db.close()

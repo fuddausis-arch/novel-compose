@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { PenLine, BookOpen, Users, Route, AlertTriangle, AlertCircle, CheckCircle2 } from "lucide-react";
+import { PenLine, BookOpen, Users, Route, AlertTriangle, AlertCircle, CheckCircle2, Loader2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -7,6 +7,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
+import { useAppStore } from "@/store";
+import { StatCard } from "@/components/ui/stat-card";
 import { cn } from "@/lib/utils";
 import type { Project, GenreContext } from "@/types";
 
@@ -22,6 +24,7 @@ interface DashboardViewProps {
   onSave: (form: Partial<Project>) => void | Promise<void>;
   genreContext: GenreContext | null;
   onRefreshGenreContext: () => void;
+  refreshingGenre: boolean;
 }
 
 export function DashboardView({
@@ -36,10 +39,19 @@ export function DashboardView({
   onSave,
   genreContext,
   onRefreshGenreContext,
+  refreshingGenre,
 }: DashboardViewProps) {
   const [dashboard, setDashboard] = useState<any>(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const { showError } = useToast();
+
+  const handleSave = () => {
+    if (!projectForm.title?.trim()) {
+      showError("标题不能为空");
+      return;
+    }
+    onSave(projectForm);
+  };
 
   const loadDashboard = async () => {
     if (!project) return;
@@ -62,25 +74,28 @@ export function DashboardView({
   return (
     <div className="flex-1 overflow-y-auto space-y-3">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="总字数" value={totalWords.toLocaleString()} icon={<PenLine className="h-4 w-4" />} color="primary" />
-        <StatCard label="章节数" value={chapterCount} icon={<BookOpen className="h-4 w-4" />} color="primary" />
-        <StatCard label="角色数" value={characterCount} icon={<Users className="h-4 w-4" />} color="primary" />
-        <StatCard label="伏笔 / 大纲" value={`${foreshadowCount}/${outlineCount}`} icon={<Route className="h-4 w-4" />} color="warning" />
+        <StatCard label="总字数" value={totalWords.toLocaleString()} icon={<PenLine className="h-4 w-4" />} tone="primary" />
+        <StatCard label="章节数" value={chapterCount} icon={<BookOpen className="h-4 w-4" />} tone="primary" />
+        <StatCard label="角色数" value={characterCount} icon={<Users className="h-4 w-4" />} tone="primary" />
+        <StatCard label="伏笔 / 大纲" value={`${foreshadowCount}/${outlineCount}`} icon={<Route className="h-4 w-4" />} tone="warning" />
       </div>
       <Card>
         <CardHeader><CardTitle>项目概览</CardTitle></CardHeader>
         <CardContent className="space-y-3">
-          <Input placeholder="标题" value={projectForm.title || ""} onChange={(e) => setProjectForm({ ...projectForm, title: e.target.value })} />
-          <Input placeholder="类型" value={projectForm.genre || ""} onChange={(e) => setProjectForm({ ...projectForm, genre: e.target.value })} />
-          <Textarea placeholder="简介" value={projectForm.summary || ""} onChange={(e) => setProjectForm({ ...projectForm, summary: e.target.value })} />
-          <Textarea placeholder="文风" value={projectForm.style || ""} onChange={(e) => setProjectForm({ ...projectForm, style: e.target.value })} />
-          <Button onClick={() => onSave(projectForm)}>保存项目信息</Button>
+          <Input placeholder="标题" value={projectForm.title || ""} maxLength={500} onChange={(e) => setProjectForm({ ...projectForm, title: e.target.value })} />
+          <Input placeholder="类型" value={projectForm.genre || ""} maxLength={200} onChange={(e) => setProjectForm({ ...projectForm, genre: e.target.value })} />
+          <Textarea placeholder="简介" value={projectForm.summary || ""} maxLength={10000} onChange={(e) => setProjectForm({ ...projectForm, summary: e.target.value })} />
+          <Textarea placeholder="文风" value={projectForm.style || ""} maxLength={2000} onChange={(e) => setProjectForm({ ...projectForm, style: e.target.value })} />
+          <Button onClick={handleSave} disabled={!projectForm.title?.trim()}>保存项目信息</Button>
         </CardContent>
       </Card>
+      <BatchGenerationCard projectId={project.id} />
       <Card>
         <CardHeader className="flex items-center justify-between">
           <CardTitle>题材上下文</CardTitle>
-          <Button variant="outline" size="sm" onClick={onRefreshGenreContext}>刷新</Button>
+          <Button variant="outline" size="sm" onClick={onRefreshGenreContext} disabled={refreshingGenre}>
+            {refreshingGenre ? "刷新中…" : "刷新"}
+          </Button>
         </CardHeader>
         <CardContent className="space-y-3">
           {!genreContext ? (
@@ -209,6 +224,123 @@ export function DashboardView({
   );
 }
 
+function BatchGenerationCard({ projectId }: { projectId: number }) {
+  const store = useAppStore();
+  const { showSuccess, showError } = useToast();
+  const [startChapter, setStartChapter] = useState(1);
+  const [endChapter, setEndChapter] = useState(10);
+
+  const { batchGenerating, batchProgress, batchErrors } = store;
+  const pct = batchProgress.total > 0
+    ? Math.round(((batchProgress.completed + batchProgress.failed) / batchProgress.total) * 100)
+    : 0;
+
+  const handleStart = async () => {
+    if (startChapter < 1 || endChapter < startChapter) {
+      showError("请输入有效的章节范围（起始 ≥ 1，结束 ≥ 起始）");
+      return;
+    }
+    showSuccess(`开始批量生成第 ${startChapter}-${endChapter} 章`);
+    await store.batchGenerate(projectId, startChapter, endChapter);
+  };
+
+  const handleStop = () => {
+    store.batchStop();
+    showSuccess("已停止批量生成");
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex items-center justify-between">
+        <CardTitle>批量生成</CardTitle>
+        {batchGenerating && (
+          <Badge variant="warning" className="flex items-center gap-1">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            生成中
+          </Badge>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-muted">起始章节</label>
+            <Input
+              type="number"
+              min={1}
+              value={startChapter}
+              onChange={(e) => setStartChapter(Number(e.target.value))}
+              disabled={batchGenerating}
+              className="w-28"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-muted">结束章节</label>
+            <Input
+              type="number"
+              min={1}
+              value={endChapter}
+              onChange={(e) => setEndChapter(Number(e.target.value))}
+              disabled={batchGenerating}
+              className="w-28"
+            />
+          </div>
+          {batchGenerating ? (
+            <Button variant="danger" onClick={handleStop}>
+              停止
+            </Button>
+          ) : (
+            <Button variant="primary" onClick={handleStart}>
+              开始批量生成
+            </Button>
+          )}
+        </div>
+
+        {(batchGenerating || batchProgress.total > 0) && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted">
+                进度：{batchProgress.current}/{batchProgress.total}
+              </span>
+              <span className="text-muted">{pct}%</span>
+            </div>
+            <div className="h-2 rounded-full bg-surface overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all duration-300"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <div className="flex gap-4 text-sm">
+              <span className="flex items-center gap-1 text-success">
+                <CheckCircle2 className="h-4 w-4" />
+                成功 {batchProgress.completed}
+              </span>
+              <span className="flex items-center gap-1 text-danger">
+                <XCircle className="h-4 w-4" />
+                失败 {batchProgress.failed}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {batchErrors.length > 0 && (
+          <div className="rounded-xl border border-danger/30 bg-danger/5 p-3 space-y-1 max-h-40 overflow-y-auto">
+            <div className="text-sm font-semibold text-danger flex items-center gap-1.5">
+              <AlertTriangle className="h-4 w-4" />
+              失败章节（{batchErrors.length}）
+            </div>
+            {batchErrors.map((err, i) => (
+              <div key={i} className="text-sm text-foreground/90">
+                {err.chapter > 0 && <span className="text-muted">第{err.chapter}章：</span>}
+                {err.error}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function MiniStat({ label, value, warning, danger }: { label: string; value: number; warning?: boolean; danger?: boolean }) {
   const Icon = danger ? AlertTriangle : warning ? AlertCircle : CheckCircle2;
   return (
@@ -222,35 +354,5 @@ function MiniStat({ label, value, warning, danger }: { label: string; value: num
         {label}
       </div>
     </div>
-  );
-}
-
-function StatCard({
-  label,
-  value,
-  icon,
-  color = "primary",
-}: {
-  label: string;
-  value: string | number;
-  icon?: React.ReactNode;
-  color?: "primary" | "warning" | "danger" | "success";
-}) {
-  const colorClasses = {
-    primary: "bg-primary-muted text-primary",
-    warning: "bg-warning/10 text-warning",
-    danger: "bg-danger/10 text-danger",
-    success: "bg-success/10 text-success",
-  };
-  return (
-    <Card className="flex items-center gap-3 p-4">
-      <div className={cn("h-10 w-10 rounded-xl flex items-center justify-center shrink-0", colorClasses[color])}>
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <div className="text-xl font-bold text-foreground truncate">{value}</div>
-        <div className="text-xs font-medium text-muted">{label}</div>
-      </div>
-    </Card>
   );
 }

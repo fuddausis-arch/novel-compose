@@ -7,7 +7,7 @@ import { ToastProvider } from '@/hooks/useToast'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <HashRouter>
+    <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <ToastProvider>
         <App />
       </ToastProvider>

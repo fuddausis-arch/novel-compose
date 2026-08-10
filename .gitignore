@@ -43,3 +43,73 @@ theme-*.png
 design-mockups.png
 tmp-*.py
 tmp-*.html
+# 打包产物（release*/backup_*）不纳入版本管理，靠 git tag 管版本
+release*/
+backup_*/
+
+# 配置文件（含 API Key，不纳入版本管理）
+config.yaml
+# 备份文件可能含明文 Key，一律忽略
+config.yaml.ark.bak
+config.yaml.*.bak
+*.bak
+# 真实 API Key 只存在 .env，永不进 git
+.env
+.env.*
+审查.txt
+测试报告*.md
+
+# ===== 开源发布新增忽略 =====
+# e2e 测试数据（含真实 API Key 与测试小说正文，禁止公开）
+e2e_project_data/
+e2e_project_data_50ch/
+e2e_output_50ch/
+# 本地日志与临时产物
+_archive/
+_archive_extensions/
+*.log
+*.pyout
+# 前端本地构建（开源后建议 clone 后自行构建，不提交产物）
+frontend/dist/
+frontend/android/
+frontend/test-results/
+frontend/app-state.png
+frontend/*.png
+# 测试运行临时输出
+_pytest_out.txt
+
+# ===== 开源发布·内部文档与开发记录（含本机路径/个人笔记，不公开）=====
+docs/superpowers/
+docs/spec/
+docs/test-reports/
+docs/*.md
+!docs/README.md
+
+# ===== 开源发布·版权材料与个人分析（严禁公开）=====
+# 受版权保护的小说全文语料（禁止随仓库公开）
+小说语料/
+# 对标作品分析文档（含未授权引用）
+写作风格指南/
+
+# ===== 开源发布·开发调试垃圾（不公开）=====
+qa_*.ps1
+qa_*.js
+qa_*.py
+*.har
+test[0-9]*.js
+test[0-9]*.ps1
+screenshot-*.png
+# scripts/ 下的开发调试脚本（含 API Key 测试脚本，严禁公开）
+scripts/test_*.py
+scripts/e2e_*.py
+scripts/e2e_*.db
+scripts/tmp_*.py
+scripts/debug_*.py
+scripts/inspect_*.py
+scripts/fix_*.py
+scripts/check_*.py
+scripts/cleanup_*.py
+scripts/analyze_*.py
+scripts/verify_*.py
+scripts/extract_*.py
+scripts/build_*.py

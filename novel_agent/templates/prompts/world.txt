@@ -6,7 +6,12 @@
 文风：${style}
 要求：${requirements}
 风格：${style_hint}
-
+${existing_world}
 请输出 JSON：{"world_settings":[{"category":"","title":"","content":""}]}
-category 可选：世界观、力量体系、势力、地点、规则、历史、现实层、异能层、神明层、其他。
+category 可选：${categories}。
+约束：
+1. 与已有设定保持一致，不重复已有条目，可补充细节或扩展新设定。
+2. category 必须取自上述列表，不得使用其他题材的层级词（如修真题材不得用"异能层"，都市题材不得用"境界"）。
+3. title 中的数字/层级数必须与 content 中实际列出的条目数严格一致（如 content 列了 4 个境界，title 不得写"九品""八重"等不符数字）。
+4. content 为纯文本，换行用 \n，禁止使用 <br>/<b>/<p> 等 HTML 标签。
 只输出 JSON，不要 markdown 代码块。

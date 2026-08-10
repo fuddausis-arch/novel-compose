@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Users, Plus, Sparkles, Trash2, Save, X, Edit2, Loader2 } from "lucide-react";
+import { Users, Plus, Sparkles, Trash2, Save, X, Edit2 } from "lucide-react";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog";
@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AiPreviewDialog } from "@/components/ai-preview-dialog";
 import { AiSuggestionDialog } from "@/components/ai-suggestion-dialog";
+import { GenerationStreamDialog, type GenStreamItem } from "@/components/generation-stream-dialog";
 
 interface CharactersViewProps {
   project: Project | null;
@@ -22,7 +23,7 @@ interface CharactersViewProps {
 
 const ROLES = ["主角", "配角", "反派"];
 
-export function CharactersView({ project, characters, refresh, setLoading }: CharactersViewProps) {
+export function CharactersView({ project, characters, refresh }: CharactersViewProps) {
   if (!project) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted text-sm">
@@ -33,7 +34,6 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
 
   const { showSuccess, showError } = useToast();
   const { confirm: confirmDelete, dialog: deleteDialog } = useConfirmDialog();
-  const [generating, setGenerating] = useState(false);
   const [protagonistCount, setProtagonistCount] = useState(1);
   const [supportingCount, setSupportingCount] = useState(3);
   const [antagonistCount, setAntagonistCount] = useState(2);
@@ -48,23 +48,34 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<Partial<Character>[]>([]);
   const [suggestOpen, setSuggestOpen] = useState(false);
+  const [streamOpen, setStreamOpen] = useState(false);
 
   const handleGenerate = async () => {
-    setGenerating(true);
-    setLoading?.(true);
+    setStreamOpen(true);
+  };
+
+  // 流式生成：创建 EventSource
+  const createStreamSource = () => api.generateCharactersStream(project.id, protagonistCount, supportingCount, antagonistCount, style);
+
+  // 流式生成完成/导入后：逐条导入角色
+  const handleStreamImport = async (items: GenStreamItem[]) => {
     try {
-      const r = await api.generateCharacters(project.id, protagonistCount, supportingCount, antagonistCount, style);
-      if (r.items && r.items.length > 0) {
-        setPreviewItems(r.items);
-        setPreviewOpen(true);
-      } else {
-        showError("AI 未返回角色");
-      }
+      await api.importCharacters(project.id, items as any[]);
+      await refresh();
+      showSuccess(`已导入 ${items.length} 位角色`);
     } catch (e: any) {
-      showError("生成失败：" + e.message);
-    } finally {
-      setGenerating(false);
-      setLoading?.(false);
+      showError("导入失败：" + e.message);
+    }
+  };
+
+  // 单条导入
+  const handleStreamImportOne = async (item: GenStreamItem) => {
+    try {
+      await api.importCharacters(project.id, [item as any]);
+      await refresh();
+      showSuccess(`已导入：${item.name || "未命名"}`);
+    } catch (e: any) {
+      showError("导入失败：" + e.message);
     }
   };
 
@@ -86,9 +97,13 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
   };
 
   const handleCreate = async () => {
+    if (!(newForm.name ?? "").trim()) {
+      showError("请输入角色姓名");
+      return;
+    }
     try {
       await api.createCharacter(project.id, {
-        name: newForm.name || "新角色",
+        name: (newForm.name ?? "").trim(),
         role: newForm.role || "配角",
       });
       setAdding(false);
@@ -110,7 +125,7 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
     try {
       const target = characters.find((c) => c.id === editingId);
       if (!target) return;
-      await api.updateCharacter(project.id, target.name, editForm);
+      await api.updateCharacter(project.id, target.id, editForm);
       setEditingId(null);
       await refresh();
       showSuccess("已保存");
@@ -129,7 +144,7 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
     });
     if (!confirmed) return;
     try {
-      await api.deleteCharacter(project.id, c.name);
+      await api.deleteCharacter(project.id, c.id);
       await refresh();
       showSuccess("已删除");
     } catch (e: any) {
@@ -153,12 +168,25 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
     { key: "motivation", label: "动机", rows: 2 },
     { key: "background", label: "背景", rows: 2 },
     { key: "arc", label: "角色弧线", rows: 2 },
+    { key: "language_style", label: "语言风格/台词", rows: 3 },
+    { key: "combat_style", label: "战斗风格", rows: 3 },
+    { key: "growth_curve", label: "成长曲线", rows: 3 },
+    { key: "emotional_anchor", label: "情感锚点", rows: 2 },
     { key: "relationships", label: "关系", rows: 2 },
     { key: "secrets", label: "秘密", rows: 2 },
   ];
 
   return (
     <div className="flex-1 flex flex-col gap-3 min-h-0 overflow-hidden">
+      <GenerationStreamDialog
+        open={streamOpen}
+        title="角色"
+        type="character"
+        createSource={createStreamSource}
+        onClose={() => setStreamOpen(false)}
+        onImport={handleStreamImport}
+        onImportOne={handleStreamImportOne}
+      />
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -183,9 +211,9 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
             <Input type="number" className="w-20" value={antagonistCount} onChange={(e) => setAntagonistCount(Number(e.target.value))} />
             <span className="text-xs text-muted">反派</span>
             <Input className="w-32" placeholder="风格" value={style} onChange={(e) => setStyle(e.target.value)} />
-            <Button variant="primary" onClick={handleGenerate} disabled={generating}>
-              {generating ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              {generating ? "AI 生成中…" : "AI 生成角色"}
+            <Button variant="primary" onClick={handleGenerate}>
+              <Sparkles className="h-3.5 w-3.5 mr-1" />
+              AI 生成角色
             </Button>
           </div>
 
@@ -197,7 +225,7 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
                   <option key={r} value={r}>{r}</option>
                 ))}
               </Select>
-              <Button size="sm" onClick={handleCreate}>保存</Button>
+              <Button size="sm" onClick={handleCreate} disabled={!(newForm.name ?? "").trim()} title={(newForm.name ?? "").trim() ? "" : "请输入角色姓名"}>保存</Button>
               <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>取消</Button>
             </div>
           )}
@@ -258,6 +286,10 @@ export function CharactersView({ project, characters, refresh, setLoading }: Cha
                     {c.motivation && <p><span className="text-foreground">动机：</span>{c.motivation}</p>}
                     {c.background && <p><span className="text-foreground">背景：</span>{c.background}</p>}
                     {c.arc && <p><span className="text-foreground">弧线：</span>{c.arc}</p>}
+                    {c.language_style && <p><span className="text-foreground">语言风格：</span>{c.language_style}</p>}
+                    {c.combat_style && <p><span className="text-foreground">战斗风格：</span>{c.combat_style}</p>}
+                    {c.growth_curve && <p><span className="text-foreground">成长曲线：</span>{c.growth_curve}</p>}
+                    {c.emotional_anchor && <p><span className="text-foreground">情感锚点：</span>{c.emotional_anchor}</p>}
                     {c.relationships && <p><span className="text-foreground">关系：</span>{c.relationships}</p>}
                     {c.secrets && <p><span className="text-foreground">秘密：</span>{c.secrets}</p>}
                   </div>

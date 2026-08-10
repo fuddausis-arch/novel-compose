@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CheckSquare, Square, Trash2 } from "lucide-react";
-import type { Character, Foreshadow, Outline, WorldSetting, Faction, FactionRelationship, CharacterRelationship, Monster, EntityAppearance } from "@/types";
+import type { Character, Foreshadow, Outline, WorldSetting, Faction, FactionRelationship, CharacterRelationship, Monster, Instance, EntityAppearance } from "@/types";
 
 interface ParsedData {
   world_settings: Partial<WorldSetting>[];
@@ -14,6 +14,7 @@ interface ParsedData {
   foreshadows: Partial<Foreshadow>[];
   outlines: Partial<Outline>[];
   monsters: Partial<Monster>[];
+  instances?: Partial<Instance>[];
   appearances?: Partial<EntityAppearance>[];
 }
 
@@ -24,7 +25,7 @@ interface ImportPreviewDialogProps {
   onImport: (data: ParsedData) => void;
 }
 
-type ItemType = "world_settings" | "factions" | "faction_relationships" | "character_relationships" | "characters" | "foreshadows" | "outlines" | "monsters" | "appearances";
+type ItemType = "world_settings" | "factions" | "faction_relationships" | "character_relationships" | "characters" | "foreshadows" | "outlines" | "monsters" | "instances" | "appearances";
 
 function keyFor(type: ItemType, item: any) {
   if (type === "world_settings") return `world-${item.category}-${item.title}`;
@@ -34,6 +35,7 @@ function keyFor(type: ItemType, item: any) {
   if (type === "characters") return `char-${item.name}`;
   if (type === "foreshadows") return `fore-${item.foreshadow_id}`;
   if (type === "monsters") return `monster-${item.name}`;
+  if (type === "instances") return `inst-${item.name}`;
   if (type === "appearances") return `app-${item.entity_type}-${item.entity_id}-${item.chapter}`;
   return `out-${item.order}-${item.title}`;
 }
@@ -54,6 +56,7 @@ export function ImportPreviewDialog({ open, data, onClose, onImport }: ImportPre
       data.foreshadows.forEach((f) => all.add(keyFor("foreshadows", f)));
       data.outlines.forEach((o) => all.add(keyFor("outlines", o)));
       data.monsters.forEach((m) => all.add(keyFor("monsters", m)));
+      (data.instances || []).forEach((i) => all.add(keyFor("instances", i)));
       (data.appearances || []).forEach((a) => all.add(keyFor("appearances", a)));
       setSelected(all);
     }
@@ -68,6 +71,7 @@ export function ImportPreviewDialog({ open, data, onClose, onImport }: ImportPre
     foreshadows: items.foreshadows.length,
     outlines: items.outlines.length,
     monsters: items.monsters.length,
+    instances: (items.instances || []).length,
     appearances: (items.appearances || []).length,
   };
 
@@ -80,6 +84,7 @@ export function ImportPreviewDialog({ open, data, onClose, onImport }: ImportPre
     foreshadows: items.foreshadows.filter((f) => selected.has(keyFor("foreshadows", f))).length,
     outlines: items.outlines.filter((o) => selected.has(keyFor("outlines", o))).length,
     monsters: items.monsters.filter((m) => selected.has(keyFor("monsters", m))).length,
+    instances: (items.instances || []).filter((i) => selected.has(keyFor("instances", i))).length,
     appearances: (items.appearances || []).filter((a) => selected.has(keyFor("appearances", a))).length,
   };
 
@@ -127,11 +132,12 @@ export function ImportPreviewDialog({ open, data, onClose, onImport }: ImportPre
       foreshadows: items.foreshadows.filter((f) => selected.has(keyFor("foreshadows", f))),
       outlines: items.outlines.filter((o) => selected.has(keyFor("outlines", o))),
       monsters: items.monsters.filter((m) => selected.has(keyFor("monsters", m))),
+      instances: (items.instances || []).filter((i) => selected.has(keyFor("instances", i))),
       appearances: (items.appearances || []).filter((a) => selected.has(keyFor("appearances", a))),
     });
   };
 
-  const totalSelected = selectedCounts.world_settings + selectedCounts.factions + selectedCounts.faction_relationships + selectedCounts.character_relationships + selectedCounts.characters + selectedCounts.foreshadows + selectedCounts.outlines + selectedCounts.monsters + selectedCounts.appearances;
+  const totalSelected = selectedCounts.world_settings + selectedCounts.factions + selectedCounts.faction_relationships + selectedCounts.character_relationships + selectedCounts.characters + selectedCounts.foreshadows + selectedCounts.outlines + selectedCounts.monsters + selectedCounts.instances + selectedCounts.appearances;
 
   const renderSection = (type: ItemType, title: string, badgeVariant: "default" | "primary" | "warning" | "success" | "danger") => {
     const list = getList(type);
@@ -214,6 +220,14 @@ export function ImportPreviewDialog({ open, data, onClose, onImport }: ImportPre
                       <p className="text-muted text-xs mt-0.5 line-clamp-3">{item.species || item.behavior || "暂无描述"}</p>
                     </>
                   )}
+                  {type === "instances" && (
+                    <>
+                      <span className="font-medium">{item.name}</span>
+                      {item.instance_type && <Badge className="ml-2 text-xs">{item.instance_type}</Badge>}
+                      {item.difficulty && <Badge variant="primary" className="ml-2 text-xs">{item.difficulty}</Badge>}
+                      <p className="text-muted text-xs mt-0.5 line-clamp-3">{item.objective || item.description || "暂无描述"}</p>
+                    </>
+                  )}
                   {type === "appearances" && (
                     <>
                       <span className="font-medium">{item.entity_type} #{item.entity_id}</span>
@@ -241,7 +255,7 @@ export function ImportPreviewDialog({ open, data, onClose, onImport }: ImportPre
           <DialogTitle>AI 提取结果预览与筛选</DialogTitle>
         </DialogHeader>
         <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-          {counts.world_settings + counts.factions + counts.faction_relationships + counts.character_relationships + counts.characters + counts.foreshadows + counts.outlines + counts.monsters + counts.appearances === 0 && (
+          {counts.world_settings + counts.factions + counts.faction_relationships + counts.character_relationships + counts.characters + counts.foreshadows + counts.outlines + counts.monsters + counts.instances + counts.appearances === 0 && (
             <div className="text-center text-sm text-muted py-8">未提取到任何内容</div>
           )}
           {renderSection("world_settings", "世界观设定", "primary")}
@@ -252,6 +266,7 @@ export function ImportPreviewDialog({ open, data, onClose, onImport }: ImportPre
           {renderSection("foreshadows", "伏笔", "warning")}
           {renderSection("outlines", "大纲", "default")}
           {renderSection("monsters", "怪物", "danger")}
+          {renderSection("instances", "副本", "primary")}
           {renderSection("appearances", "出场记录", "primary")}
         </div>
         <div className="flex justify-between items-center pt-3 border-t">

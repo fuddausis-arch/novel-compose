@@ -44,6 +44,16 @@ class RecallMemory:
             return ""
         return matches[0].read_text(encoding="utf-8")
 
+    def read_chapter_preview(self, chapter: int, max_chars: int = 200) -> str:
+        """只读文件头部获取预览，避免读取完整大文件。"""
+        pattern = f"第{chapter:03d}章_*.md"
+        matches = list(self.chapters_dir.glob(pattern))
+        if not matches:
+            return ""
+        # 只读前 max_chars 个字符（Python 按字符读），避免全量读取
+        with open(matches[0], "r", encoding="utf-8", errors="replace") as f:
+            return f.read(max_chars)
+
     def list_chapters(self) -> list[int]:
         """列出所有已写章节号。"""
         chapters = []
@@ -52,3 +62,14 @@ class RecallMemory:
             if m:
                 chapters.append(int(m.group(1)))
         return sorted(chapters)
+
+    def list_chapters_with_titles(self) -> list[dict]:
+        """列出所有已写章节，含章号和标题（从文件名解析）。"""
+        results = []
+        for p in sorted(self.chapters_dir.glob("第*章_*.md")):
+            m = re.match(r"第(\d+)章_(.+)\.md", p.name)
+            if m:
+                ch = int(m.group(1))
+                title = m.group(2).replace("_", "").strip()
+                results.append({"chapter": ch, "title": title})
+        return results

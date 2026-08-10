@@ -6,7 +6,7 @@ export interface EditorTabsProps {
   activeTabId: string | null;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
-  onAdd: () => void;
+  onAdd?: () => void;
 }
 
 export function EditorTabs({
@@ -18,7 +18,7 @@ export function EditorTabs({
 }: EditorTabsProps) {
   return (
     <div className="flex items-center gap-1 border-b border-border bg-surface px-2 py-1.5">
-      <div className="flex flex-1 items-center gap-1 overflow-x-auto">
+      <div className="flex flex-1 items-center gap-1 overflow-x-auto scrollbar-hide">
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           return (
@@ -49,14 +49,16 @@ export function EditorTabs({
         })}
       </div>
 
-      <button
-        type="button"
-        onClick={onAdd}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border bg-surface text-muted transition-colors hover:border-border-strong hover:text-foreground"
-        aria-label="新增标签"
-      >
-        +
-      </button>
+      {onAdd && (
+        <button
+          type="button"
+          onClick={onAdd}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border bg-surface text-muted transition-colors hover:border-border-strong hover:text-foreground"
+          aria-label="新增标签"
+        >
+          +
+        </button>
+      )}
     </div>
   );
 }

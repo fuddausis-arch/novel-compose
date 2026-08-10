@@ -1,19 +1,22 @@
 import { useState } from "react";
 import { ProjectNav } from "./ProjectNav";
+import { TitleBar } from "./TitleBar";
 
 export interface AppLayoutProps {
   children: React.ReactNode;
   browser?: React.ReactNode;
   rightPanel?: React.ReactNode;
+  rightPanelWidth?: string;
   hideNav?: boolean;
 }
 
-export function AppLayout({ children, browser, rightPanel, hideNav }: AppLayoutProps) {
+export function AppLayout({ children, browser, rightPanel, rightPanelWidth = "w-60", hideNav }: AppLayoutProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden">
+      <TitleBar />
       {!hideNav && (
         <ProjectNav
           leftSlot={
@@ -81,7 +84,7 @@ export function AppLayout({ children, browser, rightPanel, hideNav }: AppLayoutP
 
         {rightPanel && (
           <>
-            <aside className="hidden w-60 overflow-y-auto border-l border-border bg-surface lg:block">
+            <aside className={`hidden ${rightPanelWidth} overflow-y-auto border-l border-border bg-surface lg:block`}>
               {rightPanel}
             </aside>
 
@@ -92,7 +95,7 @@ export function AppLayout({ children, browser, rightPanel, hideNav }: AppLayoutP
                   onClick={() => setRightDrawerOpen(false)}
                   aria-hidden="true"
                 />
-                <aside className="fixed right-0 top-0 z-50 h-full w-60 overflow-y-auto border-l border-border bg-surface lg:hidden">
+                <aside className={`fixed right-0 top-0 z-50 h-full ${rightPanelWidth} overflow-y-auto border-l border-border bg-surface lg:hidden`}>
                   <div className="flex h-14 items-center justify-end border-b border-border px-4">
                     <button
                       type="button"

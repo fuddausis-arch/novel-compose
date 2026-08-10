@@ -13,10 +13,12 @@ export function useCurrentProject() {
 
   useEffect(() => {
     if (!isValidProjectId) return;
-
-    store.loadProject(id).catch((e) => {
-      showError("加载项目失败：" + e.message);
-    });
+    // 同项目内切换页面时 currentProject 已是该项目，避免重复请求 loadProject
+    if (store.currentProject?.id !== id) {
+      store.loadProject(id).catch((e) => {
+        showError("加载项目失败：" + e.message);
+      });
+    }
   }, [id, isValidProjectId]);
 
   useEffect(() => {

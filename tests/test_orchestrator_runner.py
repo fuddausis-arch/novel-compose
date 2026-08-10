@@ -87,11 +87,19 @@ async def test_runner_generates_chapter_with_mock_llm(make_runner):
     """用 mock LLM + 达标 auditor 跑通完整写审流水线（mock human_review interrupt 为 approve）。"""
     mock_client = MagicMock()
     mock_client.config = MagicMock(temperature=0.8)
-    mock_client.generate = AsyncMock(side_effect=[
-        _REAL_DRAFT,                # write
-        _REAL_DRAFT,                # style_refine (polish)
-        '{"core_events":"征召"}',   # summarize
-    ])
+    # 用 system prompt 区分各节点返回值：writer/polish 返回真实草稿，
+    # summarize 返回校验 JSON，world_engine/context_trimmer/post_hoc 返回空 JSON（触发优雅跳过）。
+    from novel_agent.orchestrator.prompts import STYLE_REFINE_SYSTEM_PROMPT, WRITER_SYSTEM_PROMPT
+
+    async def _mock_generate(*args, **kwargs):
+        sys = kwargs.get("system") or ""
+        if "校验助手" in sys:  # summarize
+            return '{"core_events":"征召"}'
+        if sys == WRITER_SYSTEM_PROMPT or sys == STYLE_REFINE_SYSTEM_PROMPT:
+            return _REAL_DRAFT
+        return "{}"  # world_engine / context_trimmer / post_hoc
+
+    mock_client.generate = AsyncMock(side_effect=_mock_generate)
     runner = make_runner(llm_client=mock_client, auditor=_passing_auditor())
 
     # mock langgraph interrupt 让 human_review 自动 approve
@@ -112,11 +120,17 @@ async def test_runner_resumes_from_checkpoint(make_runner):
     """崩溃后能从 checkpoint 恢复（同一 thread_id 续跑不报错）。"""
     mock_client = MagicMock()
     mock_client.config = MagicMock(temperature=0.8)
-    # 每次运行消耗2次（write + summarize），analyze_style/style_refine 因 mock 跳过
-    mock_client.generate = AsyncMock(side_effect=[
-        _REAL_DRAFT, '{"core_events":"事件"}',
-        _REAL_DRAFT, '{"core_events":"事件"}',  # 第二次重跑
-    ])
+    from novel_agent.orchestrator.prompts import STYLE_REFINE_SYSTEM_PROMPT, WRITER_SYSTEM_PROMPT
+
+    async def _mock_generate(*args, **kwargs):
+        sys = kwargs.get("system") or ""
+        if "校验助手" in sys:  # summarize
+            return '{"core_events":"事件"}'
+        if sys == WRITER_SYSTEM_PROMPT or sys == STYLE_REFINE_SYSTEM_PROMPT:
+            return _REAL_DRAFT
+        return "{}"
+
+    mock_client.generate = AsyncMock(side_effect=_mock_generate)
     runner = make_runner(llm_client=mock_client, auditor=_passing_auditor())
 
     # mock langgraph interrupt 让 human_review 自动 approve

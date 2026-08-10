@@ -13,5 +13,6 @@ $custom_prompt
 - 能为故事提供新的冲突空间或探索方向；
 - 区分力量体系/地理/历史/规则/种族等类别。
 
-每条建议包含：title（标题）、summary（一句话描述）、payload（JSON，含 category/content/importance 等字段，category 可选：世界观/力量体系/势力/地点/规则/历史/现实层/异能层/神明层/其他）。
+每条建议包含：title（标题）、summary（一句话描述）、payload（JSON，含 category/content/importance 等字段，category 必须取自题材对应的层级词，不得使用其他题材的层级词，如修真题材不得用"异能层"；通用 category 可选：世界观/力量体系/势力/地点/规则/历史/其他；多层世界观题材可加：现实层/异能层/神明层）。
+约束：title 中的数字必须与 content 实际条目数一致；content 为纯文本，禁止使用 <br>/<b> 等 HTML 标签。
 输出 JSON：{"suggestions": [{"title": "", "summary": "", "payload": {}}]}

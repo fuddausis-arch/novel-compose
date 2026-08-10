@@ -1,64 +1,37 @@
-import { test, expect, type Page } from '@playwright/test';
-
-const TEST_PREFIX = 'RoutingE2E';
-
-async function createTestProject(page: Page) {
-  const title = `${TEST_PREFIX}-${Date.now()}`;
-  const res = await page.request.post('/api/projects', {
-    data: {
-      title,
-      genre: '玄幻',
-      summary: '路由测试用项目',
-      style: '轻松',
-    },
-  });
-  expect(res.ok()).toBeTruthy();
-  const project = await res.json();
-  return { projectId: project.id as number, title };
-}
-
-async function deleteTestProject(page: Page, projectId: number) {
-  const res = await page.request.delete(`/api/projects/${projectId}`);
-  expect([200, 204, 404]).toContain(res.status());
-}
+import { test, expect } from '@playwright/test';
 
 test.describe('多页面路由', () => {
-  test('默认跳转到项目中心', async ({ page }) => {
+  test('默认跳转到项目对话页', async ({ page }) => {
     await page.goto('/');
-    await expect(page).toHaveURL(/.*#\/projects$/);
-    await expect(page.getByText('我的作品').first()).toBeVisible();
+
+    // 根路由自动重定向到最近项目的对话页
+    await expect(page).toHaveURL(/#\/projects\/\d+\/chat/, { timeout: 15000 });
   });
 
-  test('从项目中心进入工作台', async ({ page }) => {
-    const { projectId } = await createTestProject(page);
+  test('导航切换页面', async ({ page }) => {
+    await page.goto('/#/projects/1/chat');
 
-    try {
-      await page.goto('/#/projects');
-      const firstCard = page.getByTestId('project-card').first();
-      await expect(firstCard).toBeVisible();
-      await firstCard.click();
+    const header = page.locator('header');
 
-      await expect(page).toHaveURL(new RegExp(`.*#/projects/${projectId}/dashboard`));
-      await expect(page.getByText('工作台').first()).toBeVisible();
-    } finally {
-      await deleteTestProject(page, projectId);
-    }
+    // 点击"写作"导航按钮
+    await header.getByRole('button', { name: '写作', exact: true }).click();
+    await expect(page).toHaveURL(/#\/projects\/1\/write/);
+
+    // 点击"资产"导航按钮
+    await header.getByRole('button', { name: '资产', exact: true }).click();
+    await expect(page).toHaveURL(/#\/projects\/1\/assets/);
   });
 
-  test('顶部导航切换页面', async ({ page }) => {
-    const { projectId } = await createTestProject(page);
+  test('更多下拉菜单导航', async ({ page }) => {
+    await page.goto('/#/projects/1/chat');
 
-    try {
-      await page.goto(`/#/projects/${projectId}/dashboard`);
-      await expect(page.getByRole('button', { name: '工作台', exact: true })).toBeVisible();
+    const header = page.locator('header');
 
-      await page.getByRole('button', { name: '写作', exact: true }).click();
-      await expect(page).toHaveURL(new RegExp(`.*#/projects/${projectId}/write`));
+    // 点击"更多"按钮打开下拉菜单
+    await header.getByRole('button', { name: '更多', exact: true }).click();
 
-      await page.getByRole('button', { name: '资产', exact: true }).click();
-      await expect(page).toHaveURL(new RegExp(`.*#/projects/${projectId}/assets`));
-    } finally {
-      await deleteTestProject(page, projectId);
-    }
+    // 在下拉菜单中点击"工作台"
+    await page.getByRole('button', { name: '工作台', exact: true }).click();
+    await expect(page).toHaveURL(/#\/projects\/1\/dashboard/);
   });
 });

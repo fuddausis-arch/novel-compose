@@ -1,0 +1,18 @@
+参数名,数值,来源,说明
+small_gap_max,5,4.4-节奏情绪,小爽最大间隔章数
+medium_gap_max,12,4.4-节奏情绪,中爽最大间隔章数
+large_gap_max,30,4.4-节奏情绪,大爽最大间隔章数
+suppression_max,3,4.4-节奏情绪,最大连续压抑章数
+opening_chapters,3,4.5-商业化,黄金三章数
+shangjia_chapter,20,4.5-商业化,上架章(可配置)
+hook_no_repeat,2,4.4-节奏情绪,章末钩不连续同种章数
+sentence_mean_min,18,4.1-文风,平均句长下限
+sentence_mean_max,45,4.1-文风,平均句长上限
+sentence_short_ratio_min,0.15,4.1-文风,短句占比下限
+sentence_cv_min,0.4,4.1-文风,句长变异系数下限
+dialog_ratio_min,0.15,4.1-文风,对话占比下限
+dialog_ratio_max,0.50,4.1-文风,对话占比上限
+dialog_tag_ratio_max,0.5,4.7-反AI味,对话标签率上限
+字数下限,2200,4.5-商业化,200万字长篇字数及格线(留300字缓冲到2500目标)
+字数上限,3500,4.5-商业化,单章硬性天花板(writer prompt和audit共用此真源)
+字数下限_重要章节,2500,4.5-商业化,重要章节字数下限

@@ -15,6 +15,10 @@ const TYPE_META: Record<AssetNavType, { label: string }> = {
   foreshadows: { label: "伏笔" },
   factions: { label: "势力" },
   monsters: { label: "怪物" },
+  instances: { label: "副本" },
+  redLines: { label: "红线" },
+  gags: { label: "梗管理" },
+  importFolder: { label: "导入文件夹" },
 };
 
 function getAssetItemTitle(item: AssetItem, fallbackLabel: string): string {

@@ -13,6 +13,7 @@ import statistics
 from pathlib import Path
 
 from novel_agent.audit.deslop_patterns import run_deslop_checks
+from novel_agent.audit.name_authority import classify_name, is_non_person_name
 
 logger = logging.getLogger(__name__)
 
@@ -535,6 +536,14 @@ def check_pleasure_gap(repo, chapter: int) -> list[dict]:
         planned_beats = []
     if not planned_beats:
         return []
+    # 防护：LLM 可能把 required_beats 生成成字符串数组（如 ["small"]）而非对象数组，
+    # 此时 b.get() 崩溃会使爽点断层检测静默失效。只保留 dict 元素。
+    if isinstance(planned_beats, list):
+        planned_beats = [b for b in planned_beats if isinstance(b, dict)]
+    else:
+        planned_beats = []
+    if not planned_beats:
+        return []
 
     # 有beat计划 → 检查gap
     try:
@@ -579,6 +588,11 @@ def check_golden_three(repo, chapter: int) -> list[dict]:
         # 从大纲读取beat计划
         import json
         planned_beats = json.loads(outline.required_beats) if outline.required_beats else []
+        # 防护：字符串数组元素会导致 b.get() 崩溃（爽点检查静默失效），只保留 dict 元素
+        if isinstance(planned_beats, list):
+            planned_beats = [b for b in planned_beats if isinstance(b, dict)]
+        else:
+            planned_beats = []
         if not planned_beats:
             issues.append({"dimension": "爽点分布", "severity": "critical",
                 "message": f"第{chapter}章是黄金三章但无爽点计划"})
@@ -694,7 +708,9 @@ def check_narrative_pattern(repo, chapter: int) -> list[dict]:
                 })
         if len(outlines) >= 5:
             last5_text = " ".join(nf for _, nf in outlines[-5:])
-            if not any(k in last5_text for k in ("高潮", "转折")):
+            # C7：narrative_function 字段缺失（数据源不生产）时 last5_text 全空，
+            # 跳过避免必报"连续5章无高潮或转折"；字段存在时保持原检查行为
+            if last5_text.strip() and not any(k in last5_text for k in ("高潮", "转折")):
                 issues.append({
                     "dimension": "剧情功能", "severity": "important",
                     "message": "连续5章无高潮或转折，节奏可能拖沓",
@@ -733,16 +749,16 @@ def check_outline_quality(repo, chapter: int) -> list[dict]:
             return issues
         nf = cc.get("narrative_function", "")
         if not nf:
-            issues.append({
-                "dimension": "章纲质量", "severity": "important",
-                "message": f"第{chapter}章缺少 narrative_function 标注",
-            })
+            # C7：章纲生成端不生产 narrative_function 字段，缺失时降级跳过，
+            # 避免每章必报假问题导致正常章节被迫人审
+            logger.debug("check_outline_quality 第%d章：narrative_function 缺失，跳过章纲字段检查", chapter)
+            return issues
         if chapter <= 10 and not cc.get("info_focus"):
             issues.append({
                 "dimension": "章纲质量", "severity": "important",
                 "message": f"第{chapter}章处于开篇期，缺少 info_focus（本章重点揭示哪类设定）",
             })
-        if nf and nf != "过渡" and not cc.get("character_decisions"):
+        if nf != "过渡" and not cc.get("character_decisions"):
             issues.append({
                 "dimension": "章纲质量", "severity": "warning",
                 "message": f"第{chapter}章非过渡章，缺少 character_decisions",
@@ -815,12 +831,13 @@ def check_info_density_anomaly(repo, chapter: int) -> list[dict]:
         if not cc:
             return issues
         info_focus = cc.get("info_focus", "")
-        if not info_focus and expected_min >= 3:
-            issues.append({
-                "dimension": "信息密度", "severity": "warning",
-                "message": f"第{chapter}章处于{stage}，预期信息密度≥{expected_min}条，"
-                           f"但章纲未标注 info_focus",
-            })
+        if not info_focus:
+            # C7：章纲生成端不生产 info_focus 字段，缺失时降级为 debug 不报，
+            # 避免前10章必报 warning 导致正常章节被迫人审。
+            # （字段存在时保持原检查行为：原逻辑仅当 info_focus 为空且 expected_min>=3 时才报，
+            #   非空时本检查不产生任何 issue。）
+            logger.debug("check_info_density_anomaly 第%d章：info_focus 缺失，跳过信息密度检查", chapter)
+            return issues
     except Exception:
         pass
     return issues
@@ -949,11 +966,27 @@ def check_character_name_consistency(draft: str, repo) -> list[dict]:
     # 在草稿中查找疑似角色名：姓氏 + 1-2个中文字
     # 只匹配明确的对话提示语（"X说："、"X道："），且后面必须跟冒号
     # 避免把"知道""感到""看来"等动词短语误识为角色名
+    # 注意：贪婪匹配会把"林晚笑道："中的"笑"并入名字，须在匹配后剥离尾部情绪/语气字
     name_pattern = re.compile(r'([\u4e00-\u9fff]{2,4})(?:说|道|问|答|喊|骂|叹|笑|怒|惊)(?=[：:])')
+    # 说话词中的情绪/语气字与说话助词：贪婪匹配会把"林晚笑道"中的"笑"、"张无忌说道"中的"说"
+    # 并入名字，匹配后须逐一剥离。这些字在名字结尾只可能属于"笑道/叹道/说道"等结构。
+    _NAME_SUFFIX = set("说问道答喊骂叹笑怒惊")
 
     suspected_names = set()
     for match in name_pattern.finditer(draft):
         name = match.group(1)
+        # 剥离尾部情绪/语气/说话助词："林晚笑"→"林晚"；"陈默叹"→"陈默"；"张无忌说"→"张无忌"
+        while name and name[-1] in _NAME_SUFFIX:
+            name = name[:-1]
+        if not name:
+            continue
+        # 剥离后至少保留"姓+名"两字，只剩单姓不构成角色名
+        if len(name) < 2:
+            continue
+        # 命名权威过滤：亲属称呼（母亲/大哥/王兄/李大人）与通用人物别名（老者/黑衣人/掌柜）
+        # 不是具体人名，不应报"疑似未知角色"
+        if is_non_person_name(name):
+            continue
         if name and name[0] in _COMMON_SURNAMES:
             if name not in known_names and name[1:] not in known_names:
                 suspected_names.add(name)

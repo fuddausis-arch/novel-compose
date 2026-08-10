@@ -42,8 +42,8 @@ async def test_volume_run_interrupts_at_review(make_runner):
     runner = make_runner(llm_client=mock_llm)
 
     result = await runner.run(volume="卷一", chapter_count=5, thread_id="v1")
-    # interrupt 后 graph 返回当前状态（含已完成的 plan/design/outline）
-    assert "outline" in result or result.get("status") in ("outlined", "reviewing")
+    # interrupt 后 graph 返回当前状态：plan→design 已完成（status=designed），review 挂起
+    assert result.get("status") in ("designed", "reviewing")
 
 
 @pytest.mark.asyncio

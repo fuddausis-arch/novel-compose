@@ -1,13 +1,15 @@
 import { useMemo, useState } from "react";
-import { Plus, Search, Skull, Sparkles } from "lucide-react";
+import { Plus, Skull, Sparkles } from "lucide-react";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
 import type { AssetType, Monster, Project } from "@/types";
 import { AiSuggestionDialog } from "@/components/ai-suggestion-dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
+import { FilterSelect } from "@/components/ui/filter-select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { EntityCard } from "@/components/entity/entity-card";
 
 interface MonstersViewProps {
   project: Project | null;
@@ -86,45 +88,15 @@ export function MonstersView({ project, monsters, refresh, setLoading, onSelectA
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-2">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
-              <Input
-                className="pl-8"
-                placeholder="搜索名称/别名…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <select
-              value={rankFilter}
-              onChange={(e) => setRankFilter(e.target.value)}
-              className="h-10 rounded-xl border border-border-strong bg-surface px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            >
-              <option value="">全部等级</option>
-              {ranks.map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-            <select
-              value={speciesFilter}
-              onChange={(e) => setSpeciesFilter(e.target.value)}
-              className="h-10 rounded-xl border border-border-strong bg-surface px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            >
-              <option value="">全部种族</option>
-              {species.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-            <select
-              value={habitatFilter}
-              onChange={(e) => setHabitatFilter(e.target.value)}
-              className="h-10 rounded-xl border border-border-strong bg-surface px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            >
-              <option value="">全部栖息地</option>
-              {habitats.map((h) => (
-                <option key={h} value={h}>{h}</option>
-              ))}
-            </select>
+            <SearchInput
+              value={search}
+              onChange={setSearch}
+              placeholder="搜索名称/别名…"
+              className="flex-1 min-w-[200px]"
+            />
+            <FilterSelect value={rankFilter} onChange={setRankFilter} options={ranks} placeholder="全部等级" />
+            <FilterSelect value={speciesFilter} onChange={setSpeciesFilter} options={species} placeholder="全部种族" />
+            <FilterSelect value={habitatFilter} onChange={setHabitatFilter} options={habitats} placeholder="全部栖息地" />
           </div>
         </CardContent>
       </Card>
@@ -135,29 +107,22 @@ export function MonstersView({ project, monsters, refresh, setLoading, onSelectA
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {filtered.map((m) => (
-            <Card
+            <EntityCard
               key={m.id}
-              className="cursor-pointer hover:border-primary/50 transition-colors"
               onClick={() => onSelectAsset?.("monster", String(m.id))}
+              title={m.name}
+              badge={m.rank && <Badge variant="danger">{m.rank}</Badge>}
+              description={m.behavior}
+              footer={m.first_appearance > 0 && (
+                <p className="text-xs text-muted">首次出场：第{m.first_appearance}章</p>
+              )}
             >
-              <CardContent className="p-4 space-y-2">
-                <div className="flex items-start justify-between gap-2">
-                  <h4 className="font-medium text-foreground">{m.name}</h4>
-                  {m.rank && <Badge variant="danger">{m.rank}</Badge>}
-                </div>
-                {m.alias && <p className="text-xs text-muted">别名：{m.alias}</p>}
-                <div className="flex flex-wrap gap-1 text-xs text-muted">
-                  {m.species && <Badge variant="default">{m.species}</Badge>}
-                  {m.habitats && <Badge variant="default">{m.habitats}</Badge>}
-                </div>
-                {m.behavior && (
-                  <p className="text-sm text-muted line-clamp-3 whitespace-pre-wrap">{m.behavior}</p>
-                )}
-                {m.first_appearance > 0 && (
-                  <p className="text-xs text-muted">首次出场：第{m.first_appearance}章</p>
-                )}
-              </CardContent>
-            </Card>
+              {m.alias && <p className="text-xs text-muted">别名：{m.alias}</p>}
+              <div className="flex flex-wrap gap-1 text-xs text-muted">
+                {m.species && <Badge variant="default">{m.species}</Badge>}
+                {m.habitats && <Badge variant="default">{m.habitats}</Badge>}
+              </div>
+            </EntityCard>
           ))}
         </div>
       </div>

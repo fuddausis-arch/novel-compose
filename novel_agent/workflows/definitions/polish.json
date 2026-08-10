@@ -1,0 +1,501 @@
+{
+  "engine": "novelagent",
+  "workflow_id": "polish",
+  "name": "章节润色管线",
+  "version": 2,
+  "nodes": [
+    {
+      "id": "script_db_export",
+      "label": "导出本章正文到工作区",
+      "node_type": "script",
+      "agent_type": "default",
+      "system_prompt_template": "",
+      "first_message": "",
+      "position": {
+        "x": 40,
+        "y": 60
+      },
+      "var_bindings": {},
+      "node_params": {
+        "script_source": "library",
+        "script_type": "python",
+        "script_name": "db_export_chapter",
+        "script_args": "--chapter {{chapter_number}}",
+        "timeout": 30,
+        "script_group": "nvl"
+      },
+      "auto_flow": true,
+      "enable_complete_node_task": false,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": false,
+      "output_file_path": "",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    },
+    {
+      "id": "script_sync_down",
+      "label": "检查本地章节存档",
+      "node_type": "script",
+      "agent_type": "default",
+      "system_prompt_template": "",
+      "first_message": "",
+      "position": {
+        "x": 100,
+        "y": 150
+      },
+      "var_bindings": {},
+      "node_params": {
+        "script_source": "library",
+        "script_type": "python",
+        "script_name": "local_archive",
+        "script_args": "prepare --require story/{{chapter_number}}/chapter.md",
+        "timeout": 30,
+        "script_group": "nvl"
+      },
+      "auto_flow": false,
+      "enable_complete_node_task": true,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": false,
+      "output_file_path": "",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    },
+    {
+      "id": "script_ai_detect",
+      "label": "AI 检测",
+      "node_type": "script",
+      "agent_type": "default",
+      "system_prompt_template": "",
+      "first_message": "",
+      "position": {
+        "x": 160,
+        "y": 280
+      },
+      "var_bindings": {},
+      "node_params": {
+        "script_source": "library",
+        "script_type": "python",
+        "script_name": "ai_detect",
+        "script_args": "--body-file story/{{chapter_number}}/chapter.md --output cache/ai_issues.txt",
+        "timeout": 30,
+        "script_group": "nvl"
+      },
+      "auto_flow": false,
+      "enable_complete_node_task": true,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": false,
+      "output_file_path": "",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    },
+    {
+      "id": "agent_sc",
+      "label": "自审",
+      "node_type": "agent",
+      "agent_type": "novel-self-critic",
+      "system_prompt_template": "",
+      "first_message": "扫描本章的 AI 生成模式。直接输出纯 JSON，引擎自动保存。\n\n==== 外部 AI 检测报告 ====\n{{ai_issues_file}}\n\n==== 章节正文 ====\n{{chapter_file}}\n\n输出语言：{{language}}。",
+      "position": {
+        "x": 380,
+        "y": 260
+      },
+      "var_bindings": {},
+      "node_params": {},
+      "auto_flow": true,
+      "enable_complete_node_task": false,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": true,
+      "output_file_path": "cache/sc/critique.json",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    },
+    {
+      "id": "agent_vc",
+      "label": "声线审校",
+      "node_type": "agent",
+      "agent_type": "novel-voice-critic",
+      "system_prompt_template": "",
+      "first_message": "审查本章各角色对话的声线一致性、亚文本与废台词。直接输出纯 JSON，引擎自动保存。\n\n==== 章节正文 ====\n{{chapter_file}}\n\n==== 角色声线锚 ====\n{{voice_anchor_file}}\n\n输出语言：{{language}}。",
+      "position": {
+        "x": 380,
+        "y": 60
+      },
+      "var_bindings": {},
+      "node_params": {},
+      "auto_flow": true,
+      "enable_complete_node_task": false,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": true,
+      "output_file_path": "cache/sc/voice_critique.json",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    },
+    {
+      "id": "agent_pc",
+      "label": "情感落地审校",
+      "node_type": "agent",
+      "agent_type": "novel-palette-critic",
+      "system_prompt_template": "",
+      "first_message": "审查本章情感目标是否落地（演出而非点名）。直接输出纯 JSON，引擎自动保存。\n\n==== 章节正文 ====\n{{chapter_file}}\n\n==== 单章指导 ====\n{{guide_file}}\n\n输出语言：{{language}}。",
+      "position": {
+        "x": 380,
+        "y": 420
+      },
+      "var_bindings": {},
+      "node_params": {},
+      "auto_flow": true,
+      "enable_complete_node_task": false,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": true,
+      "output_file_path": "cache/sc/palette_critique.json",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    },
+    {
+      "id": "agent_pl",
+      "label": "人文化润色",
+      "node_type": "agent",
+      "agent_type": "novel-polisher",
+      "system_prompt_template": "",
+      "first_message": "润色本章，让文本读起来像人写的。直接输出纯 JSON，引擎自动保存。\n\n==== 章节正文 ====\n{{chapter_file}}\n\n==== 自审笔记 ====\n{{critique_file}}\n\n输出语言：{{language}}。",
+      "position": {
+        "x": 500,
+        "y": 150
+      },
+      "var_bindings": {},
+      "node_params": {},
+      "auto_flow": true,
+      "enable_complete_node_task": false,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": true,
+      "output_file_path": "cache/pl/body.json",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    },
+    {
+      "id": "agent_pp",
+      "label": "专业润色",
+      "node_type": "agent",
+      "agent_type": "novel-professional-polisher",
+      "system_prompt_template": "",
+      "first_message": "润色本章，将其打磨到出版水准。直接输出纯 JSON，引擎自动保存。\n\n==== 章节正文 ====\n{{chapter_file}}\n\n==== 自审笔记 ====\n{{critique_file}}\n\n==== 人文化润色稿 ====\n{{pl_body_file}}\n\n输出语言：{{language}}。",
+      "position": {
+        "x": 700,
+        "y": 150
+      },
+      "var_bindings": {},
+      "node_params": {},
+      "auto_flow": true,
+      "enable_complete_node_task": false,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": true,
+      "output_file_path": "cache/pp/body.json",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    },
+    {
+      "id": "script_polish_post",
+      "label": "润色后处理",
+      "node_type": "script",
+      "agent_type": "default",
+      "system_prompt_template": "",
+      "first_message": "",
+      "position": {
+        "x": 850,
+        "y": 250
+      },
+      "var_bindings": {},
+      "node_params": {
+        "script_source": "library",
+        "script_type": "python",
+        "script_name": "polish_post",
+        "script_args": "--body-json cache/pp/body.json --output story/{{chapter_number}}/chapter.md",
+        "timeout": 30,
+        "script_group": "nvl"
+      },
+      "auto_flow": false,
+      "enable_complete_node_task": true,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": false,
+      "output_file_path": "",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    },
+    {
+      "id": "script_sync_polish",
+      "label": "本地存档·润色",
+      "node_type": "script",
+      "agent_type": "default",
+      "system_prompt_template": "",
+      "first_message": "",
+      "position": {
+        "x": 1100,
+        "y": 150
+      },
+      "var_bindings": {},
+      "node_params": {
+        "script_source": "library",
+        "script_type": "python",
+        "script_name": "local_archive",
+        "script_args": "checkpoint --files story/{{chapter_number}}/chapter.md,cache/sc/critique.json",
+        "timeout": 30,
+        "script_group": "nvl"
+      },
+      "auto_flow": false,
+      "enable_complete_node_task": true,
+      "output_variable": "",
+      "enable_reject_upstream": false,
+      "max_reject_count": 3,
+      "save_output_to_file": false,
+      "output_file_path": "",
+      "sub_workflow_params": {},
+      "fail_auto_skip": false
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-start-db_export",
+      "source": "__start__",
+      "target": "script_db_export"
+    },
+    {
+      "id": "edge-db_export-sync_down",
+      "source": "script_db_export",
+      "target": "script_sync_down"
+    },
+    {
+      "id": "edge-sync_down-ai_detect",
+      "source": "script_sync_down",
+      "target": "script_ai_detect"
+    },
+    {
+      "id": "edge-ai_detect-critic_fork",
+      "source": "script_ai_detect",
+      "target": "gw-critic-fork"
+    },
+    {
+      "id": "edge-critic_fork-sc",
+      "source": "gw-critic-fork",
+      "target": "agent_sc"
+    },
+    {
+      "id": "edge-critic_fork-vc",
+      "source": "gw-critic-fork",
+      "target": "agent_vc"
+    },
+    {
+      "id": "edge-critic_fork-pc",
+      "source": "gw-critic-fork",
+      "target": "agent_pc"
+    },
+    {
+      "id": "edge-sc-critic_conv",
+      "source": "agent_sc",
+      "target": "gw-critic-conv"
+    },
+    {
+      "id": "edge-vc-critic_conv",
+      "source": "agent_vc",
+      "target": "gw-critic-conv"
+    },
+    {
+      "id": "edge-pc-critic_conv",
+      "source": "agent_pc",
+      "target": "gw-critic-conv"
+    },
+    {
+      "id": "edge-critic_conv-pl",
+      "source": "gw-critic-conv",
+      "target": "agent_pl"
+    },
+    {
+      "id": "edge-pl-pp",
+      "source": "agent_pl",
+      "target": "agent_pp"
+    },
+    {
+      "id": "edge-pp-polish_post",
+      "source": "agent_pp",
+      "target": "script_polish_post"
+    },
+    {
+      "id": "edge-polish_post-sync_polish",
+      "source": "script_polish_post",
+      "target": "script_sync_polish"
+    },
+    {
+      "id": "edge-sync_polish-end",
+      "source": "script_sync_polish",
+      "target": "__end__"
+    }
+  ],
+  "variables": [
+    {
+      "key": "chapter_number",
+      "name": "章节号",
+      "type": "text",
+      "default": "0001",
+      "required": true,
+      "description": "",
+      "options": [],
+      "source_type": "input",
+      "source_node_id": "",
+      "hidden": false
+    },
+    {
+      "key": "chapter_file",
+      "name": "章节正文",
+      "type": "file",
+      "default": "story/{{chapter_number}}/chapter.md",
+      "required": false,
+      "description": "SC/PL/PP 读取",
+      "options": [],
+      "source_type": "input",
+      "source_node_id": "",
+      "hidden": true
+    },
+    {
+      "key": "ai_issues_file",
+      "name": "AI 检测报告",
+      "type": "file",
+      "default": "cache/ai_issues.txt",
+      "required": false,
+      "description": "humanize-chinese 检测结果，注入 SC 首条消息",
+      "options": [],
+      "source_type": "input",
+      "source_node_id": "",
+      "hidden": true
+    },
+    {
+      "key": "critique_file",
+      "name": "自审笔记",
+      "type": "file",
+      "default": "cache/sc/critique.json",
+      "required": false,
+      "description": "SC 产出，PL/PP 读取",
+      "options": [],
+      "source_type": "input",
+      "source_node_id": "",
+      "hidden": true
+    },
+    {
+      "key": "voice_anchor_file",
+      "name": "角色声线锚",
+      "type": "file",
+      "default": "meta/character_voice.md",
+      "required": false,
+      "description": "VC 读取（声线审校输入），缺失则跳过",
+      "options": [],
+      "source_type": "input",
+      "source_node_id": "",
+      "hidden": true
+    },
+    {
+      "key": "guide_file",
+      "name": "单章指导",
+      "type": "file",
+      "default": "outline/guide.md",
+      "required": false,
+      "description": "PC 读取（情感落地审校输入，导演单章指导），缺失则跳过",
+      "options": [],
+      "source_type": "input",
+      "source_node_id": "",
+      "hidden": true
+    },
+    {
+      "key": "pl_body_file",
+      "name": "PL 润色稿",
+      "type": "file",
+      "default": "cache/pl/body.json",
+      "required": false,
+      "description": "PL 产出，PP 读取",
+      "options": [],
+      "source_type": "input",
+      "source_node_id": "",
+      "hidden": true
+    },
+    {
+      "key": "language",
+      "name": "输出语言",
+      "type": "text",
+      "default": "中文",
+      "required": true,
+      "description": "",
+      "options": [],
+      "source_type": "input",
+      "source_node_id": "",
+      "hidden": false
+    }
+  ],
+  "gateways": [
+    {
+      "id": "gw-critic-fork",
+      "gateway_type": "parallel",
+      "label": "审校并行分发（AI味/声线/情感）",
+      "converge_gateway_id": "gw-critic-conv"
+    },
+    {
+      "id": "gw-critic-conv",
+      "gateway_type": "converge",
+      "label": "审校汇聚",
+      "converge_gateway_id": null
+    }
+  ],
+  "execution_schemes": [
+    {
+      "id": "scheme-21478788",
+      "name": "润色",
+      "selected_node_ids": [
+        "script_db_export",
+        "script_ai_detect",
+        "agent_sc",
+        "agent_vc",
+        "agent_pc",
+        "agent_pl",
+        "agent_pp"
+      ],
+      "created_at": "2026-06-04T14:53:53.933996+08:00",
+      "updated_at": "2026-06-11T21:35:00+08:00"
+    },
+    {
+      "id": "scheme-24b8ce72",
+      "name": "仅检查",
+      "selected_node_ids": [
+        "script_db_export",
+        "script_sync_down",
+        "script_ai_detect",
+        "agent_sc",
+        "agent_vc",
+        "agent_pc"
+      ],
+      "created_at": "2026-06-11T21:59:10.550351+08:00",
+      "updated_at": "2026-06-11T21:59:10.550353+08:00"
+    }
+  ],
+  "start_position": {
+    "x": 300,
+    "y": 50
+  },
+  "end_position": {
+    "x": 300,
+    "y": 550
+  }
+}

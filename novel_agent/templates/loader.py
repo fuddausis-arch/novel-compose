@@ -32,6 +32,68 @@ class GenreLoader:
     def exists(self, canonical_genre: str) -> bool:
         return (GENRES_DIR / f"{canonical_genre}.md").exists()
 
+    def _extract_section(self, canonical_genre: str, marker: str) -> str:
+        """提取模板中指定 ## 标题下的内容。"""
+        text = self.load(canonical_genre)
+        if not text:
+            return ""
+        start = text.find(marker)
+        if start < 0:
+            return ""
+        next_heading = text.find("\n## ", start + len(marker))
+        if next_heading < 0:
+            return text[start:].strip()
+        return text[start:next_heading].strip()
+
+    def extract_style_benchmark(self, canonical_genre: str) -> str:
+        """提取模板中的 ## 文风标杆 部分，用于注入写作 prompt。"""
+        return self._extract_section(canonical_genre, "## 文风标杆")
+
+    def extract_core_selling_point(self, canonical_genre: str) -> str:
+        """提取模板中的 ## 核心卖点 部分。"""
+        return self._extract_section(canonical_genre, "## 核心卖点")
+
+    def extract_recommended_constraints(self, canonical_genre: str) -> str:
+        """提取模板中的 ## 推荐约束包 部分。"""
+        return self._extract_section(canonical_genre, "## 推荐约束包")
+
+    def extract_rule_types(self, canonical_genre: str) -> str:
+        """提取模板中的世界观/规则/力量体系部分。
+
+        A7修复：不同题材模板用了不同标题（世界观与规则/世界观与力量体系/世界观与社会结构），
+        改为正则匹配"## 世界观与"前缀，兼容所有变体。
+        """
+        import re
+        text = self.load(canonical_genre)
+        if not text:
+            return ""
+        # 正则匹配所有以"## 世界观与"开头的段落
+        pattern = r'(## 世界观与[^\n]*\n(?:.*\n)*?)(?=\n## |\Z)'
+        matches = re.findall(pattern, text)
+        if matches:
+            return "\n".join(matches)
+        return ""
+
+    def extract_rhythm_suggestions(self, canonical_genre: str) -> str:
+        """提取模板中的 ## 节奏建议 部分。"""
+        return self._extract_section(canonical_genre, "## 节奏建议")
+
+    def extract_classic_hooks(self, canonical_genre: str) -> str:
+        """提取模板中的 ## 经典爽点套路 部分。"""
+        return self._extract_section(canonical_genre, "## 经典爽点套路")
+
+    def extract_genre_context(self, canonical_genre: str) -> str:
+        """提取除文风标杆和实体标签扩展外的全部题材上下文。"""
+        text = self.load(canonical_genre)
+        if not text:
+            return ""
+        # 去掉实体标签扩展部分（对 writer 无用）
+        entity_marker = "## 实体标签扩展"
+        entity_start = text.find(entity_marker)
+        if entity_start >= 0:
+            text = text[:entity_start].strip()
+        return text
+
 
 class PromptLoader:
     """加载并渲染提示词模板。"""

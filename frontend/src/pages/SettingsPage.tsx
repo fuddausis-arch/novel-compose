@@ -1,13 +1,6 @@
-import { AppLayout } from "@/components/layout/AppLayout";
-import { SettingsView } from "@/views/SettingsView";
+import { Navigate } from "react-router-dom";
 
+/** 旧设置页已迁移到 /settings 子路由体系，此处仅做重定向 */
 export default function SettingsPage() {
-  return (
-    <AppLayout>
-      <div className="max-w-3xl mx-auto px-4 py-6">
-        <h1 className="text-2xl font-bold mb-6">设置</h1>
-        <SettingsView />
-      </div>
-    </AppLayout>
-  );
+  return <Navigate to="/settings" replace />;
 }

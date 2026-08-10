@@ -1,0 +1,28 @@
+# NovelAgent 扩展能力声明
+# 声明项目的 6 项能力，供宿主环境识别和加载
+#
+# ⚠️ 状态说明（2026-08-08）：
+# 本文件是"声明层面"的能力清单，供外部宿主识别 NovelAgent 能提供什么。
+# 但"扩展宿主"运行时（ExtensionHostManager 的 discover/load/start 8 状态生命周期）
+# 从未实现接通，相关代码已移至 novel_agent/_archive_extensions/。
+# 当前实际可用的是：工作流引擎（workflows/）+ 插件打包/资产导入导出（plugin_system/packaging+assets）。
+# 若未来要做"真插件系统"，从 _archive_extensions 取回 extension_host 并在 create_app 实例化。
+
+[extension]
+name = "novelagent"
+version = "1.0.0"
+description = "多 Agent 网文生成系统：7 条工作流 + 写审分离 + 后验裁决"
+
+[capabilities]
+# 工作流运行时：支持 LangGraph StateGraph 编排
+workflow_runtime = true
+# Agent 资源：多角色 LLM 客户端（writer/auditor/planner 等）
+resources_agents = true
+# Prompt 资源：系统提示词模板管理
+resources_prompts = true
+# Skill 资源：写作助手 Skill（双重角色 + 工作流选择）
+resources_skills = true
+# Workflow 资源：7 条工作流定义（build/character/story-plan/outline/mvp/polish/post-hoc）
+resources_workflows = true
+# Script 资源：确定性脚本节点 + 审计规则
+resources_scripts = true

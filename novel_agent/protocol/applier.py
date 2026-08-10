@@ -5,6 +5,7 @@ spec 2.4 铁律：模型绝不直接写真相源，只产 delta；代码层 appl
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from novel_agent.bible.repository import BibleRepository
 from novel_agent.protocol.schemas import (
@@ -34,7 +35,6 @@ class DeltaApplier:
 
     def __init__(self, repo: BibleRepository, archival=None):
         self.repo = repo
-        self.archival = archival
         self.archival = archival
 
     def apply(self, delta: Delta) -> ApplyResult:
@@ -141,6 +141,9 @@ class DeltaApplier:
             name=d.name, role=d.role, personality=d.personality,
             motivation=d.motivation, current_location=d.current_location,
             current_emotion=d.current_emotion, known_info=d.known_info,
+            core_contradiction=d.core_contradiction,
+            sensory_memories=d.sensory_memories,
+            absolute_taboos=d.absolute_taboos,
         )
         self.repo.append_event(
             chapter=delta.chapter, type="character_introduced",
@@ -194,8 +197,8 @@ class DeltaApplier:
 
     def _create_world_setting(self, delta: Delta) -> ApplyResult:
         """应用世界观设定 delta。"""
-        d = delta.data if isinstance(delta.data, dict) else delta.data
-        data = d if isinstance(d, dict) else {}
+        d = delta.data
+        data = d if isinstance(d, dict) else (d.model_dump() if hasattr(d, "model_dump") else {})
         category = data.get("category", "其他")
         title = data.get("title", "")
         content = data.get("content", "")
@@ -207,3 +210,202 @@ class DeltaApplier:
             entity_id=title, payload={"category": category},
         )
         return ApplyResult(True)
+
+    def apply_deltas(self, deltas: list[dict], chapter: int | None = None) -> ApplyResult:
+        """批量应用统一格式的 dict deltas（commit_chapter 数据流闭环）。"""
+        warnings: list[str] = []
+        try:
+            for d in deltas:
+                t = d.get("type")
+                if t == "state_change":
+                    warning = self._apply_state_change(d, chapter=chapter)
+                    if warning:
+                        warnings.append(warning)
+                elif t == "relationship_update":
+                    self._apply_relationship_update(d, chapter=chapter)
+                elif t == "event":
+                    self._apply_event(d, chapter=chapter)
+                elif t == "foreshadow_update":
+                    self._apply_foreshadow_update(d, chapter=chapter)
+                elif t == "chapter_commit":
+                    self._apply_chapter_commit(d)
+                elif t == "character_create":
+                    self._apply_character_create(d, chapter=chapter)
+                elif t == "faction_create":
+                    self._apply_faction_create(d, chapter=chapter)
+                elif t == "monster_create":
+                    self._apply_monster_create(d, chapter=chapter)
+                elif t == "world_setting_create":
+                    self._apply_world_setting_create(d, chapter=chapter)
+                else:
+                    raise ApplyError(f"不支持的 delta 类型: {t}")
+            message = "\n".join(warnings) if warnings else ""
+            return ApplyResult(True, message)
+        except ApplyError:
+            raise
+        except Exception as e:
+            raise ApplyError(f"apply_deltas 失败: {e}") from e
+
+    def _apply_state_change(self, d: dict, chapter: int | None = None) -> str | None:
+        entity_type = d.get("entity") or d.get("entity_type", "")
+        entity_id = d.get("entity_id", "")
+        field = d.get("field", "")
+        old_value = str(d.get("old_value") if "old_value" in d else d.get("old", ""))
+        new_value = str(d.get("new_value") if "new_value" in d else d.get("new", ""))
+        ch = (d.get("chapter") if d.get("chapter") is not None else chapter) or 0
+
+        warning: str | None = None
+        # 角色状态变更：比对 Data Agent 提取的 old_value 与圣经当前值
+        if entity_type in {"角色", "character"} and field in {"current_location", "current_emotion", "known_info"}:
+            char = self.repo.get_character(entity_id)
+            if char:
+                current_value = str(getattr(char, field, "") or "")
+                # 互为子串视为一致；否则提示用户人工审核
+                if old_value and current_value and not (
+                    old_value in current_value or current_value in old_value
+                ):
+                    warning = (
+                        f"【重要警告】角色 '{entity_id}' 的 {field} 当前值为 "
+                        f"'{current_value}'，但 Data Agent 认为旧值是 '{old_value}'，"
+                        f"两者不一致。已按新值 '{new_value}' 更新，请人工核对。"
+                    )
+                self.repo.update_character(entity_id, **{field: new_value})
+
+        self.repo.create_state_change(
+            chapter=ch, entity_type=entity_type, entity_id=entity_id,
+            field=field, old_value=old_value, new_value=new_value,
+        )
+        self.repo.append_event(
+            chapter=ch, type="state_change", entity_id=entity_id,
+            payload={"field": field, "new": new_value},
+        )
+        return warning
+
+    def _apply_relationship_update(self, d: dict, chapter: int | None = None) -> None:
+        ch = d.get("chapter") if d.get("chapter") is not None else chapter
+        entity_id = f"{d.get('character_a', '')}-{d.get('character_b', '')}"
+        self.repo.append_event(
+            chapter=ch, type="relationship_change", entity_id=entity_id, payload=d,
+        )
+
+    def _apply_event(self, d: dict, chapter: int | None = None) -> None:
+        ch = d.get("chapter") if d.get("chapter") is not None else chapter
+        self.repo.append_event(
+            chapter=ch,
+            type=d.get("event_type", "剧情"),
+            entity_id=d.get("subject") or d.get("entity_id", ""),
+            payload=d.get("payload") or {"description": d.get("description", "")},
+        )
+
+    def _apply_foreshadow_update(self, d: dict, chapter: int | None = None) -> None:
+        foreshadow_id = d.get("foreshadow_id", "")
+        status = d.get("status", "planted")
+        self.repo.update_foreshadow_status(foreshadow_id, status)
+        ch = d.get("chapter") if d.get("chapter") is not None else chapter
+        self.repo.append_event(
+            chapter=ch, type="foreshadow_update", entity_id=foreshadow_id,
+            payload={"status": status},
+        )
+
+    def _apply_chapter_commit(self, d: dict) -> None:
+        self.repo.create_or_update_chapter_commit(
+            chapter=d.get("chapter"),
+            status="committed",
+            summary=d.get("summary", ""),
+            word_count=d.get("word_count", 0),
+            committed_at=datetime.utcnow(),
+        )
+
+    def _apply_character_create(self, d: dict, chapter: int | None = None) -> None:
+        """从正文提取的新角色，若已存在则跳过。"""
+        name = d.get("name", "").strip()
+        if not name:
+            return
+        if self.repo.get_character(name):
+            return  # 已存在，跳过
+        self.repo.create_character(
+            name=name,
+            role=d.get("role", "配角"),
+            age=d.get("age", ""),
+            gender=d.get("gender", ""),
+            appearance=d.get("appearance", ""),
+            personality=d.get("personality", ""),
+            motivation=d.get("motivation", ""),
+            background=d.get("background", ""),
+            current_location=d.get("current_location", ""),
+            current_emotion=d.get("current_emotion", ""),
+            known_info=d.get("known_info", ""),
+        )
+        ch = d.get("chapter") if d.get("chapter") is not None else chapter
+        self.repo.append_event(
+            chapter=ch, type="character_introduced",
+            entity_id=name, payload={"role": d.get("role", "配角")},
+        )
+
+    def _apply_faction_create(self, d: dict, chapter: int | None = None) -> None:
+        """从正文提取的新组织/势力。"""
+        name = d.get("name", "").strip()
+        if not name:
+            return
+        existing = self.repo.get_faction_by_name(name)
+        if existing:
+            return
+        self.repo.create_faction(
+            name=name,
+            alias=d.get("alias", ""),
+            type=d.get("type", "其他"),
+            tier=d.get("tier", ""),
+            alignment=d.get("alignment", "中立"),
+            description=d.get("description", ""),
+            goals=d.get("goals", ""),
+        )
+        ch = d.get("chapter") if d.get("chapter") is not None else chapter
+        self.repo.append_event(
+            chapter=ch, type="faction_introduced",
+            entity_id=name, payload={"type": d.get("type", "")},
+        )
+
+    def _apply_monster_create(self, d: dict, chapter: int | None = None) -> None:
+        """从正文提取的新怪物/异兽。"""
+        name = d.get("name", "").strip()
+        if not name:
+            return
+        existing = self.repo.get_monster_by_name(name)
+        if existing:
+            return
+        self.repo.create_monster(
+            name=name,
+            alias=d.get("alias", ""),
+            species=d.get("species", ""),
+            rank=d.get("rank", "普通"),
+            tier=d.get("tier", ""),
+            attributes=d.get("attributes", ""),
+            skills=d.get("skills", ""),
+            drops=d.get("drops", ""),
+            habitats=d.get("habitats", ""),
+            behavior=d.get("behavior", ""),
+            weaknesses=d.get("weaknesses", ""),
+            lore=d.get("lore", ""),
+            first_appearance=d.get("first_appearance") or (d.get("chapter") if d.get("chapter") is not None else chapter) or 0,
+        )
+        ch = (d.get("chapter") if d.get("chapter") is not None else chapter) or 0
+        self.repo.append_event(
+            chapter=ch, type="monster_introduced",
+            entity_id=name, payload={"species": d.get("species", "")},
+        )
+
+    def _apply_world_setting_create(self, d: dict, chapter: int | None = None) -> None:
+        """从正文提取的新世界观设定。"""
+        title = d.get("title", "").strip()
+        if not title:
+            return
+        self.repo.create_world_setting(
+            category=d.get("category", "其他"),
+            title=title,
+            content=d.get("content", ""),
+        )
+        ch = d.get("chapter") if d.get("chapter") is not None else chapter
+        self.repo.append_event(
+            chapter=ch, type="world_setting_added",
+            entity_id=title, payload={"category": d.get("category", "")},
+        )

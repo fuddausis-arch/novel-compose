@@ -14,5 +14,9 @@ $custom_prompt
 - 可为人物关系网或势力关系网；
 - 说明关系类型、强度与影响。
 
-每条建议包含：title（关系标题，如"A 与 B 的师徒关系"）、summary（关系描述）、payload（JSON，含 source_character/target_character/relation_type/relation_subtype/strength/description 或 source_faction_id/target_faction_id 等字段）。
+每条建议包含：title（关系标题，如"A 与 B 的师徒关系"）、summary（关系描述）、payload（JSON）。
+payload 字段说明：
+- 人物关系：source_character（角色名，必须来自已有角色列表）、target_character（角色名，必须来自已有角色列表）、relation_type（如 师徒/盟友/敌对/恋人 等）、relation_subtype（细分）、strength（整数 -10 到 10，负数=敌对，正数=友好）、description（描述）
+- 势力关系：source_faction_id（整数ID，必须来自已有势力列表）、target_faction_id（整数ID，必须来自已有势力列表）、relation_type、strength（整数 -10 到 10）、description
+- strength 必须是纯数字整数，不得用"中等""高"等文字描述。
 输出 JSON：{"suggestions": [{"title": "", "summary": "", "payload": {}}]}

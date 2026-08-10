@@ -80,7 +80,7 @@ export function SummariesView() {
                   </CardTitle>
                   <div className="flex items-center gap-2">
                     <Badge>{s.word_count} 字</Badge>
-                    <Button variant="ghost" size="sm" onClick={() => handleDelete(s.chapter)}>
+                    <Button variant="ghost" size="sm" onClick={() => handleDelete(s.chapter)} aria-label={`删除第 ${s.chapter} 章摘要`}>
                       <Trash2 className="h-4 w-4 text-danger" />
                     </Button>
                   </div>

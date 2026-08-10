@@ -1,90 +1,92 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
-/* ========== Theme tokens ========== */
+/* ========== Theme tokens（三套主题统一向 DF 设计语言靠拢：indigo 主色 + slate 中性色 + 0.5rem 圆角基准） ========== */
 
 html[data-theme="light-glass"],
 :root {
-  --background: #f5f5f7;
+  --background: #eef0f6;
   --surface: rgba(255, 255, 255, 0.78);
-  --surface-elevated: rgba(255, 255, 255, 0.92);
-  --surface-hover: rgba(255, 255, 255, 0.9);
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.14);
-  --foreground: #1d1d1f;
-  --muted: #6e6e73;
-  --primary: #0071e3;
-  --primary-hover: #0077ed;
+  --surface-elevated: rgba(255, 255, 255, 0.94);
+  --surface-hover: rgba(255, 255, 255, 0.96);
+  --border: rgba(15, 23, 42, 0.1);
+  --border-strong: rgba(15, 23, 42, 0.18);
+  --foreground: #0f172a;
+  --muted: #64748b;
+  --primary: #6366f1;
+  --primary-hover: #4f46e5;
   --primary-foreground: #ffffff;
-  --primary-muted: rgba(0, 113, 227, 0.1);
-  --secondary: #e5e5ea;
-  --secondary-hover: #d1d1d6;
-  --secondary-foreground: #1d1d1f;
-  --danger: #ff3b30;
-  --danger-hover: #ff5e52;
-  --success: #34c759;
-  --success-hover: #50d46d;
-  --warning: #ff9500;
-  --warning-hover: #ffb340;
-  --radius: 0.875rem;
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.04);
-  --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.12);
+  --primary-muted: rgba(99, 102, 241, 0.12);
+  --secondary: #e2e8f0;
+  --secondary-hover: #cbd5e1;
+  --secondary-foreground: #0f172a;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --success: #22c55e;
+  --success-hover: #16a34a;
+  --warning: #f59e0b;
+  --warning-hover: #d97706;
+  --radius: 0.5rem;
+  --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.05);
+  --shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 16px 48px rgba(15, 23, 42, 0.12);
 }
 
 html[data-theme="warm-paper"] {
   --background: #faf8f5;
   --surface: rgba(255, 255, 255, 0.9);
   --surface-elevated: #ffffff;
-  --surface-hover: rgba(255, 251, 245, 0.95);
-  --border: rgba(120, 110, 95, 0.12);
-  --border-strong: rgba(120, 110, 95, 0.2);
-  --foreground: #2c241b;
-  --muted: #7a6f63;
-  --primary: #b45309;
-  --primary-hover: #92400e;
+  --surface-hover: rgba(255, 251, 245, 0.96);
+  --border: rgba(120, 110, 95, 0.14);
+  --border-strong: rgba(120, 110, 95, 0.22);
+  --foreground: #292524;
+  --muted: #78716c;
+  --primary: #6366f1;
+  --primary-hover: #4f46e5;
   --primary-foreground: #ffffff;
-  --primary-muted: rgba(180, 83, 9, 0.1);
+  --primary-muted: rgba(99, 102, 241, 0.12);
   --secondary: #ede8e0;
   --secondary-hover: #e2dbd0;
-  --secondary-foreground: #2c241b;
+  --secondary-foreground: #292524;
   --danger: #dc2626;
   --danger-hover: #ef4444;
   --success: #15803d;
   --success-hover: #16a34a;
   --warning: #d97706;
   --warning-hover: #f59e0b;
-  --radius: 0.75rem;
+  --radius: 0.5rem;
   --shadow-sm: 0 2px 6px rgba(60, 45, 30, 0.04);
   --shadow: 0 6px 20px rgba(60, 45, 30, 0.08);
   --shadow-lg: 0 14px 40px rgba(60, 45, 30, 0.12);
 }
 
+/* 深色 AI = DF 深色原版令牌 */
 html[data-theme="dark-ai"] {
-  --background: #0f1117;
-  --surface: rgba(30, 33, 42, 0.72);
-  --surface-elevated: rgba(38, 42, 54, 0.9);
-  --surface-hover: rgba(46, 51, 66, 0.85);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.14);
-  --foreground: #f0f2f5;
-  --muted: #9aa3b2;
-  --primary: #8b5cf6;
-  --primary-hover: #7c3aed;
-  --primary-foreground: #ffffff;
-  --primary-muted: rgba(139, 92, 246, 0.15);
-  --secondary: #2a2e3b;
-  --secondary-hover: #353a4b;
-  --secondary-foreground: #f0f2f5;
-  --danger: #f87171;
-  --danger-hover: #fca5a5;
-  --success: #4ade80;
-  --success-hover: #86efac;
-  --warning: #fbbf24;
-  --warning-hover: #fde047;
-  --radius: 0.875rem;
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
-  --shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
+  --background: #020817;
+  --surface: rgba(30, 41, 59, 0.6);
+  --surface-elevated: rgba(30, 41, 59, 0.92);
+  --surface-hover: rgba(51, 65, 85, 0.85);
+  --border: #1e293b;
+  --border-strong: #334155;
+  --foreground: #f8fafc;
+  --muted: #94a3b8;
+  --primary: #818cf8;
+  --primary-hover: #6366f1;
+  --primary-foreground: #f8fafc;
+  --primary-muted: rgba(129, 140, 248, 0.15);
+  --secondary: #1e293b;
+  --secondary-hover: #334155;
+  --secondary-foreground: #f8fafc;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --success: #22c55e;
+  --success-hover: #4ade80;
+  --warning: #f59e0b;
+  --warning-hover: #fbbf24;
+  --radius: 0.5rem;
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.6);
 }
 
 @theme {
@@ -128,7 +130,7 @@ html[data-theme="dark-ai"] {
     @apply h-full w-full overflow-hidden;
     background: var(--background);
     color: var(--foreground);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-family: "DIN Next", "Inter", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   }
 
   html {
@@ -172,11 +174,11 @@ html[data-theme="dark-ai"] {
   }
 }
 
-/* ========== Custom scrollbar ========== */
+/* ========== Custom scrollbar（DF 风格：细轨 + 主色滑块） ========== */
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -184,12 +186,20 @@ html[data-theme="dark-ai"] {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 999px;
+  background: var(--primary-muted);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
+  background: var(--primary);
+}
+
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
 }
 
 /* ========== Animations ========== */
@@ -232,3 +242,170 @@ button,
 select {
   transition-property: background-color, border-color, color, box-shadow, transform;
 }
+
+/* ========== highlight.js 暗色主题（atom-one-dark） ========== */
+.hljs{color:#abb2bf;background:transparent}.hljs-comment,.hljs-quote{color:#5c6370;font-style:italic}.hljs-doctag,.hljs-keyword,.hljs-formula{color:#c678dd}.hljs-section,.hljs-name,.hljs-selector-tag,.hljs-deletion,.hljs-subst{color:#e06c75}.hljs-literal{color:#56b6c2}.hljs-string,.hljs-regexp,.hljs-addition,.hljs-attribute,.hljs-meta .hljs-string{color:#98c379}.hljs-attr,.hljs-variable,.hljs-template-variable,.hljs-type,.hljs-selector-class,.hljs-selector-attr,.hljs-selector-pseudo,.hljs-number{color:#d19a66}.hljs-symbol,.hljs-bullet,.hljs-link,.hljs-meta,.hljs-selector-id,.hljs-title{color:#61aeee}.hljs-built_in,.hljs-title.class_,.hljs-class .hljs-title{color:#e6c07b}.hljs-emphasis{font-style:italic}.hljs-strong{font-weight:bold}.hljs-link{text-decoration:underline}
+
+/* ========== Markdown 表格样式 ========== */
+.markdown-body table { border-collapse: collapse; width: 100%; font-size: 0.875rem; }
+.markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; }
+.markdown-body tr:nth-child(even) { background: var(--muted, rgba(128,128,128,0.05)); }
+
+/* ========== DF 设计语言扩展令牌（全主题兜底映射） ========== */
+:root {
+  --card: var(--surface-elevated);
+  --card-foreground: var(--foreground);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--foreground);
+  --accent: var(--secondary);
+  --accent-foreground: var(--secondary-foreground);
+  --input: var(--border);
+  --ring: var(--primary);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--primary-foreground);
+  --muted-foreground: var(--muted);
+}
+
+@theme {
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-neon-indigo: #6366f1;
+  --color-neon-purple: #8b5cf6;
+  --color-neon-cyan: #06b6d4;
+  --color-neon-green: #22c55e;
+  --color-neon-red: #ef4444;
+  --color-neon-amber: #f59e0b;
+  --color-neon-blue: #3b82f6;
+  --animate-float: float 3s ease-in-out infinite;
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+@keyframes glow {
+  0% { box-shadow: 0 0 5px rgba(99, 102, 241, 0.2); }
+  100% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.6); }
+}
+
+/* DF 表面工具类（跟随主题变量） */
+.surface {
+  background: var(--surface);
+  border: 1px solid var(--primary-muted);
+}
+
+.surface-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+
+/* DF 辉光效果（状态指示） */
+.glow-border {
+  box-shadow: 0 0 10px rgba(129, 140, 248, 0.2),
+              inset 0 0 10px rgba(129, 140, 248, 0.05);
+}
+
+.glow-green { box-shadow: 0 0 10px rgba(34, 197, 94, 0.3); }
+.glow-red { box-shadow: 0 0 10px rgba(239, 68, 68, 0.3); }
+.glow-amber { box-shadow: 0 0 10px rgba(245, 158, 11, 0.3); }
+
+/* DF 运行状态脉冲 */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.status-running {
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+/* DF 风格焦点环（全主题生效） */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--ring);
+}
+
+/* DF 风格 Markdown 渲染（全主题生效） */
+.markdown-body {
+  color: var(--foreground);
+  line-height: 1.6;
+}
+
+.markdown-body code {
+  background: var(--primary-muted);
+  border-radius: 0.25rem;
+  padding: 0.2em 0.4em;
+  font-size: 0.75rem;
+}
+
+.markdown-body pre {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  color: var(--foreground);
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-body blockquote {
+  background: var(--primary-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 0.5rem;
+  padding-left: 1rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  color: var(--muted);
+}
+
+.markdown-body a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.markdown-body a:hover {
+  color: var(--primary-hover);
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border-strong);
+  padding: 0.5rem 0.75rem;
+}
+
+.markdown-body th {
+  background: var(--primary-muted);
+}
+
+/* DF 减弱动效可访问性 */
+@media (prefers-reduced-motion: reduce) {
+  .status-running {
+    animation: none;
+  }
+}
+
+/* ========== 打字光标闪烁 ========== */
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }

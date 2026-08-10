@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
-import { Plus, Search, Network, Sparkles } from "lucide-react";
+import { Plus, Network, Sparkles } from "lucide-react";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
 import type { AssetType, Character, CharacterRelationship, Project } from "@/types";
 import { AiSuggestionDialog } from "@/components/ai-suggestion-dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -102,15 +102,11 @@ export function RelationshipsView({ project, characters, relationships, refresh,
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
-            <Input
-              className="pl-8"
-              placeholder="按源/目标角色名筛选…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="按源/目标角色名筛选…"
+          />
         </CardContent>
       </Card>
 

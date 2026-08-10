@@ -66,13 +66,16 @@ class ChatRepository:
         )
 
     def list_messages(self, session_id: str, limit: int = 100) -> list[ChatMessage]:
-        return (
+        # Bug 8: 取最近 limit 条（desc + reverse），而非最旧 limit 条
+        msgs = (
             self.db.query(ChatMessage)
             .filter(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at.asc())
+            .order_by(ChatMessage.created_at.desc())
             .limit(limit)
             .all()
         )
+        msgs.reverse()
+        return msgs
 
     def add_message(
         self,
@@ -132,6 +135,7 @@ class ChatRepository:
         if not feedback_ids:
             return
         self.db.query(ChapterFeedback).filter(
+            ChapterFeedback.project_id == self.project_id,
             ChapterFeedback.id.in_(feedback_ids)
         ).update({"applied": True})
         self.db.commit()

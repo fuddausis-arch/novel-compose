@@ -94,7 +94,29 @@ def test_route_after_audit_pass():
         audit_report={"passed": True, "overall_score": 85, "issues": []},
         review_iterations=1,
     )
-    # 通过审计→走人审（style_refine 映射到 human_review 节点）
+    # 通过审计但无 confidence_level（默认 medium）→走人审（style_refine 映射到 human_review 节点）
+    assert route_after_audit(state) == "style_refine"
+
+
+def test_route_after_audit_pass_high_confidence_skips_review():
+    """高置信度通过审计→跳过人审，直接走润色（skip_review 映射到 style_refine 节点）。"""
+    from novel_agent.orchestrator.nodes import route_after_audit
+    state = ChapterGenState(
+        audit_report={"passed": True, "overall_score": 90, "issues": []},
+        review_iterations=1,
+        confidence_level="high",
+    )
+    assert route_after_audit(state) == "skip_review"
+
+
+def test_route_after_audit_pass_medium_confidence_goes_review():
+    """中置信度通过审计→走人审。"""
+    from novel_agent.orchestrator.nodes import route_after_audit
+    state = ChapterGenState(
+        audit_report={"passed": True, "overall_score": 80, "issues": []},
+        review_iterations=1,
+        confidence_level="medium",
+    )
     assert route_after_audit(state) == "style_refine"
 
 

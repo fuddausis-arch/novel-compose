@@ -41,7 +41,7 @@ export function SidebarGroup({
   children: React.ReactNode;
   onAdd: () => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   return (
     <div className="mb-1">
       <div

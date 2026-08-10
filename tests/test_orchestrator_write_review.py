@@ -70,12 +70,19 @@ async def test_write_review_pass_on_first_audit(make_runner):
     """审计一次达标 → style_refine → save → summarize 全流程。"""
     mock_llm = MagicMock()
     mock_llm.config = MagicMock(temperature=0.8)
-    # write/style_refine/summarize 各调一次 generate，用 side_effect 区分
-    mock_llm.generate = AsyncMock(side_effect=[
-        _REAL_DRAFT,  # write
-        _REAL_DRAFT,  # style_refine (polish)
-        '{"core_events":"事件","characters_present":"刘洋"}',  # summarize
-    ])
+    # 用 system prompt 区分各节点返回值：writer/polish 返回真实草稿，
+    # summarize 返回校验 JSON，world_engine/context_trimmer/post_hoc 返回空 JSON（触发优雅跳过）。
+    from novel_agent.orchestrator.prompts import STYLE_REFINE_SYSTEM_PROMPT, WRITER_SYSTEM_PROMPT
+
+    async def _mock_generate(*args, **kwargs):
+        sys = kwargs.get("system") or ""
+        if "校验助手" in sys:  # summarize
+            return '{"core_events":"事件","characters_present":"刘洋"}'
+        if sys == WRITER_SYSTEM_PROMPT or sys == STYLE_REFINE_SYSTEM_PROMPT:
+            return _REAL_DRAFT
+        return "{}"
+
+    mock_llm.generate = AsyncMock(side_effect=_mock_generate)
     mock_auditor = MagicMock()
     mock_auditor.audit = AsyncMock(return_value=AuditReport(
         passed=True, overall_score=85, summary="达标"))
@@ -88,7 +95,8 @@ async def test_write_review_pass_on_first_audit(make_runner):
         result = await runner.run(chapter=1, title="第一章")
 
     assert result["status"] == "completed"
-    assert result["review_iterations"] == 1
+    # post_hoc 节点会再 +1，故最终为 2
+    assert result["review_iterations"] == 2
     assert "刘洋" in runner.recall.read_chapter_text(1)
     assert runner.repo.get_chapter_summary(1) is not None
 
@@ -98,12 +106,17 @@ async def test_write_review_rewrite_once_then_pass(make_runner):
     """审计不达标 → 重写 → 再审达标。"""
     mock_llm = MagicMock()
     mock_llm.config = MagicMock(temperature=0.8)
-    mock_llm.generate = AsyncMock(side_effect=[
-        _REAL_DRAFT,  # write v1
-        _REAL_DRAFT,  # rewrite v2
-        _REAL_DRAFT,  # style_refine (polish)
-        '{"core_events":"事件"}',  # summarize
-    ])
+    from novel_agent.orchestrator.prompts import STYLE_REFINE_SYSTEM_PROMPT, WRITER_SYSTEM_PROMPT
+
+    async def _mock_generate(*args, **kwargs):
+        sys = kwargs.get("system") or ""
+        if "校验助手" in sys:  # summarize
+            return '{"core_events":"事件"}'
+        if sys == WRITER_SYSTEM_PROMPT or sys == STYLE_REFINE_SYSTEM_PROMPT:
+            return _REAL_DRAFT
+        return "{}"
+
+    mock_llm.generate = AsyncMock(side_effect=_mock_generate)
     mock_auditor = MagicMock()
     mock_auditor.audit = AsyncMock(side_effect=[
         AuditReport(passed=False, overall_score=50, issues=[
@@ -120,7 +133,8 @@ async def test_write_review_rewrite_once_then_pass(make_runner):
         result = await runner.run(chapter=1, title="第一章")
 
     assert result["status"] == "completed"
-    assert result["review_iterations"] == 2
+    # write + 1 次 rewrite + post_hoc = 3
+    assert result["review_iterations"] == 3
     assert result["draft_version"] == 2
 
 

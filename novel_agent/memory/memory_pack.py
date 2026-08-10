@@ -139,7 +139,7 @@ class MemoryPackBuilder:
             # fallback 读最近1章正文末尾
             prev_chapters = sorted([c for c in self.recall.list_chapters() if c < self.chapter], reverse=True)[:1]
             if prev_chapters:
-                tail = self.recall.read_chapter_text(prev_chapters[0])[-1200:]
+                tail = self.recall.read_chapter_text(prev_chapters[0])
                 sections.append(f"【上章结尾】\n{tail}")
 
         # 近期状态变更（取最新 20 条）
@@ -180,7 +180,7 @@ class MemoryPackBuilder:
         world = self.repo.list_world_settings()
         if world:
             sections.append("【世界观设定】\n" + "\n".join(
-                f"【{w.category}】{w.title}：{w.content[:300]}" for w in world
+                f"【{w.category}】{w.title}：{w.content}" for w in world
             ))
 
         chars = self.repo.list_characters()

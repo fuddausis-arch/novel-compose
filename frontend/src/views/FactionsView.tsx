@@ -1,13 +1,15 @@
 import { useMemo, useState } from "react";
-import { Plus, Search, Shield, Sparkles, Swords } from "lucide-react";
+import { Plus, Shield, Sparkles, Swords } from "lucide-react";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
 import type { AssetType, Faction, Project } from "@/types";
 import { AiSuggestionDialog } from "@/components/ai-suggestion-dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
+import { FilterSelect } from "@/components/ui/filter-select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { EntityCard } from "@/components/entity/entity-card";
 
 interface FactionsViewProps {
   project: Project | null;
@@ -80,35 +82,14 @@ export function FactionsView({ project, factions, refresh, setLoading, onSelectA
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-2">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
-              <Input
-                className="pl-8"
-                placeholder="搜索名称/别名…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-              className="h-10 rounded-xl border border-border-strong bg-surface px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            >
-              <option value="">全部类型</option>
-              {types.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-            <select
-              value={alignmentFilter}
-              onChange={(e) => setAlignmentFilter(e.target.value)}
-              className="h-10 rounded-xl border border-border-strong bg-surface px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            >
-              <option value="">全部阵营</option>
-              {alignments.map((a) => (
-                <option key={a} value={a}>{a}</option>
-              ))}
-            </select>
+            <SearchInput
+              value={search}
+              onChange={setSearch}
+              placeholder="搜索名称/别名…"
+              className="flex-1 min-w-[200px]"
+            />
+            <FilterSelect value={typeFilter} onChange={setTypeFilter} options={types} placeholder="全部类型" />
+            <FilterSelect value={alignmentFilter} onChange={setAlignmentFilter} options={alignments} placeholder="全部阵营" />
           </div>
         </CardContent>
       </Card>
@@ -119,33 +100,26 @@ export function FactionsView({ project, factions, refresh, setLoading, onSelectA
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {filtered.map((f) => (
-            <Card
+            <EntityCard
               key={f.id}
-              className="cursor-pointer hover:border-primary/50 transition-colors"
               onClick={() => onSelectAsset?.("faction", String(f.id))}
-            >
-              <CardContent className="p-4 space-y-2">
-                <div className="flex items-start justify-between gap-2">
-                  <h4 className="font-medium text-foreground">{f.name}</h4>
-                  {f.type && <Badge variant="primary">{f.type}</Badge>}
+              title={f.name}
+              badge={f.type && <Badge variant="primary">{f.type}</Badge>}
+              description={f.description}
+              footer={(f.territories || f.resources) && (
+                <div className="flex flex-wrap gap-1 text-xs text-muted">
+                  {f.territories && <Badge variant="default">领地</Badge>}
+                  {f.resources && <Badge variant="default">资源</Badge>}
                 </div>
-                {f.alias && <p className="text-xs text-muted">别名：{f.alias}</p>}
-                {f.alignment && (
-                  <div className="flex items-center gap-1 text-xs text-muted">
-                    <Swords className="h-3 w-3" /> 阵营：{f.alignment}
-                  </div>
-                )}
-                {f.description && (
-                  <p className="text-sm text-muted line-clamp-3 whitespace-pre-wrap">{f.description}</p>
-                )}
-                {(f.territories || f.resources) && (
-                  <div className="flex flex-wrap gap-1 text-xs text-muted">
-                    {f.territories && <Badge variant="default">领地</Badge>}
-                    {f.resources && <Badge variant="default">资源</Badge>}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+              )}
+            >
+              {f.alias && <p className="text-xs text-muted">别名：{f.alias}</p>}
+              {f.alignment && (
+                <div className="flex items-center gap-1 text-xs text-muted">
+                  <Swords className="h-3 w-3" /> 阵营：{f.alignment}
+                </div>
+              )}
+            </EntityCard>
           ))}
         </div>
       </div>

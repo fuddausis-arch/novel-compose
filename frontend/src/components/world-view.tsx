@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Globe, Plus, Sparkles, Trash2, Save, X, Edit2, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Globe, Plus, Sparkles, Trash2, Save, X, Edit2 } from "lucide-react";
 import { api } from "@/api";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog";
@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AiPreviewDialog } from "@/components/ai-preview-dialog";
 import { AiSuggestionDialog } from "@/components/ai-suggestion-dialog";
+import { GenerationStreamDialog, type GenStreamItem } from "@/components/generation-stream-dialog";
 
 interface WorldViewProps {
   project: Project | null;
@@ -20,20 +21,24 @@ interface WorldViewProps {
   setLoading?: (loading: boolean) => void;
 }
 
-const CATEGORIES = [
-  "世界观",
-  "力量体系",
-  "势力",
-  "地点",
-  "规则",
-  "历史",
-  "现实层",
-  "异能层",
-  "神明层",
-  "其他",
-];
+const MULTI_LAYER_GENRES = ["都市异能", "规则怪谈", "悬疑脑洞", "无限流", "科幻未来"];
 
-export function WorldView({ project, worldSettings, refresh, setLoading }: WorldViewProps) {
+function getCategoriesForGenre(genre: string | undefined): string[] {
+  const base = ["世界观", "力量体系", "势力", "地点", "规则", "历史", "其他"];
+  if (genre && MULTI_LAYER_GENRES.some(g => genre.includes(g))) {
+    return ["世界观", "现实层", "力量体系", "异能层", "势力", "地点", "规则", "历史", "神明层", "其他"];
+  }
+  return base;
+}
+
+function getDefaultRequirements(genre: string | undefined): string {
+  if (genre && MULTI_LAYER_GENRES.some(g => genre.includes(g))) {
+    return "设计多层世界观：现实层、异能层、神明层";
+  }
+  return "设计完整世界观：世界观、力量体系、势力、地点、规则、历史";
+}
+
+export function WorldView({ project, worldSettings, refresh }: WorldViewProps) {
   if (!project) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted text-sm">
@@ -44,8 +49,13 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
 
   const { showSuccess, showError } = useToast();
   const { confirm: confirmDelete, dialog: deleteDialog } = useConfirmDialog();
-  const [generating, setGenerating] = useState(false);
-  const [requirements, setRequirements] = useState("设计多层世界观：现实层、异能层、神明层");
+  // CATEGORIES 按题材动态推导（修真题材不加"异能层"，避免串味）
+  const CATEGORIES = useMemo(() => getCategoriesForGenre(project?.genre), [project?.genre]);
+  const [requirements, setRequirements] = useState(() => getDefaultRequirements(project?.genre));
+  // 切换项目时同步默认 requirements
+  useEffect(() => {
+    setRequirements(getDefaultRequirements(project?.genre));
+  }, [project?.genre]);
   const [style, setStyle] = useState(project.style || "热血");
 
   const [adding, setAdding] = useState(false);
@@ -61,6 +71,7 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<Partial<WorldSetting>[]>([]);
   const [suggestOpen, setSuggestOpen] = useState(false);
+  const [streamOpen, setStreamOpen] = useState(false);
 
   const grouped = useMemo(() => {
     const map = new Map<string, WorldSetting[]>();
@@ -71,24 +82,34 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
       map.set(s.category, list);
     });
     return Array.from(map.entries()).filter(([, list]) => list.length > 0);
-  }, [worldSettings]);
+  }, [worldSettings, CATEGORIES]);
 
   const handleGenerate = async () => {
-    setGenerating(true);
-    setLoading?.(true);
+    setStreamOpen(true);
+  };
+
+  // 流式生成：创建 EventSource
+  const createStreamSource = () => api.generateWorldStream(project.id, requirements, style);
+
+  // 流式生成完成/导入后：逐条导入世界观
+  const handleStreamImport = async (items: GenStreamItem[]) => {
     try {
-      const r = await api.generateWorld(project.id, requirements, style);
-      if (r.items && r.items.length > 0) {
-        setPreviewItems(r.items);
-        setPreviewOpen(true);
-      } else {
-        showError("AI 未返回世界观设定");
-      }
+      await api.importWorld(project.id, items as any[]);
+      await refresh();
+      showSuccess(`已导入 ${items.length} 条世界观设定`);
     } catch (e: any) {
-      showError("生成失败：" + e.message);
-    } finally {
-      setGenerating(false);
-      setLoading?.(false);
+      showError("导入失败：" + e.message);
+    }
+  };
+
+  // 单条导入
+  const handleStreamImportOne = async (item: GenStreamItem) => {
+    try {
+      await api.importWorld(project.id, [item as any]);
+      await refresh();
+      showSuccess(`已导入：${item.title || "未命名"}`);
+    } catch (e: any) {
+      showError("导入失败：" + e.message);
     }
   };
 
@@ -164,6 +185,15 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
 
   return (
     <div className="flex-1 flex flex-col gap-3 min-h-0 overflow-hidden">
+      <GenerationStreamDialog
+        open={streamOpen}
+        title="世界观"
+        type="world"
+        createSource={createStreamSource}
+        onClose={() => setStreamOpen(false)}
+        onImport={handleStreamImport}
+        onImportOne={handleStreamImportOne}
+      />
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -193,9 +223,9 @@ export function WorldView({ project, worldSettings, refresh, setLoading }: World
               value={style}
               onChange={(e) => setStyle(e.target.value)}
             />
-            <Button variant="primary" onClick={handleGenerate} disabled={generating}>
-              {generating ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              {generating ? "AI 生成中…" : "AI 生成世界观"}
+            <Button variant="primary" onClick={handleGenerate}>
+              <Sparkles className="h-3.5 w-3.5 mr-1" />
+              AI 生成世界观
             </Button>
           </div>
 

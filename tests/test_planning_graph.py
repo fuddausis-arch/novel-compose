@@ -10,8 +10,9 @@ def _mock_deps():
     }
 
 
-def test_graph_has_five_nodes():
+def test_graph_has_required_nodes():
     graph = build_volume_graph(_mock_deps())
     node_ids = set(graph.nodes.keys())
-    for name in ["plan", "design", "outline", "review", "apply"]:
+    # 规划流程 pipeline：plan→design→review→apply（已删除 outline 节点）
+    for name in ["plan", "design", "review", "apply"]:
         assert name in node_ids, f"缺失节点 {name}"

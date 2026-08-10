@@ -29,7 +29,7 @@ _REAL_DRAFT = "\n\n".join(_REAL_PARAGRAPHS * 2)
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("NOVEL_PROJECT_DATA", str(tmp_path / "project_data"))
+    monkeypatch.setenv("NOVEL_PROJECT_DATA_DIR", str(tmp_path / "project_data"))
     return TestClient(create_app(project_data_dir=tmp_path / "project_data"))
 
 
@@ -44,7 +44,14 @@ def test_generate_stream_emits_node_events(client):
          patch("langgraph.types.interrupt", return_value="approve"), \
          patch("novel_agent.orchestrator.nodes._load_random_human_chapter", return_value=None):
         mock = MagicMock()
-        mock.generate = AsyncMock(side_effect=[_REAL_DRAFT, '{"core_events":"e"}'])
+        # 编排管线含 world_engine/context_trimmer/analyze_style/summarize/post_hoc 节点，
+        # 每个都调用 generate。write 期待正文，其余期待 JSON。按 system prompt 区分。
+        async def fake_generate(prompt, system=None, **kw):
+            from novel_agent.orchestrator.prompts import WRITER_SYSTEM_PROMPT
+            if system == WRITER_SYSTEM_PROMPT:
+                return _REAL_DRAFT
+            return '{"ok":true}'
+        mock.generate = AsyncMock(side_effect=fake_generate)
         mock.close = AsyncMock()
         MockLLM.return_value = mock
         MockAuditLLM.return_value = MagicMock()
@@ -69,7 +76,14 @@ def test_generate_stream_node_events_contain_pipeline_stages(client):
          patch("langgraph.types.interrupt", return_value="approve"), \
          patch("novel_agent.orchestrator.nodes._load_random_human_chapter", return_value=None):
         mock = MagicMock()
-        mock.generate = AsyncMock(side_effect=[_REAL_DRAFT, '{"core_events":"e"}'])
+        # 编排管线含 world_engine/context_trimmer/analyze_style/summarize/post_hoc 节点，
+        # 每个都调用 generate。write 期待正文，其余期待 JSON。按 system prompt 区分。
+        async def fake_generate(prompt, system=None, **kw):
+            from novel_agent.orchestrator.prompts import WRITER_SYSTEM_PROMPT
+            if system == WRITER_SYSTEM_PROMPT:
+                return _REAL_DRAFT
+            return '{"ok":true}'
+        mock.generate = AsyncMock(side_effect=fake_generate)
         mock.close = AsyncMock()
         MockLLM.return_value = mock
         MockAuditLLM.return_value = MagicMock()

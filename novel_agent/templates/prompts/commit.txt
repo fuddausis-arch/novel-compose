@@ -16,11 +16,16 @@ ${semantic_memory}
 ${chapter_text}
 
 请输出严格 JSON：
-{"summary":"100字以内本章摘要，包含核心事件、出场角色、情绪转折","state_deltas":[{"entity_type":"角色","entity_id":"角色名","field":"current_location","old":"原值","new":"新值"}],"relationships":[{"character_a":"","character_b":"","interaction_type":"meeting|conflict|cooperation|info_share","relationship_change":"","info_exchanged":""}],"events":[{"event_type":"character_state_changed|open_loop_created|open_loop_closed|relationship_changed|world_rule_revealed|power_breakthrough|artifact_obtained","subject":"","payload":{}}],"foreshadow_updates":[{"foreshadow_id":"","status":"planted|developing|resolved|abandoned"}]}
+{"summary":"100字以内本章摘要，包含核心事件、出场角色、情绪转折","state_deltas":[{"entity_type":"角色","entity_id":"角色名","field":"current_location","old":"原值","new":"新值"}],"new_characters":[{"name":"","role":"主角|配角|反派|NPC","age":"","gender":"","appearance":"","personality":"","motivation":"","background":"","current_location":"","current_emotion":"","known_info":""}],"new_factions":[{"name":"","alias":"","type":"宗教|军事|商业|政治|黑帮|学术|其他","tier":"顶级势力|一流势力|二流势力|三流势力|隐世势力","alignment":"正|邪|中立","description":"","goals":""}],"new_monsters":[{"name":"","alias":"","species":"","rank":"普通|精英|首领|BOSS","tier":"","attributes":"","skills":"","drops":"","habitats":"","behavior":"","weaknesses":"","lore":"","first_appearance":0}],"new_world_settings":[{"category":"世界观|力量体系|势力|地点|规则|历史|技术|其他","title":"","content":""}],"relationships":[{"character_a":"","character_b":"","interaction_type":"meeting|conflict|cooperation|info_share","relationship_change":"","info_exchanged":""}],"events":[{"event_type":"character_state_changed|open_loop_created|open_loop_closed|relationship_changed|world_rule_revealed|power_breakthrough|artifact_obtained","subject":"","payload":{}}],"foreshadow_updates":[{"foreshadow_id":"","status":"planted|developing|resolved|abandoned"}]}
 
 规则：
 1. state_deltas 只记录真实发生变化的字段，不要穷举所有角色。
-2. relationships 只记录本章新出现或变化的人物关系。
-3. foreshadow_updates 只更新本章明确埋设、推进或回收的伏笔。
-4. 提取的事实必须符合题材模板的设定约束。
-5. 只输出 JSON，不解释。
+2. new_characters 只提取本章首次出场的**新**角色，已存在的角色不重复录入。
+3. new_factions 只提取本章首次出现的新组织/势力。
+4. new_monsters 只提取本章首次出现的新怪物/异兽。
+5. new_world_settings 只提取本章揭示的新世界观设定（新地点、新规则、新力量体系等）。
+6. relationships 只记录本章新出现或变化的人物关系。
+7. foreshadow_updates 只更新本章明确埋设、推进或回收的伏笔。
+8. events 记录所有关键剧情事件。
+9. 提取的事实必须符合题材模板的设定约束。
+10. 只输出 JSON，不解释。

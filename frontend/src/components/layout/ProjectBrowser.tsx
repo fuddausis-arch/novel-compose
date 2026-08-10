@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAppStore } from "@/store";
 import { TreeItem } from "@/components/ui/tree";
 
@@ -7,7 +8,7 @@ export interface ProjectBrowserProps {
 }
 
 const CATEGORIES = [
-  { key: "outline", label: "大纲", icon: "📁" },
+  { key: "outline", label: "章节", icon: "📄" },
   { key: "characters", label: "角色", icon: "👤" },
   { key: "world", label: "世界设定", icon: "🌍" },
   { key: "foreshadows", label: "伏笔", icon: "🪝" },
@@ -17,6 +18,7 @@ const CATEGORIES = [
 type CategoryKey = (typeof CATEGORIES)[number]["key"];
 
 export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
+  const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Record<CategoryKey, boolean>>({
     outline: true,
     characters: false,
@@ -27,9 +29,18 @@ export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
 
   const chapters = useAppStore((s) => s.chapters);
   const characters = useAppStore((s) => s.characters);
+  const worldSettings = useAppStore((s) => s.worldSettings);
+  const foreshadows = useAppStore((s) => s.foreshadows);
+  const factions = useAppStore((s) => s.factions);
+  const currentProject = useAppStore((s) => s.currentProject);
+  const projectId = currentProject?.id;
 
   const toggle = (key: CategoryKey) => {
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const goToAssets = () => {
+    if (projectId) navigate(`/projects/${projectId}/assets`);
   };
 
   return (
@@ -55,7 +66,7 @@ export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
           {expanded[category.key] && category.key === "outline" && (
             <div className="mt-0.5">
               {chapters.length === 0 ? (
-                <TreeItem label="暂无章节" depth={1} />
+                <TreeItem label="暂无章节，请到大纲页生成" depth={1} />
               ) : (
                 chapters.map((chapter) => (
                   <TreeItem
@@ -76,13 +87,65 @@ export function ProjectBrowser({ onOpenChapter }: ProjectBrowserProps) {
           {expanded[category.key] && category.key === "characters" && (
             <div className="mt-0.5">
               {characters.length === 0 ? (
-                <TreeItem label="暂无角色" depth={1} />
+                <TreeItem label="暂无角色，请到资产页添加" depth={1} />
               ) : (
                 characters.map((character) => (
                   <TreeItem
                     key={character.id}
                     label={character.name || `角色 #${character.id}`}
                     depth={1}
+                    onClick={goToAssets}
+                  />
+                ))
+              )}
+            </div>
+          )}
+
+          {expanded[category.key] && category.key === "world" && (
+            <div className="mt-0.5">
+              {worldSettings.length === 0 ? (
+                <TreeItem label="暂无世界设定，请到资产页添加" depth={1} />
+              ) : (
+                worldSettings.map((w) => (
+                  <TreeItem
+                    key={w.id}
+                    label={w.title || `设定 #${w.id}`}
+                    depth={1}
+                    onClick={goToAssets}
+                  />
+                ))
+              )}
+            </div>
+          )}
+
+          {expanded[category.key] && category.key === "foreshadows" && (
+            <div className="mt-0.5">
+              {foreshadows.length === 0 ? (
+                <TreeItem label="暂无伏笔，请到资产页添加" depth={1} />
+              ) : (
+                foreshadows.map((f) => (
+                  <TreeItem
+                    key={f.id}
+                    label={`${f.foreshadow_id}${f.description ? ` · ${f.description.slice(0, 12)}` : ""}`}
+                    depth={1}
+                    onClick={goToAssets}
+                  />
+                ))
+              )}
+            </div>
+          )}
+
+          {expanded[category.key] && category.key === "factions" && (
+            <div className="mt-0.5">
+              {factions.length === 0 ? (
+                <TreeItem label="暂无势力，请到资产页添加" depth={1} />
+              ) : (
+                factions.map((f) => (
+                  <TreeItem
+                    key={f.id}
+                    label={f.name || `势力 #${f.id}`}
+                    depth={1}
+                    onClick={goToAssets}
                   />
                 ))
               )}

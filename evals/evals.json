@@ -1,0 +1,78 @@
+{
+  "skill_name": "writing-assistant",
+  "description": "NovelAgent writing-assistant Skill 评测用例：建书 / 续写 / 前置不足 三条核心路径。格式与 bishu-novel evals.json 对齐。",
+  "evals": [
+    {
+      "id": 1,
+      "name": "建书：从零开始新项目",
+      "prompt": "我有一个都市异能故事：一个只能听见被删除记忆的夜班陪练，想从零开始建书，中文写作。你直接帮我推进。",
+      "expected_output": "助手以写作助手+工作流主管双重角色回应，识别为 build 意图：先创建项目（标题/题材/立意），再初始化世界观六维度，然后引导进入 character 工作流创建角色。不会在没有任何设定时直接跳到写正文。",
+      "files": [],
+      "expectations": [
+        "把用户视为作者，以写作助手和工作流主管的双重身份解释下一步",
+        "识别为 build 工作流意图（select_workflow(has_project=False) == 'build'）",
+        "先创建项目元信息（题材/立意/金手指），再生成世界观设定",
+        "只有世界观与角色就绪后才建议进入正文生产（mvp）",
+        "不伪造已存在的设定文件或章节"
+      ],
+      "static_checks": {
+        "select_workflow_input": {"has_project": false},
+        "select_workflow_expected": "build",
+        "parse_intent_expected_workflow": "build"
+      }
+    },
+    {
+      "id": 2,
+      "name": "续写：已有 11 章，写第 12 章",
+      "prompt": "继续《夜班陪练》这本书。第 11 章和后验都已经完成，请写第 12 章：妹妹发现合约上的伤势条款被改过，结尾停在她认出修改笔迹。目标 3000-4000 字。",
+      "expected_output": "助手识别为 mvp 意图，复用既有项目与圣经数据库：加载第 11 章摘要与结尾钩子、第 12 章章纲（若无则提示先补章纲）、注入红线/梗/导入章纲约束，走 world_engine -> assemble -> context_trimmer -> write -> audit -> 人审 -> style_refine -> save -> summarize -> post_hoc 流水线。不重跑 build/character/story-plan。用户的情节要求（合约条款被改、认出笔迹）进入本章创作指令。",
+      "files": [],
+      "expectations": [
+        "不重跑 build、character 或 story-plan 工作流",
+        "章节衔接铁律：本章开头紧接第 11 章结尾剧情，不跳场景/时间线",
+        "用户给出的两个关键节拍（发现条款被改、认出笔迹）必须出现在正文中",
+        "正文完成后提示可选 polish，并要求进入下一章前完成 post_hoc 后验",
+        "遵守 6 条铁律（≥2 角色对话、≥1 冲突场景、动作/对话开篇、环境<15%、≥1 爽点、章末钩子）"
+      ],
+      "static_checks": {
+        "select_workflow_input": {
+          "has_project": true,
+          "has_world": true,
+          "has_characters": true,
+          "has_outlines": true,
+          "has_chapters": true,
+          "has_summaries": true
+        },
+        "select_workflow_expected": "mvp",
+        "parse_intent_expected_workflow": "mvp"
+      }
+    },
+    {
+      "id": 3,
+      "name": "前置不足：有世界观和角色但缺故事规划",
+      "prompt": "《回声区》已有世界观和角色，但我还没做过故事规划。先别问太多，直接帮我写第一章。",
+      "expected_output": "助手识别 mvp 前置不足：缺少大纲（章纲）。不伪造大纲、不跳过准备阶段直接写正文；而是说明缺口，并建议先走 story-plan/outline 生成卷纲与第 1 章章纲（或引导用户在规划页/大纲页生成），完成后再启动 mvp。只追问会改变大纲的最少创作缺口。",
+      "files": [],
+      "expectations": [
+        "明确指出缺少章纲/大纲（has_outlines=False）",
+        "推荐 story-plan 而非直接启动 mvp",
+        "沿用同一项目，不新建项目、不重做世界观与角色",
+        "只追问会改变故事规划的最少创作缺口（题材基调/主线目标）",
+        "不伪造章纲文件或直接产出正文"
+      ],
+      "static_checks": {
+        "select_workflow_input": {
+          "has_project": true,
+          "has_world": true,
+          "has_characters": true,
+          "has_outlines": false,
+          "has_chapters": false,
+          "has_summaries": false
+        },
+        "select_workflow_expected": "story-plan",
+        "parse_intent_expected_workflow": "mvp",
+        "parse_intent_note": "用户显式说'写第一章'，parse_user_intent 命中 mvp 关键词；但 select_workflow 依据状态判定前置不足，应回到 story-plan。两者结合体现主管角色的前置检查职责。"
+      }
+    }
+  ]
+}

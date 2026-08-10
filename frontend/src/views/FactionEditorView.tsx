@@ -82,7 +82,8 @@ export function FactionEditorView({ factionId, onBack, onGenerateFaction, genera
     if (!confirmed) return;
     try {
       await api.deleteFaction(store.currentProject.id, factionId);
-      await store.refreshAssets();
+      // 删除势力会级联影响该势力相关的势力关系，刷新势力与势力关系两个切片
+      await Promise.all([store.refreshFactions(), store.refreshFactionRelationships()]);
       showSuccess("删除成功");
       onBack?.();
     } catch (e: any) {
@@ -237,7 +238,7 @@ export function FactionEditorView({ factionId, onBack, onGenerateFaction, genera
                       <Badge variant="primary">{r.relation_type}</Badge>
                       <span className="text-xs text-muted">强度 {r.strength}</span>
                     </div>
-                    <button onClick={() => handleDeleteRelationship(r.id)} className="p-1 hover:bg-foreground/5 rounded shrink-0">
+                    <button onClick={() => handleDeleteRelationship(r.id)} className="p-1 hover:bg-foreground/5 rounded shrink-0" aria-label="删除关系">
                       <Trash2 className="h-3.5 w-3.5 text-danger" />
                     </button>
                   </div>

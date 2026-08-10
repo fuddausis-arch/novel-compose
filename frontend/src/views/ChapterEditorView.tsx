@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Sparkles } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Sparkles, Save } from "lucide-react";
 import { api } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { AiSuggestionDialog } from "@/components/ai-suggestion-dialog";
 import { useToast } from "@/hooks/useToast";
+import { useAppStore } from "@/store";
 import type { ChapterBrief, Project, ReviewResult } from "@/types";
 
 interface ChapterEditorViewProps {
@@ -22,6 +23,7 @@ interface ChapterEditorViewProps {
   onDelete: () => void;
   onGenerate: () => void;
   generating: boolean;
+  onCancel?: () => void;
 }
 
 export function ChapterEditorView({
@@ -37,6 +39,7 @@ export function ChapterEditorView({
   onDelete,
   onGenerate,
   generating,
+  onCancel,
 }: ChapterEditorViewProps) {
   const [tab, setTab] = useState<"write" | "brief" | "review" | "commit">("write");
   const [brief, setBrief] = useState<ChapterBrief | null>(null);
@@ -46,8 +49,31 @@ export function ChapterEditorView({
   const [loading, setLoading] = useState<string | null>(null);
   const [suggestOpen, setSuggestOpen] = useState(false);
 
-  const { showSuccess } = useToast();
+  const { showSuccess, showError } = useToast();
+  const refreshAssets = useAppStore((s) => s.refreshAssets);
+  const startPipeline = useAppStore((s) => s.startPipeline);
+  const addPipelineEvent = useAppStore((s) => s.addPipelineEvent);
+  const setPipelineStatus = useAppStore((s) => s.setPipelineStatus);
+  const clearPipeline = useAppStore((s) => s.clearPipeline);
   const projectId = project?.id;
+
+  // 切换章节时尝试加载已保存的任务书
+  useEffect(() => {
+    if (!projectId || !chapter) { setBrief(null); return; }
+    api.getChapterBrief(projectId, chapter)
+      .then((r) => { setBrief(r); })
+      .catch(() => { setBrief(null); });
+  }, [projectId, chapter]);
+
+  const handleSaveBrief = async () => {
+    if (!projectId || !brief) return;
+    try {
+      await api.saveChapterBrief(projectId, chapter, title, brief.brief, brief.brief_text, brief.context_stats);
+      showSuccess("任务书已保存");
+    } catch (e: any) {
+      showError("保存失败：" + e.message);
+    }
+  };
 
   const handleBrief = async () => {
     if (!projectId) return;
@@ -69,13 +95,21 @@ export function ChapterEditorView({
   const handleReview = async () => {
     if (!projectId) return;
     setLoading("review");
+    startPipeline("审查章节一致性…", "chapter");
+    addPipelineEvent("正在审查", 50);
     try {
       const r = await api.reviewChapter(projectId, chapter);
       setReview(r);
       setTab("review");
+      addPipelineEvent("审查完成", 100);
+      setPipelineStatus("done");
+      setTimeout(() => clearPipeline(), 2000);
     } catch (e: any) {
       setReview({ summary: "审查失败：" + e.message, issues: [], dimension_results: [] } as unknown as ReviewResult);
       setTab("review");
+      addPipelineEvent(`错误：审查失败：${e.message}`);
+      setPipelineStatus("error");
+      setTimeout(() => clearPipeline(), 3000);
     } finally {
       setLoading(null);
     }
@@ -88,6 +122,12 @@ export function ChapterEditorView({
       const r = await api.commitChapter(projectId, chapter);
       setCommitResult(r);
       setTab("commit");
+      if (r.committed) {
+        // 提交会写入角色/怪物/势力/世界观/伏笔/状态/事件/关系 8 类实体，
+        // 刷新 store 让其他视图（角色卡/怪物/势力等）立即看到新数据
+        await refreshAssets();
+        showSuccess(`第${chapter}章已提交，已提取 ${r.deltas} 项变更`);
+      }
     } catch (e: any) {
       setCommitResult({ chapter, committed: false, summary: "", deltas: 0, relationships: 0, events: 0, foreshadow_updates: 0, error: e.message });
       setTab("commit");
@@ -117,6 +157,9 @@ export function ChapterEditorView({
             {dirty && autoSaveState !== "saving" && <Badge className="text-warning border-warning">未保存</Badge>}
             <Button size="sm" onClick={onSave} disabled={!dirty}>保存</Button>
             <Button size="sm" variant="primary" onClick={onGenerate} disabled={generating}>{generating ? "生成中…" : "AI 生成"}</Button>
+            {generating && onCancel && (
+              <Button size="sm" variant="danger" onClick={onCancel}>取消生成</Button>
+            )}
             <Button size="sm" variant="default" onClick={() => setSuggestOpen(true)}>
               <Sparkles className="h-3.5 w-3.5 mr-1" /> AI 建议后续
             </Button>
@@ -133,7 +176,18 @@ export function ChapterEditorView({
               {t === "write" ? "正文" : t === "brief" ? "任务书" : t === "review" ? "审查" : "提交"}
             </button>
           ))}
+          {tab === "write" && (
+            <span className="text-xs text-muted ml-1">
+              {content.replace(/\s/g, "").length} 字
+              {content.length > 0 && (
+                <span className="ml-2">
+                  （含空格 {content.length}）
+                </span>
+              )}
+            </span>
+          )}
           <Button size="sm" variant="ghost" onClick={handleBrief} disabled={loading === "brief"} className="ml-auto">{loading === "brief" ? "…" : "生成任务书"}</Button>
+          {brief && <Button size="sm" variant="ghost" onClick={handleSaveBrief}><Save className="h-3.5 w-3.5 mr-1" />保存任务书</Button>}
           <Button size="sm" variant="ghost" onClick={handleReview} disabled={loading === "review"}>{loading === "review" ? "…" : "审查"}</Button>
           <Button size="sm" variant="ghost" onClick={handleCommit} disabled={loading === "commit"}>{loading === "commit" ? "…" : "提交"}</Button>
         </div>
@@ -153,19 +207,26 @@ export function ChapterEditorView({
               <div className="text-danger">{briefError}</div>
             ) : brief ? (
               <div className="space-y-3">
-                <div className="text-xs text-muted">第{brief.chapter}章 {brief.title} · 上下文：角色{brief.context_stats.characters}人 · 设定{brief.context_stats.world_settings}条 · 待埋伏笔{brief.context_stats.fore_to_plant}条 · 待回收{brief.context_stats.fore_to_resolve}条</div>
+                <div className="text-xs text-muted">第{brief.chapter}章 {brief.title} · 上下文：角色{brief.context_stats?.characters ?? brief.context_stats?.total_chars ?? 0} · 设定{brief.context_stats?.world_settings ?? ""} · 待埋伏笔{brief.context_stats?.fore_to_plant ?? ""} · 待回收{brief.context_stats?.fore_to_resolve ?? ""}</div>
                 {[
-                  { label: "开篇委托", value: brief.brief.opening },
-                  { label: "这章的故事", value: brief.brief.story },
-                  { label: "这章的人物", value: brief.brief.characters },
-                  { label: "怎么写更顺", value: brief.brief.craft },
-                  { label: "收在哪里", value: brief.brief.ending },
-                ].map((section) => (
-                  <div key={section.label} className="rounded-lg border border-border bg-surface p-3">
-                    <div className="font-medium text-primary mb-1">{section.label}</div>
-                    <div className="whitespace-pre-wrap">{section.value}</div>
-                  </div>
-                ))}
+                  { label: "开篇委托", value: brief.brief?.opening },
+                  { label: "这章的故事", value: brief.brief?.story },
+                  { label: "这章的人物", value: brief.brief?.characters },
+                  { label: "怎么写更顺", value: brief.brief?.craft },
+                  { label: "收在哪里", value: brief.brief?.ending },
+                ].map((section) => {
+                  const text = typeof section.value === "string"
+                    ? section.value
+                    : section.value == null
+                      ? ""
+                      : JSON.stringify(section.value, null, 2);
+                  return (
+                    <div key={section.label} className="rounded-lg border border-border bg-surface p-3">
+                      <div className="font-medium text-primary mb-1">{section.label}</div>
+                      <div className="whitespace-pre-wrap">{text}</div>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <div className="text-muted">点击右上角「生成任务书」获取 AI 写作任务书。</div>

@@ -3,12 +3,44 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from novel_agent.bible.repository import BibleRepository
 from novel_agent.config import Config
 from novel_agent.memory.recall import RecallMemory
 
 logger = logging.getLogger(__name__)
+
+
+def _truncate_reference_text(ref_text: str, total_limit: int = 4000) -> str:
+    """参考文件文本过大时按总量截断：每文件保留头部，总量不超 total_limit。
+
+    参考文件可能达几 MB，global 会话每轮都全量注入会撑爆上下文，
+    这里只保留每个文件的开头片段并限制总长。
+    """
+    if len(ref_text) <= total_limit:
+        return ref_text
+    logger.warning(
+        "参考文件总文本 %d 字超过 %d 字上限，截断注入", len(ref_text), total_limit
+    )
+    # get_all_reference_text 以 “【参考文件：...】” 分块，按块截取头部
+    parts = []
+    used = 0
+    per_file_limit = max(800, total_limit // 5)
+    for block in re.split(r"(?=【参考文件：)", ref_text):
+        block = block.strip()
+        if not block:
+            continue
+        if len(block) > per_file_limit:
+            block = block[:per_file_limit] + "…（截断）"
+        if used + len(block) > total_limit:
+            remain = total_limit - used
+            if remain > 0:
+                parts.append(block[:remain])
+            break
+        parts.append(block)
+        used += len(block)
+    return "\n\n".join(parts)
 
 
 class ContextBuilder:
@@ -47,7 +79,7 @@ class ContextBuilder:
         recall = RecallMemory(self.cfg, project_id=self.repo.project_id)
         text = recall.read_chapter_text(chapter)
         if text:
-            parts.append(f"【正文前1500字】\n{text[:1500]}")
+            parts.append(f"【正文】\n{text}")
         outline = self.repo.get_outline_by_chapter(chapter)
         if outline:
             parts.append(f"【章纲】{outline.title}：{outline.summary}")
@@ -73,7 +105,8 @@ class ContextBuilder:
         return (
             f"对象：角色 {c.name}（{c.role}）\n"
             f"性格：{c.personality}\n动机：{c.motivation}\n"
-            f"背景：{c.background}\n当前位置：{c.current_location}\n情绪：{c.current_emotion}"
+            f"背景：{c.background}\n当前位置：{c.current_location}\n情绪：{c.current_emotion}\n"
+            f"绝对禁令：{getattr(c, 'absolute_taboos', '') or '无'}"
         )
 
     def _monster_context(self, monster_id: str) -> str:
@@ -90,7 +123,7 @@ class ContextBuilder:
         if not items:
             return "对象：世界设定（暂无）"
         return "对象：世界设定\n" + "\n".join(
-            f"- [{w.category}] {w.title}：{w.content[:200]}" for w in items
+            f"- [{w.category}] {w.title}：{w.content}" for w in items
         )
 
     def _faction_context(self, faction_id: str) -> str:
@@ -126,11 +159,30 @@ class ContextBuilder:
         parts = ["当前为全局对话模式。"]
         if project:
             parts.append(f"项目：《{project.title}》 {project.genre}\n简介：{project.summary}")
+            # 注入禁令上下文（constitution/golden_finger/central_concept）
+            if getattr(project, 'constitution', ''):
+                parts.append(f"【全书铁律（绝对不得违反）】\n{project.constitution}")
+            if getattr(project, 'golden_finger', ''):
+                try:
+                    gf = json.loads(project.golden_finger) if isinstance(project.golden_finger, str) else project.golden_finger
+                    gf_text = gf if isinstance(gf, str) else json.dumps(gf, ensure_ascii=False)
+                    parts.append(f"【金手指设定（必须遵守其机制/限制/代价）】\n{gf_text}")
+                except Exception:
+                    parts.append(f"【金手指设定（必须遵守其机制/限制/代价）】\n{project.golden_finger}")
+            if getattr(project, 'central_concept', ''):
+                try:
+                    concept = json.loads(project.central_concept) if isinstance(project.central_concept, str) else project.central_concept
+                    taboos = concept.get('taboos', []) if isinstance(concept, dict) else []
+                    taboos_list = taboos if isinstance(taboos, list) else ([taboos] if taboos else [])
+                    taboos_text = ', '.join(str(t) for t in taboos_list) if taboos_list else '无'
+                    parts.append(f"【立意禁忌（违反则废稿）】\n{taboos_text}")
+                except Exception:
+                    parts.append(f"【立意】\n{project.central_concept}")
         chapters = self.repo.list_chapter_summaries(limit=5)
         if chapters:
             parts.append("【最近章节摘要】")
             for s in sorted(chapters, key=lambda x: x.chapter):
-                parts.append(f"- 第{s.chapter}章《{s.title}》：{s.core_events[:120]}")
+                parts.append(f"- 第{s.chapter}章《{s.title}》：{s.core_events}")
         fores = self.repo.list_foreshadows()
         if fores:
             unresolved = [f for f in fores if f.status not in ("resolved", "abandoned")]
@@ -138,6 +190,14 @@ class ContextBuilder:
         debts = self.repo.list_open_debts()
         if debts:
             parts.append(f"【欠账】未偿还 {len(debts)} 条")
+        # 注入项目参考文件内容（超长时截断，防止每轮全量携带几 MB 文本）
+        try:
+            from novel_agent.api.routes_references import get_all_reference_text
+            ref_text = get_all_reference_text(self.repo.project_id)
+            if ref_text.strip():
+                parts.append(_truncate_reference_text(ref_text))
+        except Exception:
+            pass
         return "\n\n".join(parts)
 
     @staticmethod

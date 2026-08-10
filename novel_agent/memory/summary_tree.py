@@ -28,20 +28,33 @@ class SummaryTree:
         return "\n".join(parts)
 
     def get_volume_summary(self, volume: int) -> str:
-        """获取某卷的压缩摘要。无 volume 字段时按章号范围分卷（每30章一卷）。"""
-        summaries = self.repo.list_chapter_summaries(limit=1000)
+        """获取某卷的压缩摘要。
+
+        B4修复：优先读已存储的LLM卷摘要（存在volume级Outline的summary字段），
+        而非从章摘要机械截断100字。
+        """
+        # 1. 优先读已存储的LLM卷摘要
+        from novel_agent.bible.models import Outline
+        vol_outline = self.repo.db.query(Outline).filter(
+            Outline.project_id == self.repo.project_id,
+            Outline.level == "volume",
+            Outline.order == volume,
+        ).first()
+        if vol_outline and vol_outline.summary and len(vol_outline.summary) > 50:
+            return vol_outline.summary
+
+        # 2. fallback：从章摘要机械拼接
+        summaries = self.repo.list_chapter_summaries(limit=2000)
         if not summaries:
             return ""
-        # 按 volume 过滤：每30章一卷
         start = (volume - 1) * 30 + 1
         end = volume * 30
         volume_summaries = [s for s in summaries if start <= s.chapter <= end]
         if not volume_summaries:
             return ""
         volume_summaries.sort(key=lambda s: s.chapter)
-        # 最多20章，取该卷最后20章
         lines = [
-            f"第{s.chapter}章《{s.title}》：{s.core_events[:100]}"
+            f"第{s.chapter}章《{s.title}》：{s.core_events}"
             for s in volume_summaries[-20:]
         ]
         return "【卷摘要】\n" + "\n".join(lines)
@@ -76,7 +89,7 @@ class SummaryTree:
             return f"【第{volume}卷摘要】\n{summary}"
         except Exception:
             # fallback 到机械截断
-            lines = [f"第{s.chapter}章：{s.core_events[:100]}" for s in volume_summaries[-20:]]
+            lines = [f"第{s.chapter}章：{s.core_events}" for s in volume_summaries[-20:]]
             return "【卷摘要】\n" + "\n".join(lines)
 
     def get_full_summary(self) -> str:
@@ -96,9 +109,9 @@ class SummaryTree:
             return "\n".join(parts)
         recent = summaries[-10:]
         older = summaries[:-10]
-        # 更早的只取 core_events 前100字
+        # 更早的取完整 core_events
         older_text = "\n".join(
-            f"第{s.chapter}章《{s.title}》：{s.core_events[:100]}" for s in older
+            f"第{s.chapter}章《{s.title}》：{s.core_events}" for s in older
         )
         recent_text = "\n".join(
             f"第{s.chapter}章《{s.title}》：{s.core_events}" for s in recent

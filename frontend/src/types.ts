@@ -1,4 +1,4 @@
-export type AssetType = "character" | "foreshadow" | "outline" | "chapter" | "faction" | "factionRelationship" | "characterRelationship" | "monster";
+export type AssetType = "character" | "foreshadow" | "outline" | "chapter" | "faction" | "factionRelationship" | "characterRelationship" | "monster" | "instance";
 export type Tab = "dashboard" | "planning" | "world" | "characters" | "outlines-volume" | "outlines-arc" | "outlines-chapter" | "asset" | "chapter" | "summaries" | "import" | "export" | "factions" | "relationships" | "monsters" | "settings";
 
 export interface Project {
@@ -7,8 +7,30 @@ export interface Project {
   genre: string;
   summary: string;
   style: string;
+  constitution?: string;
+  target_audience?: string;
+  central_concept?: string;
+  word_count_target?: number;
+  target_volumes?: number;
+  golden_finger?: string;
+  protagonist?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface GoldenFinger {
+  name: string;
+  type: string;
+  core_ability: string;
+  limitation: string;
+  growth: string;
+  origin: string;
+}
+
+export interface GenreTemplate {
+  key: string;
+  title: string;
+  description: string;
 }
 
 export interface WorldSetting {
@@ -38,6 +60,30 @@ export interface Character {
   arc: string;
   relationships: string;
   secrets: string;
+  core_contradiction?: string;
+  sensory_memories?: string;
+  absolute_taboos?: string;
+  language_style?: string;
+  combat_style?: string;
+  growth_curve?: string;
+  emotional_anchor?: string;
+}
+
+export interface Instance {
+  id: number;
+  project_id: number;
+  name: string;
+  instance_type: string;
+  related_volume: number;
+  chapter_range: string;
+  objective: string;
+  mechanism: string;
+  tone: string;
+  difficulty: string;
+  rewards: string;
+  cost: string;
+  description: string;
+  order: number;
 }
 
 export interface Foreshadow {
@@ -49,6 +95,7 @@ export interface Foreshadow {
   plant_chapter: number;
   planned_resolve_chapter: number;
   status: string;
+  depends_on: string;
 }
 
 export interface Faction {
@@ -140,6 +187,12 @@ export interface Outline {
   level: "volume" | "arc" | "chapter";
   act: string;
   strand: "quest" | "fire" | "constellation" | "";
+  required_beats: string;
+  owed_debts: string;
+  required_hooks: string;
+  character_constraints: string;
+  phase: "opening" | "shangjia" | "regular";
+  planned_chapters?: number;
 }
 
 export interface StateChange {
@@ -151,6 +204,30 @@ export interface StateChange {
   field: string;
   old_value: string;
   new_value: string;
+  created_at: string;
+}
+
+export interface TruthEvent {
+  id: number;
+  project_id: number;
+  chapter: number;
+  event_type: string;
+  entity_id: string;
+  payload: Record<string, unknown>;
+  timestamp: string;
+}
+
+export interface RelationshipChange {
+  id: number;
+  project_id: number;
+  chapter: number;
+  entity_type: string;
+  source_id: string;
+  target_id: string;
+  field: string;
+  old_value: string;
+  new_value: string;
+  reason: string;
   created_at: string;
 }
 
@@ -198,6 +275,22 @@ export interface ReviewResult {
   summary: string;
 }
 
+export interface ChapterCommitResult {
+  chapter: number;
+  committed: boolean;
+  summary: string;
+  deltas: number;
+  relationships: number;
+  events: number;
+  foreshadow_updates: number;
+  new_characters: number;
+  new_factions: number;
+  new_monsters: number;
+  new_world_settings: number;
+  archived: boolean;
+  validation_issues?: { severity: string; message: string }[];
+}
+
 export interface LLMConfig {
   base_url: string;
   api_key: string;
@@ -207,10 +300,31 @@ export interface LLMConfig {
   timeout: number;
   vision_enabled: boolean;
   context_length?: number;
+  top_p: number;
+  frequency_penalty: number;
+  presence_penalty: number;
+}
+
+export interface AgentLLMConfig {
+  enabled: boolean;
+  base_url: string;
+  api_key: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  timeout: number;
+  context_length?: number;
+}
+
+export interface EmbeddingConfig {
+  api_key: string;
+  base_url: string;
+  model: string;
 }
 
 export interface ChapterListItem {
   chapter: number;
+  title: string;
   text_preview: string;
 }
 
@@ -244,8 +358,25 @@ export interface GenreContext {
   references: GenreReference[];
 }
 
+export interface CentralConcept {
+  core_hook?: string;
+  protagonist_goal?: string;
+  taboos?: string[];
+}
+
+export interface PlannedVolume {
+  name: string;
+  theme?: string;
+  chapters: number;
+  summary?: string;
+  climax?: string;
+  end_hook?: string;
+  strand_ratio?: { quest?: number; fire?: number; constellation?: number };
+}
+
 export interface VolumePlan {
-  volumes?: { name: string; chapters: number }[];
+  central_concept?: CentralConcept;
+  volumes?: PlannedVolume[];
 }
 
 export interface PlannedCharacter {
@@ -293,6 +424,151 @@ export interface PlanningResult {
   errors?: string[];
 }
 
+export interface PlanningIssue {
+  type: string;
+  severity: "error" | "warning" | "info";
+  message: string;
+}
+
+export interface GoldenFinger {
+  name: string;
+  type: string;
+  core_ability: string;
+  limitation: string;
+  growth: string;
+  origin: string;
+}
+
+export interface Protagonist {
+  name: string;
+  identity: string;
+  core_contradiction: string;
+  sensory_memories: string;
+  absolute_taboos: string;
+  motivation: string;
+  initial_state: string;
+}
+
+// 交互式聊天创作
+export interface ChatHistoryMsg {
+  role: "user" | "assistant";
+  content: string;
+  msg_type: "chat" | "chapter";
+  chapter?: number | null;
+  title?: string | null;
+  brief?: string | null;
+  suggested_next?: string | null;
+}
+
+export interface AuditIssue {
+  dimension?: string;
+  severity?: string;
+  message?: string;
+  location?: string;
+}
+
+export interface AuditReport {
+  passed?: boolean;
+  overall_score?: number;
+  summary?: string;
+  issues?: AuditIssue[];
+  suggestions?: string[];
+  user_perspective?: { score?: number; passed?: boolean; issues?: string[]; summary?: string };
+  expert_perspective?: { score?: number; passed?: boolean; issues?: string[]; summary?: string };
+  editor_perspective?: { score?: number; passed?: boolean; issues?: string[]; summary?: string };
+}
+
+export type InteractiveMode = "qa" | "free";
+
+/**
+ * 交互创作消息的显式状态机阶段。
+ * 作为单一真相源，布尔标志（reviewPending/committing/awaitingVariant 等）
+ * 由此派生，guard 逻辑统一用 phase 判断。
+ *
+ * 状态流转：
+ *   drafting -> awaiting_variant -> under_review -> committing -> committed
+ *                                     ↑                |
+ *                                     └── rewrite/polish ┘（循环）
+ *   任意阶段 -> error
+ */
+export type MessagePhase =
+  | "drafting"          // 正在生成初稿
+  | "awaiting_variant"  // 抽卡：等待用户选版本
+  | "under_review"      // 人审：等待用户决策（通过/重写/润色）
+  | "committing"        // 正在处理人审决策（提交/重写/润色中）
+  | "committed"         // 已提交到圣经
+  | "error";            // 出错
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  msg_type: "chat" | "chapter";
+  chapter?: number | null;
+  title?: string | null;
+  word_count?: number | null;
+  brief?: string | null;
+  suggested_next?: string | null;
+  // 前端专用：章节正文是否展开
+  expanded?: boolean;
+  // 前端专用：是否已提交（更新圣经数据）
+  committed?: boolean;
+  committing?: boolean;
+  commitResult?: string;
+  // AI 工作室模式：质检+人审状态
+  threadId?: string | null;
+  auditReport?: AuditReport | null;
+  reviewPending?: boolean;
+  polished?: boolean;
+  polishIssues?: string[];
+  commitDetail?: any;
+  isDraft?: boolean;
+  // 重写输入框状态（提升到消息对象，避免组件重渲染丢失）
+  showRewriteInput?: boolean;
+  rewriteFeedback?: string;
+  // 深度润色开关
+  deepPolish?: boolean;
+  // present_options：AI 给的选项（持久化到消息，刷新不丢）
+  options?: { label: string; value: string }[];
+  // 用户选中的选项 value（高亮显示用）
+  selectedOption?: string | null;
+  // 抽卡模式：N 个候选版本（等待用户选 1）
+  variants?: VariantOption[];
+  // 抽卡模式：是否正在等待用户选择版本
+  awaitingVariant?: boolean;
+  // 显式状态机阶段（单一真相源，布尔标志由此派生）
+  phase?: MessagePhase;
+}
+
+export interface VariantOption {
+  index: number;
+  title: string;
+  content: string;
+  word_count: number;
+}
+
+export interface InteractiveChatResponse {
+  type: "chapter" | "chat";
+  message: string;
+  chapter?: number | null;
+  title?: string | null;
+  content?: string | null;
+  word_count?: number | null;
+  suggested_next?: string | null;
+  brief?: string | null;
+}
+
+export interface ImportCounts {
+  world_settings: number;
+  factions: number;
+  faction_relationships: number;
+  character_relationships: number;
+  characters: number;
+  foreshadows: number;
+  outlines: number;
+  monsters: number;
+  instances: number;
+}
+
 export interface ImportPreviewData {
   world_settings: Partial<WorldSetting>[];
   factions: Partial<Faction>[];
@@ -302,6 +578,8 @@ export interface ImportPreviewData {
   foreshadows: Partial<Foreshadow>[];
   outlines: Partial<Outline>[];
   monsters: Partial<Monster>[];
+  instances?: Partial<Instance>[];
+  golden_finger?: GoldenFinger | null;
   appearances?: Partial<EntityAppearance>[];
 }
 
@@ -309,6 +587,7 @@ export type ImportPreviewEntity =
   | Partial<Character>
   | Partial<Faction>
   | Partial<Monster>
+  | Partial<Instance>
   | Partial<FactionRelationship>
   | Partial<CharacterRelationship>
   | Partial<WorldSetting>
@@ -333,4 +612,63 @@ export interface AiSuggestion {
   adopted_items: SuggestionItem[];
   status: string;
   created_at: string;
+}
+
+// 红线（创作禁忌/硬性约束）
+export interface RedLine {
+  id: number;
+  project_id: number;
+  content: string;
+  scope: "project" | "chapter";
+  chapter_num?: number | null;
+  severity: "hard" | "soft";
+  created_at?: string;
+  updated_at?: string;
+}
+
+// 梗（笑点/桥段/彩蛋）
+export type GagCategory = "笑点" | "桥段" | "彩蛋";
+
+export interface Gag {
+  id: number;
+  project_id: number;
+  name: string;
+  description: string;
+  category: GagCategory;
+  status: string;
+  first_chapter?: number | null;
+  usage_notes?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// 文件夹导入的章节
+export interface ImportedChapter {
+  id: number;
+  project_id: number;
+  chapter_order: number;
+  title: string;
+  source_filename: string;
+  meta_info?: string;
+  chapter_outline?: string;
+  detail_outline?: string;
+  pleasure_hooks?: string;
+  shell_annotation?: string;
+  raw_content?: string;
+  created_at?: string;
+}
+
+export interface ImportedChapterDetail {
+  id: number;
+  project_id: number;
+  chapter_order: number;
+  title: string;
+  source_filename: string;
+  meta_info: string;
+  chapter_outline?: string;
+  detail_outline?: string;
+  pleasure_hooks?: string;
+  shell_annotation?: string;
+  raw_content?: string;
+  created_at?: string;
 }

@@ -23,8 +23,6 @@ class ActionExecutor:
             return await self._rewrite_chapter(action)
         if action_type == "add_chapter_feedback":
             return self._add_feedback(action)
-        if action_type == "generate_outlines":
-            return await self._generate_outlines(action)
         if action_type == "query_status":
             return self._query_status(action)
         logger.warning("未知 chat action: %s", action_type)
@@ -36,41 +34,34 @@ class ActionExecutor:
         feedback = action.get("feedback", "")
         chat_repo = ChatRepository(self.repo.db, self.repo.project_id)
         if feedback:
-            chat_repo.add_chapter_feedback(chapter, feedback)
-        # 异步触发章节生成
-        from novel_agent.orchestrator.runner import ChapterRunner
-        runner = ChapterRunner(self.cfg, repo=self.repo)
-        try:
-            outline = self.repo.get_outline_by_chapter(chapter)
-            title = outline.title if outline else f"第{chapter}章"
-            result = await runner.run(chapter=chapter, title=title)
-            return {"ok": result.get("status") != "failed", "chapter": chapter, "result": result}
-        finally:
-            await runner.close()
+            fb = chat_repo.add_chapter_feedback(chapter, feedback)
+            chat_repo.mark_feedback_applied([fb.id])
+        # 不再启动后台 task，返回 redirect 让前端走 generate/stream 端点（有节点进度）
+        outline = self.repo.get_outline_by_chapter(chapter)
+        title = outline.title if outline else f"第{chapter}章"
+        return {
+            "ok": True, "chapter": chapter, "status": "redirect",
+            "title": title, "message": f"第{chapter}章重写已启动，正在生成…",
+        }
 
     def _add_feedback(self, action: dict) -> dict:
         from novel_agent.chat.repository import ChatRepository
         chapter = int(action.get("chapter", 0))
         feedback = action.get("feedback", "")
+        if not feedback:
+            return {"ok": False, "error": "feedback 不能为空"}
         chat_repo = ChatRepository(self.repo.db, self.repo.project_id)
         fb = chat_repo.add_chapter_feedback(chapter, feedback)
         return {"ok": True, "feedback_id": fb.id, "chapter": chapter}
 
-    async def _generate_outlines(self, action: dict) -> dict:
-        # 调用 planning 路由的底层 runner
-        from novel_agent.planning.runner import VolumeRunner
-        runner = VolumeRunner(self.cfg, self.repo)
-        try:
-            result = await runner.run(action.get("volume", ""), chapter_count=int(action.get("chapter_count", 10)))
-            return {"ok": True, "result": result}
-        finally:
-            await runner.close()
-
     def _query_status(self, _action: dict) -> dict:
-        chapters = self.repo.list_chapter_summaries(limit=20)
+        summaries = self.repo.list_chapter_summaries(limit=10000)
+        outlines = self.repo.list_outlines(level="chapter")
         fores = self.repo.list_foreshadows()
+        unresolved = [f for f in fores if f.status not in ("resolved", "abandoned")]
         return {
             "ok": True,
-            "chapter_count": len(chapters),
-            "unresolved_foreshadows": len([f for f in fores if f.status not in ("resolved", "abandoned")]),
+            "outline_count": len(outlines),
+            "generated_count": len(summaries),
+            "unresolved_foreshadows": len(unresolved),
         }

@@ -244,7 +244,17 @@ def test_generate_chapter(client):
          patch("langgraph.types.interrupt", return_value="approve"), \
          patch("novel_agent.orchestrator.nodes._load_random_human_chapter", return_value=None):
         mock = MagicMock()
-        mock.generate = AsyncMock(side_effect=[_REAL_DRAFT, '{"core_events":"e"}'])
+
+        # 编排管线新增 world_engine/context_trimmer/analyze_style/summarize/post_hoc 节点，
+        # 每个节点都调用 generate。write 节点期待正文，其余节点期待 JSON。
+        # 按 system prompt 区分：write 用 WRITER_SYSTEM_PROMPT。
+        async def fake_generate(prompt, system=None, **kw):
+            from novel_agent.orchestrator.prompts import WRITER_SYSTEM_PROMPT
+            if system == WRITER_SYSTEM_PROMPT:
+                return _REAL_DRAFT
+            return '{"ok":true}'
+
+        mock.generate = AsyncMock(side_effect=fake_generate)
         mock.close = AsyncMock()
         MockLLM.return_value = mock
         MockAuditLLM.return_value = MagicMock()

@@ -21,13 +21,29 @@ async def agent(tmp_path, monkeypatch):
     repo = BibleRepository(db, project_id=1)
     a = ChatAgent(repo, cfg)
 
-    async def fake_generate(*a, **kw):
-        return '好的，已重写。\n{"type": "rewrite_chapter", "chapter": 3, "feedback": "太生硬"}'
-
     async def fake_close(self):
         pass
 
-    a.client = type("C", (), {"generate": fake_generate, "close": fake_close})()
+    # stream_reply 已改用 client.chat_stream（流式事件：text_delta / tool_calls / done）。
+    # 第一轮：文本 + rewrite_chapter 工具调用；后续轮次只回文本（无工具），让循环自然结束。
+    call_count = 0
+
+    async def fake_chat_stream(*a, **kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield {"type": "text_delta", "content": "好的，已重写。"}
+            yield {"type": "tool_calls", "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "rewrite_chapter",
+                              "arguments": '{"chapter": 3, "feedback": "太生硬"}'}}
+            ]}
+            yield {"type": "done"}
+        else:
+            yield {"type": "text_delta", "content": "好的，已重写。"}
+            yield {"type": "done"}
+
+    a.client = type("C", (), {"chat_stream": fake_chat_stream, "close": fake_close})()
     yield a
     db.close()
 

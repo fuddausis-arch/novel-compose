@@ -13,9 +13,9 @@
 ├─────────────────────────────────────────────────────────────┤
 │  frontend/                                                  │
 │  ├── views/        页面级组件（Dashboard/World/Characters/…）  │
-│  ├── components/   可复用组件 + UI 组件                        │
+│  ├── components/   可复用组件 + UI 组件（含 pipeline-panel）    │
 │  ├── api.ts        后端 API 封装                              │
-│  ├── store.ts      全局状态管理                               │
+│  ├── store.ts      全局状态管理（含 pipeline 进度状态）         │
 │  └── types.ts      TypeScript 类型定义                        │
 └───────────────────────┬─────────────────────────────────────┘
                         │ HTTP / SSE
@@ -24,7 +24,7 @@
 │  ├── api/          FastAPI 路由层                            │
 │  │   ├── routes_bible.py      圣经 CRUD + 导入               │
 │  │   ├── routes_generation.py 世界观/角色/大纲/任务书/审查/commit │
-│  │   ├── routes_planning.py   卷级规划与人审①               │
+│  │   ├── routes_planning.py   卷级规划与人审① + SSE 流式      │
 │  │   └── routes_chapters.py   章节生成（SSE 流式）           │
 │  ├── bible/        数据模型 + Repository + 数据库迁移          │
 │  ├── memory/       MemoryPack / RecallMemory / ArchivalMemory │
@@ -66,10 +66,18 @@
 6. 后端将摘要写入 `summaries`，状态变更写入 `state_changes`，事件写入 `events`。
 
 ### 3.4 卷级规划流
-1. 用户在 Planning 面板设定卷名、章数，点击「开始规划」。
-2. `VolumeRunner`（LangGraph）按多节点流程生成卷设定。
-3. 规划结果返回前端，用户可一键导入或人审①（通过/拒绝+修改意见）。
-4. `resume` 后若通过则写入圣经。
+1. 用户在 Planning 面板设定全书卷数、选择要规划的卷、本卷章数。
+2. 前端校验项目标题/类型非空后，调用 `/api/planning/run/stream`（SSE）。
+3. `VolumeRunner`（LangGraph）按 `plan → design → outline → review → apply` 多节点流程生成卷设定；每完成一个节点向后端推送进度事件。
+4. 前端右侧面板 `PipelinePanel` 实时显示节点完成进度。
+5. 规划结果返回前端，用户可先调用 `/api/planning/detect` 检测与现有资产的冲突（重复角色/世界设定/大纲/伏笔），再一键导入或人审①（通过/拒绝+修改意见）。
+6. `resume` 后若通过则写入圣经。
+
+### 3.5 章节生成流
+1. 用户在大纲面板点击「生成正文」。
+2. 前端调用 `/api/chapters/generate/stream`（SSE）。
+3. `ChapterRunner`（LangGraph）按 `assemble → write → audit → human_review → polish → save_text → summarize` 节点生成。
+4. 前端 `PipelinePanel` 实时显示各节点进度；若中途失败（如 `write` 后 draft 为空）则正确展示错误，不会伪装成「完成」。
 
 ## 4. 接口契约
 
@@ -115,13 +123,16 @@
 ### 4.4 卷级规划（`/api/planning`）
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/planning/run` | 启动卷级规划 |
+| POST | `/api/planning/run` | 启动卷级规划（同步返回结果） |
+| GET | `/api/planning/run/stream` | SSE 流式卷级规划，推送节点完成事件 |
 | POST | `/api/planning/resume` | 人审①反馈 |
+| POST | `/api/planning/detect` | 检测规划结果与现有资产的导入冲突 |
 
-### 4.5 章节生成 SSE（`/api/chapters/...`）
+### 4.5 章节生成（`/api/chapters`）
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/chapters/{project_id}/generate` | SSE 流式生成章节正文 |
+| POST | `/api/chapters/generate` | 同步生成章节正文 |
+| GET | `/api/chapters/generate/stream` | SSE 流式生成章节正文，推送节点完成事件 |
 
 ## 5. 状态管理
 
@@ -129,6 +140,7 @@
 - `projects`、`currentProject`：项目列表与当前项目。
 - `characters`、`worldSettings`、`outlines`、`foreshadows`、`states`、`events`：当前项目圣经数据。
 - `summaries`、`genreContext`：章节摘要与题材上下文。
+- `pipelineEvents`、`pipelineStatus`、`pipelineProgress`：全局 AI 流水线事件、状态与进度，用于 `PipelinePanel` 实时反馈。
 - `refreshAssets()`：统一刷新当前项目全部圣经数据，避免多处单独请求导致不一致。
 
 ### 5.2 后端状态模型
@@ -146,7 +158,8 @@
 | Reviewer Agent | 五维一致性审查 | `/chapter/review` |
 | Data Agent | 提取状态增量、关系、事件、伏笔更新 | `/chapter/commit` |
 | 世界观/角色/大纲生成 Agent | 生成对应圣经数据 | `/world/generate` 等 |
-| VolumeRunner | 卷级规划与人审① | `/planning/run`, `/planning/resume` |
+| VolumeRunner | 卷级规划与人审①；通过 SSE 推送节点进度 | `/planning/run`, `/planning/run/stream`, `/planning/resume` |
+| ChapterRunner | 单章生成流水线；通过 SSE 推送节点进度 | `/chapters/generate`, `/chapters/generate/stream` |
 
 ## 7. 一致性机制
 
@@ -172,7 +185,7 @@ vibe coding/
 ├── frontend/
 │   ├── src/
 │   │   ├── views/        # 页面
-│   │   ├── components/   # 组件
+│   │   ├── components/   # 组件（含 pipeline-panel）
 │   │   ├── api.ts        # API 封装
 │   │   ├── store.ts      # 全局状态
 │   │   └── types.ts      # 类型
@@ -180,3 +193,26 @@ vibe coding/
 ├── tests/                # 后端测试
 └── docs/                 # 文档
 ```
+
+## 9. 超出规格的扩展实现
+
+以下模块在原始规格之外已实现，属于正向扩展：
+
+### 9.1 后端扩展
+
+| 模块 | 路径 | 功能 |
+|------|------|------|
+| 聊天系统 | `novel_agent/chat/` | Agent + Context + Executor + Repository，支持对象级与项目级会话 |
+| 元认知遥测 | `novel_agent/telemetry/` | 生成过程监控与指标收集 |
+| 编排器 | `novel_agent/orchestrator/` | book_runner / nodes / text_utils，支持批量章节生成编排 |
+| 审计系统 | `novel_agent/audit/` | dedup_scanner / text_post_processor，生成后去重与后处理 |
+| 命令行入口 | `novel_agent/cli.py` | CLI 直接调用各功能 |
+| 扩展数据模型 | `novel_agent/bible/models.py` | `PleasureBeat`（爽点）、`PlotDebt`（欠账）、`EmotionArc`（情感弧线）、`SubplotBoard`（支线）、`CharacterMatrix`（角色交互矩阵）、`AiSuggestion`（AI 建议历史）、`ChatSession`/`ChatMessage`（聊天） |
+
+### 9.2 前端扩展
+
+| 模块 | 路径 | 功能 |
+|------|------|------|
+| 势力/怪物/关系系统 | `frontend/src/views/`、`components/` | `Faction`、`Monster`、`FactionRelationship`、`CharacterRelationship`、`EntityAppearance` 的增删改查 |
+| 聊天系统 | `frontend/src/components/chat/` | `ChatPanel`、`ChatSession`、`ChatMessage`，支持对象上下文聊天 |
+| AI 建议 | `frontend/src/components/ai-suggestion-dialog.tsx` | `AiSuggestion`，一键串联建议与采纳 |

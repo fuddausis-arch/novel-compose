@@ -1,0 +1,46 @@
+[
+  {
+    "id": "eval_001",
+    "name": "建书场景",
+    "prompt": "建一本玄幻小说",
+    "expected_output": "系统创建项目并初始化世界观，提示用户下一步可以创建角色或做大纲",
+    "expectations": [
+      "应触发 build 工作流",
+      "应创建 Project 记录",
+      "应初始化基本世界观设定",
+      "应返回项目 ID",
+      "应提示用户后续步骤（创建角色/规划大纲）"
+    ]
+  },
+  {
+    "id": "eval_002",
+    "name": "续写场景",
+    "prompt": "写下一章",
+    "expected_output": "系统触发 mvp 工作流生成下一章正文，包含审计和润色流程",
+    "expectations": [
+      "应触发 mvp 工作流",
+      "应检查是否存在大纲（前置条件）",
+      "应调用 write_chapter 节点生成正文",
+      "应调用 audit_chapter 节点审计草稿",
+      "应调用 polish_chapter 节点润色正文",
+      "应保存正文到文件"
+    ]
+  },
+  {
+    "id": "eval_003",
+    "name": "前置不足场景",
+    "prompt": "写下一章",
+    "context": {
+      "has_project": true,
+      "has_outlines": false
+    },
+    "expected_output": "系统检测到没有大纲，提示用户先创建大纲再写正文",
+    "expectations": [
+      "不应触发 mvp 工作流",
+      "应检测到缺少大纲前置条件",
+      "应提示用户先创建大纲",
+      "应建议使用 story-plan 工作流",
+      "应返回友好的错误提示而非报错"
+    ]
+  }
+]

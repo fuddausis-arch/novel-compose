@@ -68,7 +68,7 @@ export function MonsterEditorView({ monsterId, onBack, onGenerateMonster, genera
     if (!confirmed) return;
     try {
       await api.deleteMonster(store.currentProject.id, monsterId);
-      await store.refreshAssets();
+      await store.refreshMonsters();
       showSuccess("删除成功");
       onBack?.();
     } catch (e: any) {

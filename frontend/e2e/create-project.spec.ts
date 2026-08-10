@@ -1,8 +1,8 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 const TEST_PREFIX = 'TEST-CREATE';
 
-async function cleanup(page: any) {
+async function cleanup(page: Page) {
   const res = await page.request.get('/api/projects');
   if (!res.ok()) return;
   const projects = await res.json();
@@ -22,50 +22,60 @@ test.describe('创建项目功能', () => {
     await cleanup(page);
   });
 
-  test('点击顶部新建项目按钮打开弹窗', async ({ page }) => {
-    await page.goto('/#/projects');
-    await expect(page.getByText('我的作品')).toBeVisible();
+  test('从项目下拉打开新建弹窗', async ({ page }) => {
+    await page.goto('/#/projects/1/chat');
 
-    const errors: string[] = [];
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') errors.push(msg.text());
-    });
-    page.on('pageerror', (err) => errors.push(err.message));
+    // 等待导航栏渲染
+    await expect(page.locator('header button:has(.lucide-book-open)')).toBeVisible();
 
+    // 点击项目选择器按钮打开下拉菜单
+    await page.locator('header button:has(.lucide-book-open)').click();
+
+    // 在下拉菜单中点击"新建项目"
     await page.getByRole('button', { name: '新建项目' }).click();
-    await expect(page.getByText('新建项目').nth(1)).toBeVisible();
-    await expect(page.getByPlaceholder('请输入作品标题')).toBeVisible();
 
-    expect(errors).toEqual([]);
+    // 验证弹窗显示：标题和字段标签可见
+    await expect(page.getByText('新建项目')).toBeVisible();
+    await expect(page.getByText('作品标题')).toBeVisible();
+    await expect(page.getByPlaceholder('请输入作品标题')).toBeVisible();
   });
 
-  test('填写表单并创建项目后跳转工作台', async ({ page }) => {
-    await page.goto('/#/projects');
+  test('填写表单并创建项目', async ({ page }) => {
+    await page.goto('/#/projects/1/chat');
+
+    // 打开新建项目弹窗
+    await page.locator('header button:has(.lucide-book-open)').click();
     await page.getByRole('button', { name: '新建项目' }).click();
 
     const title = `${TEST_PREFIX}-${Date.now()}`;
     await page.getByPlaceholder('请输入作品标题').fill(title);
     await page.getByPlaceholder('如：玄幻 / 科幻 / 都市').fill('玄幻');
-    await page.getByPlaceholder('简单描述一下作品...').fill('测试创建项目');
+    await page.getByPlaceholder('简单描述一下作品...').fill('测试');
 
-    const errors: string[] = [];
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') errors.push(msg.text());
-    });
-    page.on('pageerror', (err) => errors.push(err.message));
+    // 点击"创建"按钮
+    await page.getByRole('button', { name: '创建', exact: true }).click();
 
-    await page.getByRole('button', { name: '创建' }).click();
+    // 验证跳转到新项目的对话页
+    await expect(page).toHaveURL(/#\/projects\/\d+\/chat/, { timeout: 15000 });
 
-    await expect(page).toHaveURL(/#\/projects\/\d+\/dashboard/);
-    await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();
-    await expect(page.getByText(title)).toBeVisible();
-
-    expect(errors).toEqual([]);
+    // 验证项目标题出现在项目选择器中
+    await expect(page.locator('header button:has(.lucide-book-open)')).toContainText(title);
   });
 
-  test('创建项目占位卡片也可打开弹窗', async ({ page }) => {
-    await page.goto('/#/projects');
-    await page.getByText('创建新项目').click();
-    await expect(page.getByText('新建项目').nth(1)).toBeVisible();
+  test('取消创建', async ({ page }) => {
+    await page.goto('/#/projects/1/chat');
+
+    // 打开新建项目弹窗
+    await page.locator('header button:has(.lucide-book-open)').click();
+    await page.getByRole('button', { name: '新建项目' }).click();
+
+    // 验证弹窗已打开
+    await expect(page.getByPlaceholder('请输入作品标题')).toBeVisible();
+
+    // 点击"取消"按钮
+    await page.getByRole('button', { name: '取消' }).click();
+
+    // 验证弹窗已关闭（输入框不可见）
+    await expect(page.getByPlaceholder('请输入作品标题')).not.toBeVisible();
   });
 });

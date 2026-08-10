@@ -21,6 +21,9 @@ dependencies = [
     "python-docx>=1.1",
     "pymupdf>=1.27",
     "pillow>=10.0",
+    "ebooklib>=0.18",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +31,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    "pytest-timeout>=2.3",
 ]
 
 [project.scripts]
@@ -43,3 +47,8 @@ include = ["novel_agent*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not e2e'"
+markers = [
+    "e2e: end-to-end tests against real LLM (excluded from default suite)",
+    "timeout: pytest-timeout 超时标记",
+]

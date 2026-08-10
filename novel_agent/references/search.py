@@ -38,10 +38,16 @@ def canonical_genre(genre_text: str) -> str:
         keywords = row.get("关键词", "")
         if all(k.strip().lower() in text for k in keywords.split("/") if k.strip()):
             return row.get("关键词", "")
-    # 3. fallback：命中单个关键词
+    # 3. fallback：命中单个关键词（同时检查"适用题材"列）
     for row in rows:
+        # 检查"关键词"列
         keywords = row.get("关键词", "").lower()
         for kw in keywords.split("/"):
+            if kw.strip() and kw.strip() in text:
+                return row.get("关键词", "")
+        # 检查"适用题材"列（A6修复：之前完全忽略此列）
+        applicable = row.get("适用题材", "").lower()
+        for kw in applicable.split("/"):
             if kw.strip() and kw.strip() in text:
                 return row.get("关键词", "")
     return "通用"

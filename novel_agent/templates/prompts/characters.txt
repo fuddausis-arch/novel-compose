@@ -7,7 +7,9 @@
 
 主角数量：${protagonist_count}，配角数量：${supporting_count}，反派数量：${antagonist_count}
 风格：${style_hint}
-
+${existing_world}
+${existing_characters}
 请输出 JSON：{"characters":[{"name":"","role":"","age":"","gender":"","appearance":"","background":"","personality":"","motivation":"","arc":"","secrets":""}]}
 role 只能是：主角、配角、反派。
+约束：与已有世界观设定保持一致，不重复已有角色，新角色应与已有角色形成互补或对立关系。
 只输出 JSON，不要 markdown 代码块。
