@@ -87,6 +87,8 @@ _pytest_out.txt
 /calibrate_passline.py
 /ft_generate_ai.py
 /ft_prepare_data.py
+/ft_train.py
+/ft_eval.py
 /investigate_fp.py
 /verify_real_scene.py
 

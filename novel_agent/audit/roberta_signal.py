@@ -34,12 +34,19 @@ _AI_LOW = 0.35    # <= 判为人类
 
 
 def _model_dir() -> Path:
+    """模型目录：优先微调版（真人网文领域适配），其次原版 zhv3。
+
+    注意：不再回退 chatgpt-detector-roberta-chinese（实测对网文无区分力，
+    会把 AI 文本也判成人类，静默失效）；两版 zhv3 都不在时返回不存在的路径，
+    由 detect_deep 捕获后返回"模型未就绪"，走两层降级。
+    """
     from novel_agent.config import load_config
     base = load_config().project_data_dir / "models"
-    primary = base / "AIGC_detector_zhv3"
-    if (primary / "config.json").exists():
-        return primary
-    return base / "chatgpt-detector-roberta-chinese"
+    for name in ("AIGC_detector_zhv3_finetuned", "AIGC_detector_zhv3"):
+        p = base / name
+        if (p / "config.json").exists():
+            return p
+    return base / "AIGC_detector_zhv3"
 
 
 @lru_cache(maxsize=1)
