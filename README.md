@@ -45,4 +45,4 @@ cd frontend && npm run dev
 
 ## 开源协议
 
-**GNU AGPL v3**（详见 [LICENSE](LICENSE)）。本仓库不包含任何 API Key 或个人数据；所有模型密钥通过 `.env` 配置，已被 `.gitignore` 忽略，永不进入仓库。
+**GNU AGPL v3**（详见 [LICENSE](LICENSE)）。
