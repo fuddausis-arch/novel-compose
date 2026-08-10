@@ -21,18 +21,18 @@ def _default_config_path() -> Path:
 def _default_project_data_dir() -> Path:
     """返回默认项目数据目录。
 
-    打包模式：用户可写目录（Windows: %APPDATA%/NovelAgent，macOS: ~/Library/Application Support/NovelAgent）
+    打包模式：用户可写目录（Windows: %APPDATA%/NovelCompose，macOS: ~/Library/Application Support/NovelCompose）
     开发模式：项目根目录下的 project_data
     """
     import sys as _sys
     if getattr(_sys, "frozen", False):
         # 打包模式：使用用户可写目录，避免 Program Files 权限问题
         if os.name == "nt":  # Windows
-            return Path(os.getenv("APPDATA", Path.home())) / "NovelAgent" / "project_data"
+            return Path(os.getenv("APPDATA", Path.home())) / "NovelCompose" / "project_data"
         elif _sys.platform == "darwin":  # macOS
-            return Path.home() / "Library" / "Application Support" / "NovelAgent" / "project_data"
+            return Path.home() / "Library" / "Application Support" / "NovelCompose" / "project_data"
         else:  # Linux
-            return Path.home() / ".novelagent" / "project_data"
+            return Path.home() / ".novelcompose" / "project_data"
     return _PROJECT_ROOT / "project_data"
 
 
@@ -292,7 +292,7 @@ def load_config(yaml_path: Path | None = None) -> Config:
         # 展开 ${VAR} 占位符（一次性递归处理整个 data，向后兼容）
         data = _expand_env_in_obj(data)
         # 打包模式：忽略 YAML 中的 project_data_dir（防止机器特定路径导致崩溃）
-        # 使用 _default_project_data_dir() 的默认值（%APPDATA%/NovelAgent）
+        # 使用 _default_project_data_dir() 的默认值（%APPDATA%/NovelCompose）
         # 开发模式：正常读取 YAML 中的 project_data_dir
         import sys as _sys
         if "project_data_dir" in data and not getattr(_sys, "frozen", False):

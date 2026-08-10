@@ -98,7 +98,7 @@ def _read_manifest(zf: zipfile.ZipFile) -> dict:
     with zf.open("manifest.json") as f:
         manifest = json.loads(f.read().decode("utf-8"))
     if manifest.get("kind") != _ASSETS_KIND:
-        raise AssetsError(f"不是 NovelAgent 资产包: kind={manifest.get('kind')!r}")
+        raise AssetsError(f"不是 NovelCompose 资产包: kind={manifest.get('kind')!r}")
     if int(manifest.get("version", 0)) > _ASSETS_VERSION:
         raise AssetsError(f"资产包版本过新: {manifest.get('version')}")
     return manifest

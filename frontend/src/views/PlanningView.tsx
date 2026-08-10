@@ -205,7 +205,7 @@ export function PlanningView({ setLoading: setGlobalLoading }: { setLoading?: (l
           hint = "规划端点连接失败，但后端在线。可能是 SSE 流被中断，请稍后重试";
         }
       } catch {
-        hint = "后端服务不可达，请稍候 10 秒后重试；若持续失败请重启应用并将日志发回开发方（日志位置：%APPDATA%/NovelAgent/logs/backend.log）";
+        hint = "后端服务不可达，请稍候 10 秒后重试；若持续失败请重启应用并将日志发回开发方（日志位置：%APPDATA%/NovelCompose/logs/backend.log）";
       }
       showError(hint);
       setLoading(false);

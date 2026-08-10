@@ -59,7 +59,7 @@ def create_app(project_data_dir: Path | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    # 确保项目数据目录存在（打包模式默认 %APPDATA%/NovelAgent/project_data）
+    # 确保项目数据目录存在（打包模式默认 %APPDATA%/NovelCompose/project_data）
     if project_data_dir:
         project_data_dir.mkdir(parents=True, exist_ok=True)
         app.state.project_data_dir = project_data_dir

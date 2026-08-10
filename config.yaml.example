@@ -1,4 +1,4 @@
-# NovelAgent 配置文件模板
+# NovelCompose 配置文件模板
 #
 # 使用步骤：
 # 1. 复制本文件为 config.yaml：cp config.yaml.example config.yaml
@@ -118,9 +118,9 @@ embedding:
   model: "doubao-embedding-vision-251215"
 
 # ===== 项目数据目录（留空则使用默认路径）=====
-# 打包模式下自动使用 %APPDATA%\NovelAgent\project_data
+# 打包模式下自动使用 %APPDATA%\NovelCompose\project_data
 # 开发模式下使用项目根目录的 project_data/
-# project_data_dir: "C:/Users/你的用户名/Documents/NovelAgentData"
+# project_data_dir: "C:/Users/你的用户名/Documents/NovelComposeData"
 
 # ===== 末日文向量语料库 RAG 开关 =====
 enable_genre_rag: true

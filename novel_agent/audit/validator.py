@@ -86,7 +86,7 @@ def _load_thresholds() -> dict:
     """从 references/csv/节奏阈值.csv 读取数值。
 
     支持用户目录覆盖：打包后 exe 内的 CSV 只读，
-    用户可在 %APPDATA%/NovelAgent/节奏阈值.csv 放同名文件覆盖任意阈值。
+    用户可在 %APPDATA%/NovelCompose/节奏阈值.csv 放同名文件覆盖任意阈值。
     """
     global _THRESHOLDS
     if _THRESHOLDS is not None:
@@ -110,7 +110,7 @@ def _load_thresholds() -> dict:
         import os, sys
         if getattr(sys, "frozen", False):
             app_data = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-            user_csv = app_data / "NovelAgent" / "节奏阈值.csv"
+            user_csv = app_data / "NovelCompose" / "节奏阈值.csv"
             if user_csv.exists():
                 with open(user_csv, encoding="utf-8") as f:
                     for row in csv.DictReader(f):

@@ -446,7 +446,7 @@ async def _tool_web_fetch(url: str) -> str:
         import urllib.request
 
         req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0 (NovelAgent)"}
+            url, headers={"User-Agent": "Mozilla/5.0 (NovelCompose)"}
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             html = resp.read(200000).decode("utf-8", errors="replace")

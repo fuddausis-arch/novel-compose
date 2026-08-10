@@ -5,7 +5,7 @@
   pip install pyinstaller
   pyinstaller novel_agent.spec
 
-产物：dist/novel-agent-server/novel-agent-server.exe
+产物：dist/novel-compose-server/novel-compose-server.exe
 """
 import os
 from pathlib import Path
@@ -99,7 +99,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='novel-agent-server',
+    name='novel-compose-server',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -116,5 +116,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='novel-agent-server',
+    name='novel-compose-server',
 )

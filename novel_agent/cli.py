@@ -37,7 +37,7 @@ async def cmd_generate(args):
     db = SessionLocal()
     project = db.query(Project).order_by(Project.id.desc()).first()
     if not project:
-        print("错误：没有项目，请先 novel-agent init")
+        print("错误：没有项目，请先 novel-compose init")
         db.close()
         return
     repo = BibleRepository(db, project_id=project.id)
@@ -66,7 +66,7 @@ async def cmd_plan(args):
     db = SessionLocal()
     project = db.query(Project).order_by(Project.id.desc()).first()
     if not project:
-        print("错误：没有项目，请先 novel-agent init")
+        print("错误：没有项目，请先 novel-compose init")
         db.close()
         return
     repo = BibleRepository(db, project_id=project.id)
@@ -76,7 +76,7 @@ async def cmd_plan(args):
                                   thread_id=args.thread_id)
         print(f"规划已生成，等待人审①。thread_id={args.thread_id}")
         print(f"卷规划：{result.get('volume_plan', {})}")
-        print(f"用 novel-agent resume --thread-id {args.thread_id} --approve 恢复")
+        print(f"用 novel-compose resume --thread-id {args.thread_id} --approve 恢复")
     finally:
         await runner.aclose()
         db.close()
@@ -115,7 +115,7 @@ def cmd_serve(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="novel-agent", description="多 Agent 小说生成")
+    parser = argparse.ArgumentParser(prog="novel-compose", description="多 Agent 小说生成")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_init = sub.add_parser("init", help="初始化新小说项目")

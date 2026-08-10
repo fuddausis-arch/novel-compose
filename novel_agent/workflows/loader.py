@@ -470,7 +470,7 @@ class WorkflowRunner:
         variables.setdefault(
             "session_meta",
             f"工作流: {_wf_id}（{_wf_name}）\n"
-            f"引擎: NovelAgent 工作流引擎\n"
+            f"引擎: NovelCompose 工作流引擎\n"
             f"当前章节: 第{_chapter}章（上一章: 第{_prev}章）\n"
             f"创作意图: {_intent_short}\n"
             f"写手模式: {_writer} | 语言: {_lang}",

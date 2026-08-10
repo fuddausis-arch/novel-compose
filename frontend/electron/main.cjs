@@ -21,10 +21,10 @@ body { margin:0; background:#0a0a0f; color:#e0e0e0; font-family:system-ui,sans-s
 </style></head>
 <body><div class="spinner"></div><div class="text">正在启动后端服务…</div></body></html>`
 
-// 日志目录：打包模式 %APPDATA%/NovelAgent/logs，开发模式项目根
+// 日志目录：打包模式 %APPDATA%/NovelCompose/logs，开发模式项目根
 function getLogDir() {
   if (app.isPackaged) {
-    const logDir = path.join(app.getPath('appData'), 'NovelAgent', 'logs')
+    const logDir = path.join(app.getPath('appData'), 'NovelCompose', 'logs')
     if (!fs.existsSync(logDir)) {
       try { fs.mkdirSync(logDir, { recursive: true }) } catch (_) { /* ignore */ }
     }
@@ -34,10 +34,10 @@ function getLogDir() {
 }
 
 function getBackendExePath() {
-  // 打包后：resources/novel-agent-server/novel-agent-server.exe
-  const exeName = process.platform === 'win32' ? 'novel-agent-server.exe' : 'novel-agent-server'
+  // 打包后：resources/novel-compose-server/novel-compose-server.exe
+  const exeName = process.platform === 'win32' ? 'novel-compose-server.exe' : 'novel-compose-server'
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'novel-agent-server', exeName)
+    return path.join(process.resourcesPath, 'novel-compose-server', exeName)
   }
   return null
 }

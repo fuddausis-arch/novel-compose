@@ -1,15 +1,15 @@
-# NovelAgent 扩展能力声明
+# NovelCompose 扩展能力声明
 # 声明项目的 6 项能力，供宿主环境识别和加载
 #
 # ⚠️ 状态说明（2026-08-08）：
-# 本文件是"声明层面"的能力清单，供外部宿主识别 NovelAgent 能提供什么。
+# 本文件是"声明层面"的能力清单，供外部宿主识别 NovelCompose 能提供什么。
 # 但"扩展宿主"运行时（ExtensionHostManager 的 discover/load/start 8 状态生命周期）
 # 从未实现接通，相关代码已移至 novel_agent/_archive_extensions/。
 # 当前实际可用的是：工作流引擎（workflows/）+ 插件打包/资产导入导出（plugin_system/packaging+assets）。
 # 若未来要做"真插件系统"，从 _archive_extensions 取回 extension_host 并在 create_app 实例化。
 
 [extension]
-name = "novelagent"
+name = "novelcompose"
 version = "1.0.0"
 description = "多 Agent 网文生成系统：7 条工作流 + 写审分离 + 后验裁决"
 

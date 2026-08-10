@@ -1,5 +1,5 @@
 {
-  "name": "novel-agent",
+  "name": "novel-compose",
   "private": true,
   "version": "0.4.0",
   "type": "module",
@@ -13,8 +13,8 @@
     "electron:build": "npm run build && electron-builder"
   },
   "build": {
-    "appId": "com.novelagent.app",
-    "productName": "NovelAgent",
+    "appId": "com.novelcompose.app",
+    "productName": "NovelCompose",
     "directories": {
       "output": "../release4",
       "buildResources": "build"
@@ -26,8 +26,8 @@
     ],
     "extraResources": [
       {
-        "from": "../dist/novel-agent-server",
-        "to": "novel-agent-server",
+        "from": "../dist/novel-compose-server",
+        "to": "novel-compose-server",
         "filter": [
           "**/*"
         ]
@@ -44,7 +44,7 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "NovelAgent"
+      "shortcutName": "NovelCompose"
     }
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 {
   "skill_name": "writing-assistant",
-  "description": "NovelAgent writing-assistant Skill 评测用例：建书 / 续写 / 前置不足 三条核心路径。格式与 bishu-novel evals.json 对齐。",
+  "description": "NovelCompose writing-assistant Skill 评测用例：建书 / 续写 / 前置不足 三条核心路径。格式与 bishu-novel evals.json 对齐。",
   "evals": [
     {
       "id": 1,

@@ -19,8 +19,8 @@ test.describe('首页冒烟测试', () => {
 
     await page.goto('/');
 
-    // 验证页面标题（index.html 中的 <title>NovelAgent</title>）
-    await expect(page).toHaveTitle(/NovelAgent/i);
+    // 验证页面标题（index.html 中的 <title>NovelCompose</title>）
+    await expect(page).toHaveTitle(/NovelCompose/i);
 
     // 验证页面最终显示内容：跳转到项目对话页（有项目时）或显示空状态（无项目时）
     try {

@@ -28,7 +28,7 @@ export const THEMES: ThemeOption[] = [
   },
 ];
 
-export const STORAGE_KEY = "novel-agent-theme";
+export const STORAGE_KEY = "novel-compose-theme";
 export const DEFAULT_THEME: ThemeKey = "light-glass";
 
 export function isValidTheme(value: string): value is ThemeKey {

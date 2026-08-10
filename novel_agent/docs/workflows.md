@@ -1,6 +1,6 @@
-# NovelAgent 工作流文档
+# NovelCompose 工作流文档
 
-NovelAgent 提供 7 条工作流，覆盖从建书到后验裁决的完整小说生成生命周期。
+NovelCompose 提供 7 条工作流，覆盖从建书到后验裁决的完整小说生成生命周期。
 
 ## 工作流总览
 

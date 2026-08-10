@@ -12,8 +12,8 @@ import type { CapacitorConfig } from "@capacitor/cli";
  * 切换后 App 就是云端的全屏入口，前端更新只需改服务器，无需重新发版。
  */
 const config: CapacitorConfig = {
-  appId: "com.novelagent.app",
-  appName: "NovelAgent",
+  appId: "com.novelcompose.app",
+  appName: "NovelCompose",
   webDir: "dist",
   server: {
     // 注释掉即加载本地 dist；部署后取消注释并填服务器地址

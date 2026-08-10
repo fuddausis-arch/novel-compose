@@ -39,7 +39,7 @@ export function TitleBar() {
       {/* 左侧：图标 + 标题 */}
       <div className="flex items-center gap-2 px-3">
         <PenLine className="h-4 w-4 text-primary" />
-        <span className="text-xs font-medium text-foreground">NovelAgent</span>
+        <span className="text-xs font-medium text-foreground">NovelCompose</span>
       </div>
 
       {/* 中间：拖拽区，双击最大化 */}

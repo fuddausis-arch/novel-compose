@@ -53,7 +53,7 @@ if errorlevel 1 (
 )
 
 echo [4/5] Copying frontend dist into backend dir...
-xcopy /E /I /Y "frontend\dist" "dist\novel-agent-server\frontend\dist" >nul
+xcopy /E /I /Y "frontend\dist" "dist\novel-compose-server\frontend\dist" >nul
 if errorlevel 1 (
     echo [ERROR] Copy frontend dist failed
     exit /b 1

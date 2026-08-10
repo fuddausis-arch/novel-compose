@@ -374,7 +374,7 @@ export function ProjectNav({ leftSlot, rightSlot }: ProjectNavProps = {}) {
           <div className="absolute inset-0 bg-black/40" onClick={() => setMobileNavOpen(false)} aria-hidden="true" />
           <div className="absolute left-0 top-0 bottom-0 w-72 max-w-[85vw] overflow-y-auto border-r border-border bg-surface-elevated shadow-xl">
             <div className="flex h-14 items-center justify-between border-b border-border px-4">
-              <span className="text-sm font-semibold text-foreground">NovelAgent</span>
+              <span className="text-sm font-semibold text-foreground">NovelCompose</span>
               <button
                 type="button"
                 onClick={() => setMobileNavOpen(false)}

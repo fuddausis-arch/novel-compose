@@ -1,5 +1,5 @@
 [project]
-name = "novel-agent"
+name = "novel-compose"
 version = "0.1.0"
 description = "多 Agent 自动小说生成系统"
 requires-python = ">=3.11"
@@ -35,7 +35,7 @@ dev = [
 ]
 
 [project.scripts]
-novel-agent = "novel_agent.cli:main"
+novel-compose = "novel_agent.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

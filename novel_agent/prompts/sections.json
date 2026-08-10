@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "description": "NovelAgent Prompt Section 配置 - 管理所有 Agent 的 Prompt section，借鉴 bishu-novel prompts.json 设计",
+  "description": "NovelCompose Prompt Section 配置 - 管理所有 Agent 的 Prompt section，借鉴 bishu-novel prompts.json 设计",
   "agents": {
     "writer": {
       "description": "写手 Agent - 创作网文章节正文，一稿成型",
