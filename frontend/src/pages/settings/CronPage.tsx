@@ -69,8 +69,9 @@ export default function CronPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    // silent=true：静默刷新（创建/更新/启停后用），不切 loading 保持滚动容器常驻不跳顶
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const data = await fetchJson<{ jobs: CronJobApi[] }>("/api/cron");
@@ -87,7 +88,7 @@ export default function CronPage() {
       setError(e instanceof Error ? e.message : "加载失败");
       setTasks([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -119,7 +120,7 @@ export default function CronPage() {
       showSuccess("任务已创建");
       setCreating(false);
       setForm({ name: "", cron: "0 * * * *", status: "active", workflow_type: "batch_generate" });
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "创建失败");
     } finally {
@@ -160,7 +161,7 @@ export default function CronPage() {
       });
       showSuccess("任务已更新");
       setEditing(null);
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "更新失败");
     } finally {
@@ -186,7 +187,7 @@ export default function CronPage() {
     try {
       await fetchJson(`/api/cron/${encodeURIComponent(t.id)}/toggle?enabled=${enabled}`, { method: "POST" });
       showSuccess(enabled ? "任务已启用" : "任务已停用");
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "切换失败");
     } finally {

@@ -118,6 +118,21 @@ class DistillationStore:
             finally:
                 conn.close()
 
+        # 启动时清理孤儿状态：上次服务崩溃/重启后，distilling 状态的 work
+        # 没有对应运行中的任务，进度永远冻结。标记为 failed 让用户可以重新蒸馏。
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    f"UPDATE distill_works SET status='failed'"
+                    f" WHERE status='{DistillStatus.DISTILLING.value}'"
+                )
+                conn.commit()
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
     @staticmethod
     def _now() -> str:
         return datetime.now().isoformat()

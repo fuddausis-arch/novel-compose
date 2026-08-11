@@ -84,6 +84,26 @@ AGENT_TYPE_TO_ROLE: dict[str, str] = {
     "novel-world-context-trimmer": "context_trimmer",
 }
 
+# 蒸馏维度 → 适用 agent 的映射（DIMENSION_AGENTS）中出现的全部 agent 集合。
+# 这些 agent 参与「按维度注入」：执行时只注入通用 skill + 自己维度的蒸馏 skill。
+# 未覆盖的 agent（observer/settler/intent-distributor/审校系等）保持原行为（不注入）。
+_DIMENSION_AGENT_TYPES: set[str] | None = None
+
+
+def _dimension_agent_types() -> set[str]:
+    """惰性加载蒸馏维度映射覆盖的 agent 集合（含写手系/世界观系/角色系/大纲系等）。"""
+    global _DIMENSION_AGENT_TYPES
+    if _DIMENSION_AGENT_TYPES is None:
+        try:
+            from novel_agent.distillation.engine import DIMENSION_AGENTS
+            _DIMENSION_AGENT_TYPES = {
+                a for roles in DIMENSION_AGENTS.values() for a in roles
+            }
+        except Exception as e:
+            logger.warning("加载蒸馏维度映射失败: %s", e)
+            _DIMENSION_AGENT_TYPES = set()
+    return _DIMENSION_AGENT_TYPES
+
 
 # ── 资源加载 ──────────────────────────────────────────────────
 
@@ -335,7 +355,7 @@ class WorkflowRunner:
         # 为每个 role 创建独立 LLMClient 并缓存，解锁跨模型审校。
         self._cfg = cfg
         self._client_cache: dict[str, Any] = {}  # role → LLMClient
-        self._skills_text: str | None = None  # 启用的 Skills（含蒸馏 Skill）注入文本缓存
+        self._skills_text: dict[str, str] = {}  # agent_type → 注入文本缓存（按 agent 过滤）
 
         self.nodes: dict[str, dict[str, Any]] = {
             n["id"]: n for n in definition.get("nodes", [])
@@ -462,7 +482,8 @@ class WorkflowRunner:
         _prev = variables.get("prev_chapter", "无")
         _intent = (variables.get("human_intent", "") or "").strip()
         if _intent:
-            _intent_short = _intent[:80] + ("…" if len(_intent) > 80 else "")
+            # 创作意图全量注入：截断会丢后半段创作要求（"看全"原则）
+            _intent_short = _intent
         else:
             _intent_short = "（无特定意图，自主推进）"
         _writer = variables.get("writer_type", "single")
@@ -507,22 +528,27 @@ class WorkflowRunner:
                 pass
         self._client_cache.clear()
 
-    def _enabled_skills_text(self) -> str:
-        """加载所有启用 Skills（含蒸馏出的文风 Skill）的注入文本（带缓存）。
+    def _enabled_skills_text(self, agent_type: str = "") -> str:
+        """加载当前 agent 适用的启用 Skills 注入文本（按 agent_type 缓存）。
 
         复用 routes_skills.load_enabled_skills_for_injection，保证工作流路径与
         单 Agent 直生成路径（正式写作页/交互式创作）注入逻辑一致，不分叉。
         排除 source=corpus 的语料型 skill：内容庞大且需按上下文检索，工作流
         路径不做检索，全量注入会严重膨胀 token。
+
+        蒸馏-Agent 对齐：传入 agent_type 后，注入侧按 skill 的 agent_roles 过滤，
+        每个 agent 只拿到自己负责维度的蒸馏 skill + 全部通用 skill。
         """
-        if self._skills_text is None:
+        if agent_type not in self._skills_text:
             try:
                 from novel_agent.api.routes_skills import load_enabled_skills_for_injection
-                self._skills_text = load_enabled_skills_for_injection(exclude_sources=("corpus",))
+                self._skills_text[agent_type] = load_enabled_skills_for_injection(
+                    exclude_sources=("corpus",), agent_type=agent_type or None)
             except Exception as e:
-                logger.warning("Skills 注入加载失败（工作流路径）: %s", e)
-                self._skills_text = ""
-        return self._skills_text
+                logger.warning("Skills 注入加载失败（工作流路径，agent=%s）: %s",
+                               agent_type or "-", e)
+                self._skills_text[agent_type] = ""
+        return self._skills_text[agent_type]
 
     def _refresh_file_variables(self, *texts: str) -> None:
         """渲染前刷新文本引用的 file 变量：从磁盘现读最新内容并级联重渲染文本变量。
@@ -584,13 +610,19 @@ class WorkflowRunner:
         if node_sys_tpl:
             system = render_template(node_sys_tpl, self.variables) + "\n\n" + system
 
-        # 蒸馏/启用 Skills 注入：只对写手系（正文生成）agent 注入文风约束，
-        # 避免把写作风格塞给世界观/角色等非创作 agent。对应创新 1.6「蒸馏接入 writer」。
+        # 蒸馏/启用 Skills 注入：
+        # - 写手系（role==writer）注入文风约束（原有行为）；
+        # - 蒸馏维度映射覆盖的 agent（世界观/角色/大纲/润色等）按自身维度注入
+        #   （agent_roles 过滤，每个 agent 只拿自己负责维度的蒸馏 skill + 通用 skill）。
+        # 对应蒸馏-Agent 对齐：每个 agent 只学习自己负责的技能，避免上下文爆炸。
         role = AGENT_TYPE_TO_ROLE.get(agent_type)
-        if role == "writer":
-            skills_text = self._enabled_skills_text()
+        if role == "writer" or agent_type in _dimension_agent_types():
+            skills_text = self._enabled_skills_text(agent_type)
             if skills_text:
-                system = f"{system}\n\n【写作风格要求】\n{skills_text}"
+                if role == "writer":
+                    system = f"{system}\n\n【写作风格要求】\n{skills_text}"
+                else:
+                    system = f"{system}\n\n【专业技能注入--当前维度方法论，创作时遵循】\n{skills_text}"
 
         first_message = render_template(first_tpl, self.variables)
         params = self.res.model_params(agent_type)

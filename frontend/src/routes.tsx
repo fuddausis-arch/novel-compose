@@ -1,7 +1,8 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useNavigate, matchPath } from 'react-router-dom'
 import { Loader2, BookOpen } from 'lucide-react'
 import { useAppStore } from '@/store'
+import { KeepAliveRoutes, type KeepAliveRoute } from '@/components/keep-alive/KeepAliveRoutes'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const WritePage = lazy(() => import('./pages/WritePage'))
@@ -102,54 +103,65 @@ function RootRedirect() {
   return <Loading />
 }
 
+/**
+ * 保活路由表：进入过的页面保持挂载（切走只是隐藏，切回状态/滚动/后台任务原样保留）。
+ * 设置页子页直接传 children 给 SettingsLayout（其内部优先渲染 children，Outlet 仅作兼容）。
+ */
+const keepAliveRoutes: KeepAliveRoute[] = [
+  { path: '/projects/:projectId/chat', render: () => <ChatPage /> },
+  { path: '/projects/:projectId/dashboard', render: () => <DashboardPage /> },
+  { path: '/projects/:projectId/planning', render: () => <PlanningPage /> },
+  { path: '/projects/:projectId/outlines', render: () => <OutlinesPage /> },
+  { path: '/projects/:projectId/write', render: () => <WritePage /> },
+  { path: '/projects/:projectId/workflow', render: () => <ProjectWorkflowPage /> },
+  { path: '/projects/:projectId/roundtable', render: () => <ProjectRoundtablePage /> },
+  { path: '/projects/:projectId/graph', render: () => <ProjectGraphPage /> },
+  { path: '/projects/:projectId/assets', render: () => <AssetsPage /> },
+  { path: '/projects/:projectId/import', render: () => <ImportPage /> },
+  { path: '/projects/:projectId/export', render: () => <ExportPage /> },
+  { path: '/projects/:projectId/summaries', render: () => <SummariesPage /> },
+  { path: '/projects/:projectId/references', render: () => <ReferencesPage /> },
+  { path: '/projects/:projectId/stats', render: () => <StatsPage /> },
+  { path: '/projects/:projectId/timeline', render: () => <TimelinePage /> },
+  { path: '/projects/:projectId/encyclopedia', render: () => <EncyclopediaPage /> },
+  { path: '/projects/:projectId/ai-style', render: () => <AiStylePage /> },
+  { path: '/projects/:projectId/storyline', render: () => <StorylinePage /> },
+  // 设置页（保活渲染直接传入子页面）
+  { path: '/settings', render: () => <SettingsLayout><SettingsOverview /></SettingsLayout> },
+  { path: '/settings/skills', render: () => <SettingsLayout><SkillsPage /></SettingsLayout> },
+  { path: '/settings/rules', render: () => <SettingsLayout><RulesPage /></SettingsLayout> },
+  { path: '/settings/orchestration', render: () => <SettingsLayout><OrchestrationPage /></SettingsLayout> },
+  { path: '/settings/models', render: () => <SettingsLayout><ModelsPage /></SettingsLayout> },
+  { path: '/settings/plugins', render: () => <SettingsLayout><PluginsPage /></SettingsLayout> },
+  { path: '/settings/cron', render: () => <SettingsLayout><CronPage /></SettingsLayout> },
+  { path: '/settings/compression', render: () => <SettingsLayout><CompressionPage /></SettingsLayout> },
+  { path: '/settings/workspace', render: () => <SettingsLayout><WorkspacePage /></SettingsLayout> },
+  { path: '/settings/distillation', render: () => <SettingsLayout><DistillationPage /></SettingsLayout> },
+  { path: '/settings/injection', render: () => <SettingsLayout><InjectionPage /></SettingsLayout> },
+]
+
 export default function AppRoutes() {
+  const location = useLocation()
+  // 命中保活路由 → KeepAlive 渲染（页面常驻）；否则走普通重定向路由
+  const isKeepAlive = keepAliveRoutes.some((r) => matchPath(r.path, location.pathname))
   return (
     <Suspense fallback={<Loading />}>
-      <Routes>
-        {/* 根路由：自动跳转到最近项目的对话页 */}
-        <Route path="/" element={<RootRedirect />} />
+      {isKeepAlive ? (
+        <KeepAliveRoutes routes={keepAliveRoutes} />
+      ) : (
+        <Routes>
+          {/* 根路由：自动跳转到最近项目的对话页 */}
+          <Route path="/" element={<RootRedirect />} />
 
-        {/* 项目列表页（从设置页返回时的目标） */}
-        <Route path="/projects" element={<RootRedirect />} />
+          {/* 项目列表页（从设置页返回时的目标） */}
+          <Route path="/projects" element={<RootRedirect />} />
 
-        {/* 项目内路由：对话为默认页 */}
-        <Route path="/projects/:projectId" element={<Navigate to="chat" replace />} />
-        <Route path="/projects/:projectId/chat" element={<ChatPage />} />
-        <Route path="/projects/:projectId/dashboard" element={<DashboardPage />} />
-        <Route path="/projects/:projectId/planning" element={<PlanningPage />} />
-        <Route path="/projects/:projectId/outlines" element={<OutlinesPage />} />
-        <Route path="/projects/:projectId/write" element={<WritePage />} />
-        <Route path="/projects/:projectId/workflow" element={<ProjectWorkflowPage />} />
-        <Route path="/projects/:projectId/roundtable" element={<ProjectRoundtablePage />} />
-        <Route path="/projects/:projectId/graph" element={<ProjectGraphPage />} />
-        <Route path="/projects/:projectId/assets" element={<AssetsPage />} />
-        <Route path="/projects/:projectId/import" element={<ImportPage />} />
-        <Route path="/projects/:projectId/export" element={<ExportPage />} />
-        <Route path="/projects/:projectId/summaries" element={<SummariesPage />} />
-        <Route path="/projects/:projectId/references" element={<ReferencesPage />} />
-        <Route path="/projects/:projectId/stats" element={<StatsPage />} />
-        <Route path="/projects/:projectId/timeline" element={<TimelinePage />} />
-        <Route path="/projects/:projectId/encyclopedia" element={<EncyclopediaPage />} />
-        <Route path="/projects/:projectId/ai-style" element={<AiStylePage />} />
-        <Route path="/projects/:projectId/storyline" element={<StorylinePage />} />
+          {/* 项目内路由：无子路径时跳到对话页 */}
+          <Route path="/projects/:projectId" element={<Navigate to="chat" replace />} />
 
-        {/* 全局设置（带子路由布局） */}
-        <Route path="/settings" element={<SettingsLayout />}>
-          <Route index element={<SettingsOverview />} />
-          <Route path="skills" element={<SkillsPage />} />
-          <Route path="rules" element={<RulesPage />} />
-          <Route path="orchestration" element={<OrchestrationPage />} />
-          <Route path="models" element={<ModelsPage />} />
-          <Route path="plugins" element={<PluginsPage />} />
-          <Route path="cron" element={<CronPage />} />
-          <Route path="compression" element={<CompressionPage />} />
-          <Route path="workspace" element={<WorkspacePage />} />
-          <Route path="distillation" element={<DistillationPage />} />
-          <Route path="injection" element={<InjectionPage />} />
-        </Route>
-
-        <Route path="*" element={<RootRedirect />} />
-      </Routes>
+          <Route path="*" element={<RootRedirect />} />
+        </Routes>
+      )}
     </Suspense>
   )
 }

@@ -33,6 +33,8 @@ class ProviderInput(BaseModel):
     models: list[str] = []
     priority: int = 0
     is_default: bool = False
+    # 思考模式：null=跟随模型默认（DeepSeek 开 / 火山 coding 网关自动关）；true=强制开；false=强制关
+    enable_thinking: bool | None = None
 
 
 class ProviderUpdate(BaseModel):
@@ -42,6 +44,7 @@ class ProviderUpdate(BaseModel):
     models: list[str] | None = None
     priority: int | None = None
     is_default: bool | None = None
+    enable_thinking: bool | None = None
 
 
 # ---- 文件 I/O 辅助 ----

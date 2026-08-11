@@ -4745,9 +4745,7 @@ async def interactive_chat_stream(request: Request, req: InteractiveChatRequest)
             if gag_file.exists():
                 gag_library_text = gag_file.read_text(encoding="utf-8", errors="replace")
             if gag_library_text:
-                # 限制大小，防止超长
-                if len(gag_library_text) > 8000:
-                    gag_library_text = gag_library_text[:8000] + "\n\n[...梗库内容过长，已截断...]"
+                # 梗库全量注入（"看全"才能选梗），梗库通常几千字，不截断
                 gag_library_text = (
                     "【梗库参考--每章必须用至少1个梗】\n"
                     "以下是本书的梗库，包含笑点/桥段/彩蛋的详细用法。"

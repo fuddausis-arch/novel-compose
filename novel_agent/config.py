@@ -49,6 +49,9 @@ class LLMConfig:
     timeout: float = 2100.0  # 35 分钟，匹配生成类 API 超时保护要求
     vision_enabled: bool = False
     context_length: int | None = None
+    # 思考模式开关：None=跟随模型默认（DeepSeek 开启，火山 coding 网关自动关闭）；
+    # True=强制开启；False=强制关闭。在「模型管理」页按供应商配置。
+    enable_thinking: bool | None = None
 
 
 MODEL_CONTEXT_LENGTHS: dict[str, int] = {

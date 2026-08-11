@@ -71,7 +71,23 @@ function useAsync<T>(fetcher: () => Promise<T>, deps: unknown[]) {
 
   useEffect(() => run(), [run]);
 
-  return { data, loading, error, reload: run };
+  const runSilent = useCallback(() => {
+    // 静默刷新：不切 loading，保持滚动容器常驻不跳顶
+    let cancelled = false;
+    fetcher()
+      .then((d) => {
+        if (!cancelled) setData(d);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "加载失败");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+
+  return { data, loading, error, reload: run, reloadSilent: runSilent };
 }
 
 // ==================== 提示词 Sections Tab ====================
@@ -114,14 +130,24 @@ function PromptSectionsTab() {
 
   const current = sections.find((s) => s.name === selectedSection) ?? null;
 
-  const loadSections = useCallback(async (agentType: string) => {
-    setLoading(true);
+  const loadSections = useCallback(async (agentType: string, silent = false, preferName?: string) => {
+    // silent=true：静默刷新（保存/创建后用），不切 loading 保持滚动容器常驻不跳顶
+    if (!silent) setLoading(true);
     try {
       const data = await fetchJson<{ sections: PromptSection[] }>(
         `/api/prompts/${encodeURIComponent(agentType)}`,
       );
       setSections(data.sections || []);
-      if (data.sections && data.sections.length > 0) {
+      const target = preferName
+        ? (data.sections || []).find((s) => s.name === preferName)
+        : silent
+          ? (data.sections || []).find((s) => s.name === selectedSection)
+          : undefined;
+      if (target) {
+        setSelectedSection(target.name);
+        setEditContent(target.content);
+        setEditEnabled(target.enabled);
+      } else if (data.sections && data.sections.length > 0) {
         setSelectedSection(data.sections[0].name);
         setEditContent(data.sections[0].content);
         setEditEnabled(data.sections[0].enabled);
@@ -132,9 +158,9 @@ function PromptSectionsTab() {
       setSections([]);
       setSelectedSection(null);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, []);
+  }, [selectedSection]);
 
   useEffect(() => {
     if (agentTypes.length > 0 && !agentTypes.includes(selectedAgent)) {
@@ -171,7 +197,7 @@ function PromptSectionsTab() {
         body: JSON.stringify({ content: editContent, enabled: editEnabled }),
       });
       showSuccess("已保存");
-      await loadSections(selectedAgent);
+      await loadSections(selectedAgent, true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -216,7 +242,7 @@ function PromptSectionsTab() {
       setCreateOpen(false);
       setNewName("");
       setNewContent("");
-      await loadSections(selectedAgent);
+      await loadSections(selectedAgent, true, newName.trim());
     } catch (e) {
       showError(e instanceof Error ? e.message : "创建失败");
     } finally {
@@ -450,7 +476,7 @@ interface AgentDef {
 
 function AgentDefinitionsTab() {
   const { showError, showSuccess } = useToast();
-  const { data, loading, error, reload } = useAsync<{ agents: Record<string, AgentDef> }>(
+  const { data, loading, error, reloadSilent } = useAsync<{ agents: Record<string, AgentDef> }>(
     () => fetchJson("/api/agents"),
     [],
   );
@@ -503,7 +529,7 @@ function AgentDefinitionsTab() {
         }),
       });
       showSuccess("已保存");
-      reload();
+      reloadSilent();
     } catch (e) {
       showError(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -517,7 +543,7 @@ function AgentDefinitionsTab() {
       await fetchJson(`/api/agents/${encodeURIComponent(agentType)}`, { method: "DELETE" });
       showSuccess("已删除");
       if (selectedType === agentType) setSelectedType(null);
-      reload();
+      reloadSilent();
     } catch (e) {
       showError(e instanceof Error ? e.message : "删除失败");
     }
@@ -544,7 +570,7 @@ function AgentDefinitionsTab() {
       showSuccess("已创建");
       setCreateOpen(false);
       setNewType("");
-      reload();
+      reloadSilent();
     } catch (e) {
       showError(e instanceof Error ? e.message : "创建失败");
     } finally {

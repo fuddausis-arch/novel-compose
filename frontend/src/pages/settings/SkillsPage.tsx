@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Select } from "@/components/ui/select";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Markdown } from "@/components/markdown";
 import { SettingToggleRow } from "@/components/ui/setting-toggle-row";
@@ -19,6 +20,7 @@ interface SkillSummary {
   name: string;
   description: string;
   enabled: boolean;
+  category: string; // rule=规则型 / material=素材库型
 }
 
 interface SkillDetail {
@@ -28,6 +30,7 @@ interface SkillDetail {
   enabled: boolean;
   auto_inject: boolean;
   workflow_only: boolean;
+  category: string; // rule=规则型 / material=素材库型
 }
 
 /** 后端 GET /api/skills/{name} 返回的原始结构 */
@@ -38,6 +41,7 @@ interface SkillApiResponse {
   sections?: Array<{ name: string; content: string }>;
   auto_inject?: boolean;
   workflow_only?: boolean;
+  category?: string;
 }
 
 /** 后端 POST /api/skills 请求体 */
@@ -45,10 +49,17 @@ interface SkillCreateInput {
   name: string;
   description: string;
   enabled: boolean;
+  category: string;
   sections: Array<{ name: string; content: string }>;
   tools: string[];
   references: string[];
 }
+
+/** Skill 类型中文名 */
+const CATEGORY_LABEL: Record<string, string> = {
+  rule: "规则型",
+  material: "素材库型",
+};
 
 /** 原生 fetch 封装：统一错误信息提取 */
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -80,7 +91,7 @@ function SkillEditorDialog({
   open: boolean;
   initial: SkillDetail | null;
   onClose: () => void;
-  onSave: (data: { name: string; description: string; content: string; enabled: boolean }) => void;
+  onSave: (data: { name: string; description: string; content: string; enabled: boolean; category: string }) => void;
   saving: boolean;
 }) {
   const isEdit = !!initial;
@@ -88,6 +99,7 @@ function SkillEditorDialog({
   const [description, setDescription] = useState("");
   const [content, setContent] = useState("");
   const [enabled, setEnabled] = useState(true);
+  const [category, setCategory] = useState("rule");
 
   useEffect(() => {
     if (open) {
@@ -95,6 +107,7 @@ function SkillEditorDialog({
       setDescription(initial?.description ?? "");
       setContent(initial?.content ?? "");
       setEnabled(initial?.enabled ?? true);
+      setCategory(initial?.category ?? "rule");
     }
   }, [open, initial]);
 
@@ -139,6 +152,23 @@ function SkillEditorDialog({
               className="mt-1 font-mono text-xs"
             />
           </div>
+          <div>
+            <Label htmlFor="skill-category">类型</Label>
+            <Select
+              id="skill-category"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="mt-1"
+            >
+              <option value="rule">规则型 —— 全量注入，写作规则每章生效（总纲、风格指南等）</option>
+              <option value="material">素材库型 —— 写章时按本章内容自动检索匹配的素材注入（蒸馏碎片、拆书语料等）</option>
+            </Select>
+            <p className="mt-1 text-xs text-muted">
+              {category === "material"
+                ? "内容量大且重复，写「战斗」场景只注入战斗相关素材，避免塞爆上下文"
+                : "内容精炼，每次生成都完整注入让写手遵守"}
+            </p>
+          </div>
           <SettingToggleRow
             label="启用"
             description="创建后立即生效"
@@ -153,7 +183,7 @@ function SkillEditorDialog({
           <Button
             variant="default"
             size="sm"
-            onClick={() => canSave && onSave({ name: name.trim(), description, content, enabled })}
+            onClick={() => canSave && onSave({ name: name.trim(), description, content, enabled, category })}
             disabled={!canSave}
           >
             {saving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
@@ -557,6 +587,10 @@ export default function SkillsPage() {
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
   const [fuseOpen, setFuseOpen] = useState(false);
 
+  // 左列表滚动位置保持：编辑保存刷新列表后，回到原滚动位置并让选中项可见
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollTop = useRef<number | null>(null);
+
   const toggleSelect = (name: string) => {
     setSelectedNames((prev) => {
       const next = new Set(prev);
@@ -599,6 +633,7 @@ export default function SkillsPage() {
             .join("\n\n"),
           auto_inject: data.auto_inject ?? false,
           workflow_only: data.workflow_only ?? false,
+          category: data.category ?? "rule",
         });
       } catch (e) {
         showError(e instanceof Error ? e.message : "加载详情失败");
@@ -637,6 +672,26 @@ export default function SkillsPage() {
     }
   };
 
+  /** 类型切换：本地即时响应 + 立即保存（后端已增量更新，选择即生效，不依赖失焦） */
+  const handleCategoryChange = async (value: string) => {
+    if (!detail) return;
+    const prev = detail;
+    setDetail({ ...detail, category: value });
+    // 同步左侧列表徽标，避免"改了没反应"的错觉
+    setSkills((s) => s.map((it) => (it.name === detail.name ? { ...it, category: value } : it)));
+    try {
+      await fetchJson(`/api/skills/${encodeURIComponent(detail.name)}`, {
+        method: "PUT",
+        body: JSON.stringify({ category: value }),
+      });
+      showSuccess("已更新类型");
+    } catch (e) {
+      setDetail(prev);
+      setSkills((s) => s.map((it) => (it.name === prev.name ? { ...it, category: prev.category } : it)));
+      showError(e instanceof Error ? e.message : "切换类型失败");
+    }
+  };
+
   const handleReload = async () => {
     setReloading(true);
     try {
@@ -661,8 +716,10 @@ export default function SkillsPage() {
     setEditorOpen(true);
   };
 
-  const handleSave = async (data: { name: string; description: string; content: string; enabled: boolean }) => {
+  const handleSave = async (data: { name: string; description: string; content: string; enabled: boolean; category: string }) => {
     setEditorSaving(true);
+    // 记录当前滚动位置，保存刷新后恢复
+    pendingScrollTop.current = listRef.current?.scrollTop ?? null;
     try {
       const isEdit = !!editorInitial;
       // 把 content 包装成一个名为 "main" 的 section
@@ -670,6 +727,7 @@ export default function SkillsPage() {
         name: data.name,
         description: data.description,
         enabled: data.enabled,
+        category: data.category,
         sections: data.content ? [{ name: "main", content: data.content }] : [],
         tools: [],
         references: [],
@@ -682,6 +740,7 @@ export default function SkillsPage() {
             name: data.name,
             description: data.description,
             enabled: data.enabled,
+            category: data.category,
             sections: skillData.sections,
             tools: [],
             references: [],
@@ -705,6 +764,17 @@ export default function SkillsPage() {
       }
       setEditorOpen(false);
       await load();
+      // 刷新列表后恢复滚动位置 + 选中项滚回可视区（避免"保存后跳回顶部"）
+      requestAnimationFrame(() => {
+        if (listRef.current) {
+          if (pendingScrollTop.current != null) {
+            listRef.current.scrollTop = pendingScrollTop.current;
+            pendingScrollTop.current = null;
+          }
+          listRef.current.querySelector(`[data-skill-name="${CSS.escape(data.name)}"]`)
+            ?.scrollIntoView({ block: "nearest" });
+        }
+      });
     } catch (e) {
       showError(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -863,7 +933,7 @@ export default function SkillsPage() {
     body = (
       <div className="grid gap-4 lg:h-full lg:grid-cols-[320px_1fr]">
         {/* 左：列表（桌面独立滚动；窄屏随页面滚动） */}
-        <div className="space-y-3 lg:h-full lg:overflow-y-auto lg:pr-1">
+        <div ref={listRef} className="space-y-3 lg:h-full lg:overflow-y-auto lg:pr-1">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
             <Input
@@ -879,6 +949,7 @@ export default function SkillsPage() {
               <button
                 key={s.name}
                 type="button"
+                data-skill-name={s.name}
                 onClick={() => setSelectedId(s.name)}
                 className={cn(
                   "w-full rounded-lg border p-3 text-left transition-colors",
@@ -909,7 +980,12 @@ export default function SkillsPage() {
                     </span>
                     <span className="truncate font-mono text-sm font-medium">{s.name}</span>
                   </span>
-                  <Badge variant={s.enabled ? "success" : "default"}>{s.enabled ? "启用" : "禁用"}</Badge>
+                  <span className="flex shrink-0 items-center gap-1">
+                    <Badge variant={s.category === "material" ? "warning" : "primary"}>
+                      {CATEGORY_LABEL[s.category] ?? s.category}
+                    </Badge>
+                    <Badge variant={s.enabled ? "success" : "default"}>{s.enabled ? "启用" : "禁用"}</Badge>
+                  </span>
                 </div>
                 <p className="mt-1 line-clamp-1 text-xs text-muted">{s.description || "（无描述）"}</p>
               </button>
@@ -965,6 +1041,23 @@ export default function SkillsPage() {
                 </div>
               </div>
               <div className="space-y-3 border-t border-border pt-4">
+                <div>
+                  <Label htmlFor="detail-category">类型</Label>
+                  <Select
+                    id="detail-category"
+                    value={detail.category}
+                    onChange={(e) => void handleCategoryChange(e.target.value)}
+                    className="mt-1"
+                  >
+                    <option value="rule">规则型（全量注入，每章生效）</option>
+                    <option value="material">素材库型（按本章内容检索注入）</option>
+                  </Select>
+                  <p className="mt-1 text-xs text-muted">
+                    {detail.category === "material"
+                      ? "内容量大时适合素材库型：写章时自动搜索匹配的素材，只注入命中的部分"
+                      : "内容精炼时用规则型：每次生成都完整注入，让写手完整遵守"}
+                  </p>
+                </div>
                 <SettingToggleRow
                   label="启用 / 禁用"
                   description="控制该 Skill 是否参与注入"

@@ -61,16 +61,17 @@ export function PlotDebtsView({ projectId }: { projectId: number }) {
   const [form, setForm] = useState<DebtFormState>(EMPTY_DEBT_FORM);
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
+    // silent=true：静默刷新（保存/删除/标记后用），不切 loading 保持容器常驻不跳顶
     if (!projectId) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const data = await api.listPlotDebts(projectId, statusFilter || undefined);
       setDebts(data);
     } catch (e: any) {
       showError("加载剧情债失败：" + e.message);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [projectId, statusFilter, showError]);
 
@@ -119,7 +120,7 @@ export function PlotDebtsView({ projectId }: { projectId: number }) {
       showSuccess(editing ? "剧情债已更新" : "剧情债已创建");
       setDialogOpen(false);
       bumpDataVersion("bible");
-      await load();
+      await load(true);
     } catch (e: any) {
       showError("保存失败：" + e.message);
     } finally {
@@ -156,7 +157,7 @@ export function PlotDebtsView({ projectId }: { projectId: number }) {
       });
       showSuccess("剧情债已标记为解决");
       bumpDataVersion("bible");
-      await load();
+      await load(true);
     } catch (e: any) {
       showError("操作失败：" + e.message);
     }

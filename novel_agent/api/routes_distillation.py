@@ -36,9 +36,78 @@ from novel_agent.llm.client import LLMClient
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# 蒸馏单次 LLM 请求的 read 超时（秒）。DeepSeek 深度思考 + 10 万字片段实测 15~45 秒一轮，
+# 远低于此值；代理/网络链路假死时 keep-alive 连接会挂到超时才失败，
+# 3 分钟兜底 + client 换新连接重试（max_retries=3），既保证慢轮次能完成，
+# 又避免假死连接长时间卡住进度（表现为"蒸馏没增流"）。
+DISTILL_TIMEOUT = 180.0
+
 # 待取消的蒸馏任务（按 work_id）。连接断开（切页）不再取消后台任务，
 # 只有显式调用 cancel 端点才中断——保证切页后任务继续、回来进度还在。
 _CANCELLED_WORKS: set[int] = set()
+
+# 正在蒸馏（运行中或排队中）的 work_id，用于同书防重：
+# 前端页面刷新/重复点击可能对同一本书发起多个请求，这里直接拒绝第二个，
+# 避免同一本书多个任务并行（浪费 LLM 调用、DB 写冲突）。
+_RUNNING_DISTILLS: set[int] = set()
+
+# 多书并发调度：同时最多蒸馏 _MAX_CONCURRENT_DISTILL 本书，超出排队（前端收到 queued 事件）。
+# 用 Condition + 计数实现（asyncio.Semaphore 无法反馈排队信息）。
+_MAX_CONCURRENT_DISTILL = 5
+_distill_cond = asyncio.Condition()
+_distill_in_schedule = 0  # 已进入调度（运行中 + 排队中）的书数量
+
+# work_id -> 正在执行的蒸馏 asyncio.Task。
+# 取消端点通过它立即中断正在进行的 AI 调用：否则任务要等 LLM 超时（最长 35 分钟）才退出，
+# 期间一直占着并发槽位，后续任务排队饿死（表现为"启动后静默、进度不动"）。
+_RUNNING_TASKS: dict[int, asyncio.Task] = {}
+
+
+async def _enqueue_distill(on_event, is_cancelled) -> bool:
+    """进入并发调度。超过上限先发 queued 事件再等待槽位。
+
+    返回 False 表示排队期间被取消（无需执行）；True 表示已获得运行资格。
+    """
+    global _distill_in_schedule
+    async with _distill_cond:
+        _distill_in_schedule += 1
+        if _distill_in_schedule > _MAX_CONCURRENT_DISTILL:
+            await on_event({
+                "type": "queued",
+                "running": _MAX_CONCURRENT_DISTILL,
+                "waiting": _distill_in_schedule - _MAX_CONCURRENT_DISTILL,
+            })
+        try:
+            while _distill_in_schedule > _MAX_CONCURRENT_DISTILL:
+                if is_cancelled():
+                    _release_distill_slot()
+                    return False
+                await _distill_cond.wait()
+        except asyncio.CancelledError:
+            # 排队等待槽位时被取消：await wait() 抛 CancelledError，
+            # 计数必须在 except 里同步释放，否则槽位泄漏、
+            # 后续任务永远排队不被启动。
+            _release_distill_slot()
+            raise
+    return True
+
+
+def _release_distill_slot() -> None:
+    """同步释放一个并发调度槽位（并唤醒等待者）。
+
+    必须用同步版本：asyncio.Condition 的 async with / wait() 都是协程，
+    任务被 cancel() 后 finally 中的 await 会再次抛 CancelledError，
+    async 版本的释放逻辑永远执行不到，导致 _distill_in_schedule 只增不减、
+    槽位永久泄漏——之后所有蒸馏任务都会卡在排队、永远不被启动
+    （表现为"任务完成后不补位 / 新任务排队不动"）。
+    Condition.notify_all() 是同步方法，计数递减 + 唤醒都不需要 await。
+    """
+    global _distill_in_schedule
+    _distill_in_schedule = max(0, _distill_in_schedule - 1)
+    try:
+        _distill_cond.notify_all()
+    except Exception:
+        pass
 
 
 # ---- Pydantic 模型 ----
@@ -55,10 +124,11 @@ class DistillRequest(BaseModel):
     """蒸馏请求。"""
     rounds: int = 7  # 每片段的蒸馏轮数（维度数），兼容旧调用；dimensions 存在时以 dimensions 为准
     levels: int = 1  # 蒸馏级数：1=一次蒸馏（碎片）；2=二次蒸馏（浓缩提炼）；3=三次蒸馏（再浓缩）
-    dimensions: list[int] | None = None  # 要蒸馏的维度编号列表（1-15，见 ROUND_DIMENSIONS）；None=全部维度
+    dimensions: list[int] | None = None  # 要蒸馏的维度编号列表（1-19，见 ROUND_DIMENSIONS）；None=全部维度
     retry_failed: bool = False  # 补蒸馏模式：只重跑失败的片段/轮次，跳过已成功的
     skip_done_rounds: bool = False  # 隔离模式：跳过已成功完成的维度（同书多次蒸馏不同维度时不重复、不覆盖）
     agent_role: str = "auditor"  # 蒸馏是分析型任务，用低温度角色
+    enable_thinking: bool | None = None  # 思考模式开关：None=跟随模型/provider 默认；False=关闭（火山 coding 网关不兼容思考参数，会自动降级关闭）
     # 模型设置（可选）：不填则跟随 config.yaml 的 agent_role 配置
     provider: str | None = None          # 供应商名（从 model_providers.json 读真实 base_url/api_key）
     model: str | None = None             # 供应商模式下的模型名
@@ -131,6 +201,8 @@ def _resolve_llm_config(cfg, req) -> LLMConfig:
                     base_url=str(p.get("base_url", "")).rstrip("/") or "https://api.openai.com/v1",
                     api_key=str(p.get("api_key", "")),
                     model=req.model or (models[0] if models else ""),
+                    # 思考模式跟随供应商在「模型管理」页的配置（null=默认，由 client 按网关自动适配）
+                    enable_thinking=p.get("enable_thinking"),
                 )
                 break
         if base is None:
@@ -152,6 +224,12 @@ def _resolve_llm_config(cfg, req) -> LLMConfig:
     result = copy.copy(base)
     for key, value in cfg.ROLE_PARAMS.get("auditor", {}).items():
         setattr(result, key, value)
+    # 统一蒸馏请求 read 超时（三种配置来源都覆盖）：挂死的假死连接最多等 10 分钟
+    # 即由 client 超时并换新连接重发，不再死等 35 分钟
+    result.timeout = DISTILL_TIMEOUT
+    # 请求级显式思考开关优先（前端弹窗可临时覆盖供应商配置；None=跟随供应商配置）
+    if req.enable_thinking is not None:
+        result.enable_thinking = req.enable_thinking
     return result
 
 
@@ -305,11 +383,20 @@ async def distill_work(work_id: int, req: DistillRequest):
     store = get_store()
     if not store.get_work(work_id):
         raise HTTPException(404, f"作品不存在: {work_id}")
+    # 同书防重：同一本书已有蒸馏任务（运行中或排队）时拒绝重复启动，
+    # 防止前端重复点击/刷新后重发导致的重复蒸馏
+    if work_id in _RUNNING_DISTILLS:
+        raise HTTPException(409, "这本书正在蒸馏中（含排队），请勿重复启动")
+    # 清除可能残留的取消标记：重新发起蒸馏 = 明确的重新开始意图。
+    # 若旧任务被取消时标记未清除，引擎每轮 is_cancelled 检查会直接判取消，
+    # 表现为"点蒸馏后界面不动"。
+    _CANCELLED_WORKS.discard(work_id)
+    _RUNNING_DISTILLS.add(work_id)
     if req.rounds < 1:
         raise HTTPException(400, "rounds 必须 ≥ 1")
     if req.levels < 1:
         raise HTTPException(400, "levels 必须 ≥ 1")
-    # 校验维度编号：必须在 ROUND_DIMENSIONS 范围内（1-12）
+    # 校验维度编号：必须在 ROUND_DIMENSIONS 范围内（动态取，当前 1-19）
     from novel_agent.distillation.engine import ROUND_DIMENSIONS
 
     if req.dimensions is not None:
@@ -328,6 +415,13 @@ async def distill_work(work_id: int, req: DistillRequest):
         async def _run():
             client = None
             try:
+                # 多书并发调度：超过 _MAX_CONCURRENT_DISTILL 本时排队，前端收到 queued 事件
+                if not await _enqueue_distill(on_event, lambda: work_id in _CANCELLED_WORKS):
+                    # 排队期间被取消：直接结束，不启动蒸馏
+                    await queue.put({"type": "cancelled", "work_id": work_id})
+                    await queue.put(None)
+                    _CANCELLED_WORKS.discard(work_id)
+                    return
                 # client 构造必须在 try 内：非法 agent_role / 供应商时解析抛错，
                 # 否则任务死亡、queue 收不到哨兵，SSE 生成器永久挂死
                 client = LLMClient(_resolve_llm_config(cfg, req))
@@ -337,27 +431,66 @@ async def distill_work(work_id: int, req: DistillRequest):
                     retry_failed=req.retry_failed, skip_done_rounds=req.skip_done_rounds,
                     on_event=on_event,
                     is_cancelled=lambda: work_id in _CANCELLED_WORKS,
+                    enable_thinking=req.enable_thinking,
                 )
+            except asyncio.CancelledError:
+                # CancelledError 继承 BaseException（Python 3.9+），不会被 except Exception 捕获。
+                # SSE 断连时 ASGI 可能取消生成器任务，CancelledError 传播到 _run；
+                # 如果不在这里捕获并更新状态，DB 会永远停在 "distilling"，
+                # 前端看到"蒸馏中"但进度不动（任务已死）。
+                logger.warning("蒸馏任务被取消 (work_id=%d)，更新状态为 cancelled", work_id)
+                try:
+                    get_store().update_work_status(work_id, "cancelled")
+                except Exception:
+                    pass
+                # task.cancel() 后任务已处于取消状态，此处 await 可能再抛
+                # CancelledError 并跳过 finally 的清理逻辑（防重标记残留），包 try 保护。
+                try:
+                    await queue.put({"type": "cancelled", "work_id": work_id})
+                except asyncio.CancelledError:
+                    pass
+                raise  # 重新抛出，让 asyncio 正确标记任务为 cancelled
             except Exception as e:
                 logger.exception("蒸馏执行异常 (work_id=%d)", work_id)
                 try:
                     get_store().update_work_status(work_id, "failed")
                 except Exception:
                     pass
-                await queue.put({"type": "error", "error": str(e)})
-            finally:
-                if client is not None:
-                    await client.close()
-                # 蒸馏可能产出/更新 skill JSON，重建索引（含向量层）保证可搜
                 try:
-                    rebuild_skill_index()
+                    await queue.put({"type": "error", "error": str(e)})
+                except asyncio.CancelledError:
+                    pass
+            finally:
+                # 取消标记必须最先清除（同步操作）：若任务被 cancel 后 finally 中
+                # 的 await 再抛 CancelledError，最后的 discard 永远不会执行，
+                # 残留标记会毒害下一次蒸馏——引擎每轮检查 is_cancelled 直接判取消，
+                # 表现为"换模型/重新点蒸馏后界面不动"。清完再释放槽位。
+                _CANCELLED_WORKS.discard(work_id)
+                # 任务结束（成功/失败/取消/排队被取消）都要解除防重标记
+                _RUNNING_DISTILLS.discard(work_id)
+                _RUNNING_TASKS.pop(work_id, None)
+                # 同步释放调度槽位：任务被 cancel 后此处 await 会再抛
+                # CancelledError，async 版本导致槽位泄漏、后续任务永远排队。
+                _release_distill_slot()
+                if client is not None:
+                    try:
+                        await client.close()
+                    except asyncio.CancelledError:
+                        pass
+                # 蒸馏可能产出/更新 skill JSON，重建索引（含向量层）保证可搜。
+                # 必须放线程池执行：全量重建会对所有 skill 做 embedding（每批 10 个），
+                # 同步执行会阻塞 asyncio event loop，导致其他蒸馏任务/请求全部冻结（页面"没增流"假死）。
+                try:
+                    await asyncio.to_thread(rebuild_skill_index)
                 except Exception as e:
                     logger.warning("蒸馏后重建 skill 索引失败: %s", e)
-                await queue.put(None)  # 结束哨兵
-            # 蒸馏正常结束后清除取消标记（无论完成还是被取消）
-            _CANCELLED_WORKS.discard(work_id)
+                try:
+                    await queue.put(None)  # 结束哨兵
+                except asyncio.CancelledError:
+                    pass
 
         task = asyncio.create_task(_run())
+        _RUNNING_TASKS[work_id] = task
         try:
             while True:
                 event = await queue.get()
@@ -370,8 +503,12 @@ async def distill_work(work_id: int, req: DistillRequest):
         finally:
             # 客户端断开（切页/刷新）不取消后台任务：蒸馏进度已持久化到 DB，
             # 任务继续跑完，用户切回页面可通过 /status 看到实时进度。
+            # 不在 finally 中 await task：SSE 断连时生成器被取消，await task
+            # 可能再次触发 CancelledError 并杀死后台任务（Python 3.11 行为）。
+            # _RUNNING_TASKS 持有 task 强引用，不会被 GC；任务自己在 finally
+            # 中更新 DB 状态 + 清理 _RUNNING_TASKS。
             if not task.done():
-                await task
+                logger.info("SSE 断连，后台蒸馏任务继续运行 (work_id=%d)", work_id)
 
     # ping=15：单轮 LLM 调用可达数分钟，期间无字节会被代理/浏览器掐断
     return EventSourceResponse(event_gen(), ping=15)
@@ -392,11 +529,17 @@ def cancel_distill(work_id: int):
 
     已完成的片段/轮次产物保留；work 状态置为 cancelled（前端可显示"已中断"）。
     连接断开（切页）不触发取消——只有显式调用本端点才中断。
+    若任务正在 AI 调用中（可能最长等 35 分钟超时），直接 cancel 其 asyncio.Task
+    立即中断，避免任务占着并发槽位不放、后续任务排队饿死。
     """
     store = get_store()
     if not store.get_work(work_id):
         raise HTTPException(404, f"作品不存在: {work_id}")
     _CANCELLED_WORKS.add(work_id)
+    # 立即中断正在执行的蒸馏任务（若在排队等待槽位，enqueue 的 is_cancelled 分支会自行退出）
+    task = _RUNNING_TASKS.get(work_id)
+    if task and not task.done():
+        task.cancel()
     try:
         store.update_work_status(work_id, "cancelled")
     except Exception as e:
@@ -491,11 +634,29 @@ def update_skill(skill_id: int, req: SkillUpdate):
         _remove_skill_file(skill["name"])
     if updates.keys() & {"name", "description", "content", "tags", "status"}:
         view = _skill_view(updated)
+        # 重写文件时保留原分类（rule/material，用户可手动改）；文件不存在时按名字推断
+        category = "rule"
+        try:
+            from novel_agent.api.routes_skills import _skill_category
+            _p = load_config().project_data_dir / "skills" / f"{view['name']}.json"
+            if _p.exists():
+                category = json.loads(_p.read_text(encoding="utf-8")).get("category") or category
+            else:
+                category = _skill_category(view["name"], "")
+        except Exception:
+            pass
         DistillationEngine(get_store())._write_skill_file(
             view["name"], view["name"], view["description"],
             view["content"], view["tags"], status=view.get("status", "active"),
+            category=category,
         )
-        rebuild_skill_index()
+        # 增量更新索引（避免编辑单个 skill 触发全量 rebuild + 全量 embedding 的慢）
+        try:
+            from novel_agent.api.routes_skills import upsert_skill_index
+            upsert_skill_index(view["name"])
+        except Exception as e:
+            logger.warning("skill 索引增量更新失败（降级全量重建）: %s", e)
+            rebuild_skill_index()
     return {"updated": True, "skill": _skill_view(updated)}
 
 
@@ -799,21 +960,27 @@ async def distill_character(req: CharacterDistillRequest):
                     req.work_id, req.character_name.strip(), client,
                     on_event=on_event,
                 )
+            except asyncio.CancelledError:
+                logger.warning("角色蒸馏任务被取消 (work_id=%d)", req.work_id)
+                raise
             except Exception as e:
                 logger.exception("角色蒸馏异常 (work_id=%d char=%s)",
                                  req.work_id, req.character_name)
                 await queue.put({"type": "error", "error": str(e)})
             finally:
+                _RUNNING_TASKS.pop(req.work_id, None)
                 if client is not None:
                     await client.close()
-                # 角色蒸馏可能产出 skill JSON，重建索引保证可搜
+                # 角色蒸馏可能产出 skill JSON，重建索引保证可搜。
+                # 与整书蒸馏一致：放线程池执行，避免同步 embedding 阻塞 asyncio event loop。
                 try:
-                    rebuild_skill_index()
+                    await asyncio.to_thread(rebuild_skill_index)
                 except Exception as e:
                     logger.warning("角色蒸馏后重建 skill 索引失败: %s", e)
                 await queue.put(None)
 
         task = asyncio.create_task(_run())
+        _RUNNING_TASKS[req.work_id] = task
         try:
             while True:
                 event = await queue.get()
@@ -825,10 +992,29 @@ async def distill_character(req: CharacterDistillRequest):
             raise
         finally:
             # 客户端断开不取消后台任务（切页后任务继续跑完，产出不丢）
+            # 与整书蒸馏一致：不 await task，避免 SSE 断连时杀死后台任务
             if not task.done():
-                await task
+                logger.info("SSE 断连，角色蒸馏任务继续运行 (work_id=%d)", req.work_id)
 
     return EventSourceResponse(event_gen(), ping=15)
+
+
+# ---- 诊断 ----
+
+
+@router.get("/debug/state")
+def debug_state():
+    """诊断端点：返回蒸馏模块内部状态（用于排查并发/卡死问题）。"""
+    return {
+        "running_distills": list(_RUNNING_DISTILLS),
+        "cancelled_works": list(_CANCELLED_WORKS),
+        "in_schedule": _distill_in_schedule,
+        "max_concurrent": _MAX_CONCURRENT_DISTILL,
+        "running_tasks": {
+            str(k): {"done": v.done(), "cancelled": v.cancelled()}
+            for k, v in _RUNNING_TASKS.items()
+        },
+    }
 
 
 # ---- 盲测评估 ----

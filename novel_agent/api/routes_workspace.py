@@ -33,8 +33,8 @@ _ALLOWED_EXTENSIONS = {
     ".txt", ".md", ".json", ".csv", ".yaml", ".yml",
     ".py", ".js", ".ts", ".html", ".css",
 }
-# 附件最大大小（10MB）
-_MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
+# 附件最大大小（100MB）
+_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024
 
 
 def _setup_db():

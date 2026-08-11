@@ -1,5 +1,7 @@
-/** 全局设置 · 布局组件：顶栏（返回 + 标题 + 主题切换）+ 左侧子导航 + 右侧内容区（Outlet） */
+/** 全局设置 · 布局组件：顶栏（返回 + 标题 + 主题切换）+ 左侧子导航 + 右侧内容区。
+ *  子内容支持两种来源：react-router 的 <Outlet/>（嵌套路由）或 props.children（KeepAlive 保活渲染直接传入）。 */
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import type { ReactNode } from "react";
 import {
   Archive,
   ArrowLeft,
@@ -42,7 +44,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "用户注入", icon: UserRound, path: "/settings/injection" },
 ];
 
-export default function SettingsLayout() {
+export default function SettingsLayout({ children }: { children?: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const pathname = location.pathname;
@@ -108,7 +110,7 @@ export default function SettingsLayout() {
 
         {/* 右侧内容区 */}
         <main className="min-w-0 flex-1 overflow-hidden">
-          <Outlet />
+          {children ?? <Outlet />}
         </main>
       </div>
     </div>

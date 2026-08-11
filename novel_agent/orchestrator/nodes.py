@@ -51,12 +51,32 @@ def _check_cancelled(state: ChapterGenState, node_name: str) -> dict | None:
     return None
 
 
-# 参考文件单文件截断长度（字），防止超大参考文件撑爆 prompt
-_REFERENCE_PER_FILE_LIMIT = 2000
+# 参考文件注入策略（不硬截断，遵循"看全"原则）：
+# 参考文件可能达几 MB，全量塞入会撑爆上下文；但也不能"拿着半截就跑"。
+# 改为：每文件注入开篇 N 个"完整段落块"（按段落切分，块内语义完整，不做 2000 字硬切），
+# 并明确引导——需要完整参考时通过指令读取（用户配置过：参考文件通过指令控制读取，不每次全读）。
+_REFERENCE_PER_FILE_BLOCKS = 2       # 每文件注入完整块数
+_REFERENCE_BLOCK_CHARS = 1500        # 每块目标字数（按段落切分，不硬切句子）
+
+
+def _split_full_blocks(text: str, block_chars: int) -> list[str]:
+    """按段落把文本切成若干"完整块"（块内段落完整，不做 2000 字式硬截断）。"""
+    paras = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
+    blocks: list[str] = []
+    cur = ""
+    for p in paras:
+        if cur and len(cur) + len(p) > block_chars:
+            blocks.append(cur)
+            cur = p
+        else:
+            cur = f"{cur}\n{p}" if cur else p
+    if cur:
+        blocks.append(cur)
+    return blocks
 
 
 def _build_reference_injections(project_id: int) -> str:
-    """读取项目参考文件内容并注入 prompt（每个文件截断到 2000 字）。
+    """读取项目参考文件内容并注入 prompt（每文件开篇完整段落样例 + 引导读取）。
 
     参考文件存储于 project_data/projects/{id}/references/（upload_reference API
     写入的纯文本）。无参考文件或读取失败时返回空字符串，不影响原有生成流程。
@@ -82,10 +102,15 @@ def _build_reference_injections(project_id: int) -> str:
         else:
             header, body = "【参考文件】", block
         body = body.strip()
-        if len(body) > _REFERENCE_PER_FILE_LIMIT:
-            body = body[:_REFERENCE_PER_FILE_LIMIT] + "\n……（参考文件过长，已截断）"
-        if body:
-            parts.append(f"{header}\n{body}")
+        if not body:
+            continue
+        blocks = _split_full_blocks(body, _REFERENCE_BLOCK_CHARS)
+        sample = "\n\n".join(blocks[:_REFERENCE_PER_FILE_BLOCKS])
+        parts.append(
+            f"{header}\n{sample}\n"
+            f"（该参考文件共 {len(body)} 字，此处注入开篇完整段落样例；"
+            f"如需完整参考文件内容，请通过指令读取。）"
+        )
     if not parts:
         return ""
     logger.info("_build_reference_injections: 注入 %d 个参考文件 (project=%d)", len(parts), project_id)
@@ -241,6 +266,7 @@ def assemble_context(state: ChapterGenState, repo: BibleRepository,
     # 提取本章 beat_type，供语料型 skill 按上下文检索（桥段/场景/人设/题材库，
     # 替代原先直读 CSV 的参考资料兜底——内容已并入默认语料 skill）
     beat_type = ""
+    chapter_summary = ""
     try:
         outline = repo.get_outline_by_chapter(state["chapter"])
         if outline:
@@ -250,6 +276,10 @@ def assemble_context(state: ChapterGenState, repo: BibleRepository,
                     beat_type = beats[0].get("type", "")
                 elif isinstance(beats[0], str):
                     beat_type = " ".join(beats)
+            # 章节概要拼进检索查询词：让关键词/向量都更精准命中素材
+            # （只取前 200 字，避免查询词过长稀释权重）
+            if outline.summary:
+                chapter_summary = outline.summary.strip()[:200]
     except Exception as e:
         logger.debug("assemble_context: 提取 beat_type 失败: %s", e)
 
@@ -262,8 +292,7 @@ def assemble_context(state: ChapterGenState, repo: BibleRepository,
         if gag_file.exists():
             gag_library_text = gag_file.read_text(encoding="utf-8", errors="replace")
         if gag_library_text:
-            if len(gag_library_text) > 8000:
-                gag_library_text = gag_library_text[:8000] + "\n\n[...梗库内容过长，已截断...]"
+            # 梗库全量注入（"看全"才能选梗），梗库通常几千字，不截断
             gag_library_text = (
                 "【梗库参考--每章必须用至少1个梗】\n"
                 "以下是本书的梗库，包含笑点/桥段/彩蛋的详细用法。"
@@ -277,7 +306,9 @@ def assemble_context(state: ChapterGenState, repo: BibleRepository,
 
     # 注入 Bible 级约束：红线、梗、导入章纲 + 技能注入（含语料型 skill 按本章 beat 检索）
     try:
-        skill_ctx = f"第{state['chapter']}章 {state.get('title', '')} {beat_type}".strip()
+        skill_ctx = (
+            f"第{state['chapter']}章 {state.get('title', '')} {beat_type} {chapter_summary}"
+        ).strip()
         injection = _build_bible_injections(repo, state["chapter"], skill_context=skill_ctx)
         if injection:
             context = f"{context}\n\n【Bible 约束】\n{injection}"

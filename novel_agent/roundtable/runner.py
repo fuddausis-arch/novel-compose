@@ -811,11 +811,21 @@ class RoundtableRunner:
         moderator_seat = session.get_moderator_seat()
         controller = session.turn_controller
 
-        full_transcript = "\n".join(
+        full_lines = [
             f"[R{e.round_number}] {e.speaker_name}: {e.content}"
             for e in session.transcript
             if e.entry_type == "statement"
-        )
+        ]
+        # 完整发言保留直到总量上限（不做 3000 字硬切——硬切会把后半段讨论
+        # "半截"丢掉，结论提炼就看不到后半段的决议）
+        kept: list[str] = []
+        used = 0
+        for ln in full_lines:
+            if used + len(ln) + 1 > 3000:
+                break
+            kept.append(ln)
+            used += len(ln) + 1
+        full_transcript = "\n".join(kept)
 
         shared_ctx = session.shared_memory.get_context_text()
 

@@ -39,10 +39,24 @@ class LLMClient:
         非 DeepSeek 模型保留用户配置的采样参数（temperature/top_p 等），
         不注入 thinking/reasoning_effort（避免 API 报错或被忽略）。
 
+        火山方舟 coding 网关（volces.com）实测不兼容 DeepSeek 思考参数：
+        请求带上 thinking 后服务端挂起不返回（等满超时才超时）。
+        对火山编码网关直接不发送 thinking 及采样参数（最小化请求体，实测可正常返回）。
+
         enable_thinking=False 时关闭思考模式（用于审校等结构化输出场景）。
         """
+        is_volcano_coding = "volces.com" in (self.config.base_url or "")
         if not self._is_deepseek(self.config.model):
             return payload  # 非 DeepSeek：保留采样参数，不注入思考模式
+        if is_volcano_coding:
+            # 火山 coding 网关：去掉 thinking 与采样参数，避免请求挂起
+            payload.pop("thinking", None)
+            payload.pop("reasoning_effort", None)
+            payload.pop("temperature", None)
+            payload.pop("top_p", None)
+            payload.pop("frequency_penalty", None)
+            payload.pop("presence_penalty", None)
+            return payload
         if enable_thinking:
             payload["thinking"] = {"type": "enabled"}
             payload["reasoning_effort"] = "max"
@@ -74,8 +88,26 @@ class LLMClient:
                     pool=10.0,
                 ),
                 limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                # 不走系统/环境代理（Clash 7890）：本地代理对长等待请求会断流（TCP 半开），
+                # 导致 AI 请求假死挂到超时才失败（表现为"蒸馏没增流"）。
+                # DeepSeek/火山方舟均可直连，绕过代理后请求稳定。
+                trust_env=False,
             )
         return self._client
+
+    async def _reset_client(self) -> None:
+        """关闭并丢弃当前连接池，强制下次请求建立全新连接。
+
+        用于网络超时/连接假死场景：代理链路断流时 keep-alive 连接可能 TCP 半开
+        （连接还在、数据不流动），httpx 会继续复用它导致请求再次挂死。
+        丢弃后 _get_client() 会新建连接，避免复用一个假死连接。
+        """
+        if self._client is not None and not self._client.is_closed:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+        self._client = None
 
     async def close(self):
         """关闭底层 httpx 连接池。"""
@@ -113,13 +145,14 @@ class LLMClient:
                        max_retries: int = 3, images: list[str] | None = None,
                        max_tokens: int | None = None,
                        temperature: float | None = None,
-                       thinking: bool = True,
+                       thinking: bool | None = None,
                        node_name: str = "default") -> str:
         """生成文本。支持传入图片 URL/base64 data URL 列表进行多模态生成。
         超时/网络错误/429/503 指数退避重试；401/403 等直接报错。
         max_tokens 可覆盖 config 默认值（用于解析长文档等需要更大输出的场景）。
         temperature 可覆盖 config 默认值（用于按任务类型动态调整创意度）。
-        thinking=False 关闭 DeepSeek 思考模式（用于审校等结构化输出场景）。
+        thinking=None 时跟随 config.enable_thinking（模型管理页按供应商配置）；
+        True/False 显式覆盖。火山 coding 网关不兼容思考参数（自动降级关闭）。
         node_name 标记调用来源节点，用于 token 账本按节点统计。
         """
         url = f"{self.config.base_url.rstrip('/')}/chat/completions"
@@ -130,7 +163,9 @@ class LLMClient:
         payload = self._build_payload(user_content, system, images=images,
                                      max_tokens=max_tokens,
                                      temperature=temperature)
-        self._apply_thinking_params(payload, enable_thinking=thinking)
+        # thinking=None → 跟随 config.enable_thinking（模型管理页按供应商配置）；仍为 None 时默认开启
+        effective_thinking = self.config.enable_thinking if thinking is None else thinking
+        self._apply_thinking_params(payload, enable_thinking=effective_thinking if effective_thinking is not None else True)
 
         last_err: Exception | None = None
         for attempt in range(max_retries):
@@ -178,6 +213,9 @@ class LLMClient:
             except (httpx.TimeoutException, httpx.NetworkError) as e:
                 last_err = e
                 logger.warning("LLM 请求超时/网络错误(尝试%d/%d): %s: %s", attempt+1, max_retries, type(e).__name__, e)
+                # 丢弃当前连接池：超时/网络错误多半是 keep-alive 连接假死（代理断流），
+                # 复用它会继续挂死，换全新连接重发
+                await self._reset_client()
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
             except httpx.HTTPStatusError as e:
@@ -283,6 +321,9 @@ class LLMClient:
             except (httpx.TimeoutException, httpx.NetworkError) as e:
                 last_err = e
                 logger.warning("chat 请求超时/网络错误(尝试%d/%d): %s: %s", attempt + 1, max_retries, type(e).__name__, e)
+                # 丢弃当前连接池：超时/网络错误多半是 keep-alive 连接假死（代理断流），
+                # 复用它会继续挂死，换全新连接重发
+                await self._reset_client()
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
             except httpx.HTTPStatusError as e:
@@ -424,11 +465,14 @@ class LLMClient:
             except httpx.HTTPStatusError as e:
                 if stream_started or attempt >= 2:
                     body = e.response.text if e.response else ""
+                    await self._reset_client()
                     raise LLMError(f"AI 流式接口 HTTP {e.response.status_code}: {body[:300]}") from e
                 logger.warning("chat_stream 连接失败 (attempt %d)，%d秒后重试", attempt + 1, 2 ** attempt)
+                await self._reset_client()
                 await asyncio.sleep(2 ** attempt)
                 stream_started = False
             except (httpx.TimeoutException, httpx.NetworkError) as e:
+                await self._reset_client()
                 if stream_started or attempt >= 2:
                     raise LLMError(f"AI 流式请求网络错误: {type(e).__name__}: {e}") from e
                 logger.warning("chat_stream 网络错误 (attempt %d)：%s，%d秒后重试", attempt + 1, e, 2 ** attempt)
@@ -484,8 +528,10 @@ class LLMClient:
                         yield content
         except httpx.HTTPStatusError as e:
             body = e.response.text if e.response else ""
+            await self._reset_client()
             raise LLMError(f"AI 流式接口 HTTP {e.response.status_code}: {body[:300]}") from e
         except (httpx.TimeoutException, httpx.NetworkError) as e:
+            await self._reset_client()
             raise LLMError(f"AI 流式请求网络错误: {type(e).__name__}: {e}") from e
 
     def _record_usage(self, usage: dict[str, Any] | None, node_name: str, finish_reason: str = "") -> None:

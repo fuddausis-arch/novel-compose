@@ -13,33 +13,54 @@ logger = logging.getLogger(__name__)
 
 
 def _truncate_reference_text(ref_text: str, total_limit: int = 4000) -> str:
-    """参考文件文本过大时按总量截断：每文件保留头部，总量不超 total_limit。
+    """参考文件文本过大时按总量控制：每文件注入开篇完整段落块（段落完整，不硬截断句子），
+    总量不超 total_limit，并引导需要完整内容时通过指令读取。
 
-    参考文件可能达几 MB，global 会话每轮都全量注入会撑爆上下文，
-    这里只保留每个文件的开头片段并限制总长。
+    参考文件可能达几 MB，global 会话每轮全量注入会撑爆上下文；
+    但"拿着半截就跑"（2000 字硬切）会丢失语义，改为完整段落块采样。
     """
     if len(ref_text) <= total_limit:
         return ref_text
     logger.warning(
-        "参考文件总文本 %d 字超过 %d 字上限，截断注入", len(ref_text), total_limit
+        "参考文件总文本 %d 字超过 %d 字上限，改为完整段落块采样注入", len(ref_text), total_limit
     )
-    # get_all_reference_text 以 “【参考文件：...】” 分块，按块截取头部
+    # get_all_reference_text 以 “【参考文件：...】” 分块，按块取开篇完整段落
     parts = []
     used = 0
-    per_file_limit = max(800, total_limit // 5)
+    per_file_blocks = 1
     for block in re.split(r"(?=【参考文件：)", ref_text):
         block = block.strip()
         if not block:
             continue
-        if len(block) > per_file_limit:
-            block = block[:per_file_limit] + "…（截断）"
-        if used + len(block) > total_limit:
-            remain = total_limit - used
-            if remain > 0:
-                parts.append(block[:remain])
+        # 分离块头（文件名）与正文
+        header, body = "", block
+        if block.startswith("【参考文件："):
+            first_nl = block.find("\n")
+            if first_nl != -1:
+                header, body = block[:first_nl], block[first_nl + 1:]
+        # 按段落切完整块（段落完整，不硬切）
+        paras = [p.strip() for p in re.split(r"\n+", body) if p.strip()]
+        blocks: list[str] = []
+        cur = ""
+        for p in paras:
+            if cur and len(cur) + len(p) > 800:
+                blocks.append(cur)
+                cur = p
+            else:
+                cur = f"{cur}\n{p}" if cur else p
+        if cur:
+            blocks.append(cur)
+        if not blocks:
+            continue
+        sample = "\n\n".join(blocks[:per_file_blocks])
+        text_block = f"{header}\n{sample}" if header else sample
+        text_block += (
+            "\n（参考文件较长，此处为开篇完整段落样例；如需完整内容请通过指令读取。）"
+        )
+        if used + len(text_block) > total_limit:
             break
-        parts.append(block)
-        used += len(block)
+        parts.append(text_block)
+        used += len(text_block)
     return "\n\n".join(parts)
 
 

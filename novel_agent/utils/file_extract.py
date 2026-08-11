@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 
-MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB
 
 
 def _is_text_mime(mime: str | None) -> bool:

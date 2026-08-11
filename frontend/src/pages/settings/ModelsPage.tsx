@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,6 +19,8 @@ interface Provider {
   models?: string[];
   priority: number;
   is_default?: boolean;
+  /** 思考模式：null=跟随默认（DeepSeek 开/火山自动关）；true=强制开；false=强制关 */
+  enable_thinking?: boolean | null;
 }
 
 interface ProviderForm {
@@ -27,6 +30,8 @@ interface ProviderForm {
   models: string;
   priority: string;
   is_default: boolean;
+  /** auto=跟随默认；on=强制开启；off=强制关闭 */
+  enable_thinking: "auto" | "on" | "off";
 }
 
 const EMPTY_FORM: ProviderForm = {
@@ -36,6 +41,7 @@ const EMPTY_FORM: ProviderForm = {
   models: "",
   priority: "0",
   is_default: false,
+  enable_thinking: "auto",
 };
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -72,8 +78,9 @@ export default function ModelsPage() {
   // 模型发现
   const [discovering, setDiscovering] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    // silent=true：静默刷新（保存/删除/发现后用），不切 loading 保持滚动容器常驻不跳顶
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const data = await fetchJson<{ providers: Provider[] }>("/api/models/providers");
@@ -82,7 +89,7 @@ export default function ModelsPage() {
       setError(e instanceof Error ? e.message : "加载失败");
       setProviders([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -117,6 +124,7 @@ export default function ModelsPage() {
       models: (p.models ?? []).join(", "),
       priority: String(p.priority ?? 0),
       is_default: !!p.is_default,
+      enable_thinking: p.enable_thinking === false ? "off" : p.enable_thinking === true ? "on" : "auto",
     });
     setEditingName(p.name);
     setEditorOpen(true);
@@ -136,6 +144,8 @@ export default function ModelsPage() {
         models,
         priority: Number(form.priority) || 0,
         is_default: form.is_default,
+        // 思考模式：auto → null（跟随默认）；on/off → true/false
+        enable_thinking: form.enable_thinking === "auto" ? null : form.enable_thinking === "on",
       };
       // api_key 留空时不传（编辑时不修改 key）
       if (form.api_key.trim()) {
@@ -157,7 +167,7 @@ export default function ModelsPage() {
         showSuccess("已创建");
       }
       setEditorOpen(false);
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -177,7 +187,7 @@ export default function ModelsPage() {
       await fetchJson(`/api/models/providers/${encodeURIComponent(deleteTarget)}`, { method: "DELETE" });
       showSuccess(`已删除 ${deleteTarget}`);
       setDeleteTarget(null);
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "删除失败");
     } finally {
@@ -203,7 +213,7 @@ export default function ModelsPage() {
         body: JSON.stringify({ models }),
       });
       showSuccess(`发现 ${models.length} 个模型`);
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "发现失败");
     } finally {
@@ -235,7 +245,7 @@ export default function ModelsPage() {
       showSuccess(`已添加模型 ${newModelName.trim()}`);
       setNewModelName("");
       setAddModelTarget(null);
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "添加失败");
     } finally {
@@ -253,7 +263,7 @@ export default function ModelsPage() {
         body: JSON.stringify({ models }),
       });
       showSuccess(`已移除模型 ${modelName}`);
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "移除失败");
     }
@@ -516,6 +526,22 @@ export default function ModelsPage() {
                   />
                   <Label htmlFor="p-default" className="text-xs text-muted">设为默认</Label>
                 </div>
+              </div>
+              <div>
+                <Label htmlFor="p-thinking">思考模式</Label>
+                <Select
+                  id="p-thinking"
+                  className="mt-1"
+                  value={form.enable_thinking}
+                  onChange={(e) => setForm((f) => ({ ...f, enable_thinking: e.target.value as ProviderForm["enable_thinking"] }))}
+                >
+                  <option value="auto">跟随默认（DeepSeek 开启，火山自动关闭）</option>
+                  <option value="on">强制开启（分析更深入，更耗 token）</option>
+                  <option value="off">强制关闭（省钱）</option>
+                </Select>
+                <p className="mt-1 text-xs text-muted">
+                  蒸馏、聊天、交互创作等默认继承此设置；火山 coding 网关不支持思考参数，会强制关闭
+                </p>
               </div>
             </div>
             <div className="mt-5 flex justify-end gap-2">

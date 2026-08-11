@@ -7,12 +7,31 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from novel_agent.bible.repository import BibleRepository
 from novel_agent.memory.summary_tree import SummaryTree
 
 logger = logging.getLogger(__name__)
+
+
+def _fit_full_paras(text: str, budget: int) -> str:
+    """预算内保留尽量多的完整段落（不做半截硬切——"看全"原则）。
+
+    段落是语义完整单元；宁可少给、全给，也不把段落从中间切掉。
+    """
+    if len(text) <= budget:
+        return text
+    paras = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
+    out: list[str] = []
+    used = 0
+    for p in paras:
+        if used + len(p) + 2 > budget:
+            break
+        out.append(p)
+        used += len(p) + 2
+    return "\n\n".join(out)
 
 
 def format_active_storylines(repo, chapter: int, max_lines: int = 6) -> str:
@@ -187,9 +206,11 @@ class CoreMemoryAssembler:
                 sections.append(prev_summary)
                 remaining -= len(prev_summary) + 2
             elif min(remaining, prev_budget) > 200:
-                truncated = prev_summary[:min(remaining, prev_budget)]
-                sections.append(truncated)
-                remaining -= len(truncated) + 2
+                # 预算不足：保留尽量多的完整段落（不半截硬切）
+                truncated = _fit_full_paras(prev_summary, min(remaining, prev_budget))
+                if truncated:
+                    sections.append(truncated)
+                    remaining -= len(truncated) + 2
 
         # 4. 项目信息
         if project_text and len(project_text) + 2 <= remaining:
@@ -203,9 +224,11 @@ class CoreMemoryAssembler:
                 sections.append(world_text)
                 remaining -= len(world_text) + 2
             elif min(remaining, world_budget) > 200:
-                truncated = world_text[:min(remaining, world_budget)]
-                sections.append(truncated)
-                remaining -= len(truncated) + 2
+                # 预算不足：保留尽量多的完整段落（不半截硬切）
+                truncated = _fit_full_paras(world_text, min(remaining, world_budget))
+                if truncated:
+                    sections.append(truncated)
+                    remaining -= len(truncated) + 2
 
         # 5. 角色（可压缩：保留名字+角色+绝对禁令，丢弃 personality/motivation 等次要字段）
         if chars_text:

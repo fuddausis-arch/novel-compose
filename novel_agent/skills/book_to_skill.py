@@ -96,6 +96,8 @@ class BookSkill:
             "description": self.description,
             "enabled": True,
             "auto_inject": True,
+            # 拆书技能内容庞大（每章一个 section），归素材库型：写章时按上下文检索注入
+            "category": "material",
             "sections": [
                 {
                     "name": s.name,

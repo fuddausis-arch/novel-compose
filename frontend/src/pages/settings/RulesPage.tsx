@@ -167,8 +167,9 @@ export default function RulesPage() {
   const [editorInitial, setEditorInitial] = useState<RuleDetail | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    // silent=true：静默刷新（保存/删除/启停后用），不切换 loading，保持滚动容器常驻不跳顶
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const data = await fetchJson<{ rules: RuleSummary[] }>("/api/rules");
@@ -184,7 +185,7 @@ export default function RulesPage() {
       setError(e instanceof Error ? e.message : "加载失败");
       setRules([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -255,7 +256,7 @@ export default function RulesPage() {
         showSuccess("已创建");
       }
       setEditorOpen(false);
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -280,7 +281,7 @@ export default function RulesPage() {
         setSelectedId(null);
         setDetail(null);
       }
-      await load();
+      await load(true);
     } catch (e) {
       showError(e instanceof Error ? e.message : "删除失败");
     }
@@ -298,7 +299,7 @@ export default function RulesPage() {
         body: JSON.stringify({ enabled: value }),
       });
       showSuccess(value ? "已启用" : "已禁用");
-      await load();
+      await load(true);
     } catch (e) {
       setDetail(prev);
       setRules((rs) => rs.map((r) => (r.id === prev.id ? { ...r, enabled: prev.enabled } : r)));

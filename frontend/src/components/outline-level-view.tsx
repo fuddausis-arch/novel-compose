@@ -116,43 +116,45 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
   const [streamOpen, setStreamOpen] = useState(false);
   const [streamType, setStreamType] = useState<GenStreamType>("arc");
 
-  const load = async () => {
+  const load = async (silent = false) => {
+    // silent=true：静默刷新（创建/编辑/删除后用），不切 loading 保持滚动容器常驻不跳顶
+    const setLoading = (v: boolean) => { if (!silent) setLocalLoading(v); };
     // by_volume 模式下按卷过滤章纲，不依赖 parentId
     if (level === "chapter" && chapterMode === "by_volume") {
-      if (!volumeId) { setItems([]); setLocalLoading(false); return; }
+      if (!volumeId) { setItems([]); setLoading(false); return; }
       const arcIds = parents.map((p) => p.id);
-      if (arcIds.length === 0) { setItems([]); setLocalLoading(false); return; }
-      setLocalLoading(true);
+      if (arcIds.length === 0) { setItems([]); setLoading(false); return; }
+      setLoading(true);
       try {
         const data = await api.listOutlines(project.id, "chapter");
         setItems(data.filter((ch) => arcIds.includes(ch.parent_id ?? -1)));
       } catch (e: any) {
         showError("加载失败：" + e.message);
       } finally {
-        setLocalLoading(false);
+        setLoading(false);
       }
       return;
     }
     // 章纲/细纲需要选中父级才能加载，防止 parent_id=None 的数据全混在一起
     if (level !== "volume" && parentId === null) {
       setItems([]);
-      setLocalLoading(false);
+      setLoading(false);
       return;
     }
-    setLocalLoading(true);
+    setLoading(true);
     try {
       const data = await api.listOutlines(project.id, level, parentId ?? undefined);
       setItems(data);
     } catch (e: any) {
       showError("加载失败：" + e.message);
     } finally {
-      setLocalLoading(false);
+      setLoading(false);
     }
   };
 
   // 变更操作统一走 loadAndSync：本地列表刷新 + 同步全局 store（大纲数统计）
-  const loadAndSync = async () => {
-    await load();
+  const loadAndSync = async (silent = false) => {
+    await load(silent);
     refreshGlobalOutlines();
   };
 
@@ -348,7 +350,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
       await api.createOutline(project.id, { ...newForm, level, parent_id: parentId });
       setAdding(false);
       setNewForm({ order: (sorted.length || 0) + 1, level, parent_id: parentId, title: "", summary: "", act: "发展", strand: "quest", required_beats: "", owed_debts: "", required_hooks: "", character_constraints: "", phase: "regular" });
-      await loadAndSync();
+      await loadAndSync(true);
       showSuccess("创建成功");
     } catch (e: any) {
       showError("创建失败：" + e.message);
@@ -371,7 +373,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
       await api.updateOutline(project.id, editingId, editForm);
       setEditingId(null);
       setEditForm({});
-      await loadAndSync();
+      await loadAndSync(true);
       showSuccess("保存成功");
     } catch (e: any) {
       showError("保存失败：" + e.message);
@@ -383,7 +385,7 @@ export function OutlineLevelView({ project, level, parentLevel, title, setLoadin
     if (!ok) return;
     try {
       await api.deleteOutline(project.id, id);
-      await loadAndSync();
+      await loadAndSync(true);
       showSuccess("删除成功");
     } catch (e: any) {
       showError("删除失败：" + e.message);

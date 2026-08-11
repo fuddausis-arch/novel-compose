@@ -1,8 +1,9 @@
 /** 全局设置 · 蒸馏技能页：导入优质作品 → 多轮蒸馏 → Skill 管理 → 技能融合 → 效果对比 */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Beaker,
   Check,
+  CheckSquare,
   FileText,
   FlaskConical,
   GitMerge,
@@ -111,6 +112,9 @@ interface DistillEvent {
   total?: number;
   source_count?: number;
   name?: string;
+  // 多书并发排队事件字段
+  waiting?: number;
+  running?: number;
 }
 
 /** 蒸馏中单个片段的实时状态 */
@@ -121,7 +125,8 @@ interface LiveChunkState {
   rounds: Record<number, string>; // round_num -> running | done | failed
 }
 
-/** 蒸馏模型设置：mode 决定走哪套配置 */
+/** 蒸馏模型设置：mode 决定走哪套配置。思考模式不再在此单独设置，
+ *  统一在「模型管理」页按供应商配置，蒸馏自动继承。 */
 interface DistillModelConfig {
   mode: "default" | "provider" | "custom";
   provider: string; // 供应商名（mode=provider）
@@ -130,6 +135,24 @@ interface DistillModelConfig {
   customApiKey: string; // 自定义模式：API Key
   customModel: string; // 自定义模式：模型名
 }
+
+/** 单本书的蒸馏任务状态（支持多本同时蒸馏，互不阻塞） */
+interface DistillJob {
+  workId: number;
+  status: "queued" | "running"; // queued=排队中（并发满 MAX_CONCURRENT_DISTILL 本）
+  controller: AbortController;
+  log: string[];
+  progress: { done: number; total: number } | null;
+  liveChunks: Record<number, LiveChunkState>;
+  recovered?: boolean; // 页面切回后从后端恢复进度的任务（无 SSE 连接，轮询更新）
+}
+
+/**
+ * 多书并发上限（与后端 _MAX_CONCURRENT_DISTILL 一致，这里取更小值用于前端先排队）：
+ * 同时蒸馏太多书会让每本内部的并行片段请求叠加，触发 AI 服务商账户级限流（429）。
+ * 实测 5 本同时跑容易爆限流，降到 3 本更稳；后端实际上限 5，前端只发 3 个请求。
+ */
+const MAX_CONCURRENT_DISTILL = 3;
 
 /** 模型管理页供应商数据结构（/api/models/providers 返回，api_key 已脱敏） */
 interface ModelProvider {
@@ -143,7 +166,7 @@ interface ModelProvider {
 
 type BadgeVariant = "default" | "primary" | "danger" | "warning" | "success";
 
-/** 蒸馏候选维度（与后端 ROUND_DIMENSIONS 对齐：1-7 文笔技法，8-12 网文实战） */
+/** 蒸馏候选维度（与后端 ROUND_DIMENSIONS 对齐：1-7 文笔技法，8-12 网文实战，13-15 指纹，16-19 专项写手） */
 const DIMENSIONS: Array<{ id: number; name: string; points: string }> = [
   { id: 1, name: "写作风格特征", points: "叙事节奏、对话风格、描写习惯、情感表达" },
   { id: 2, name: "语言特征", points: "用词偏好、句式结构、修辞手法、标点习惯" },
@@ -160,6 +183,10 @@ const DIMENSIONS: Array<{ id: number; name: string; points: string }> = [
   { id: 13, name: "节奏与句长指纹", points: "句长分布、对话占比、段落长短变化（AI 检测器第一信号）" },
   { id: 14, name: "禁词与套路词表", points: "原书回避的 AI 高频词与套路句式，生成时禁用" },
   { id: 15, name: "密度目标", points: "形容词/破折号/连接词/重复词密度控制习惯" },
+  { id: 16, name: "动作与打斗", points: "打斗节奏（起手→交锋→转折→收束）、动作粒度、力量感、紧张感" },
+  { id: 17, name: "内心与心理", points: "内心独白风格（直接/隐喻/意识流）、情绪层次、心理冲突、揭示节奏" },
+  { id: 18, name: "环境与描写", points: "氛围营造（光线/声音/气味/温度）、感官细节、环境叙事、克制" },
+  { id: 19, name: "过渡与节奏", points: "场景过渡（时间跳转/地点切换/情绪衔接/黑场）、节奏切换、连续性" },
 ];
 
 /** 全部维度编号 */
@@ -333,6 +360,11 @@ export default function DistillationPage() {
 
   // 全局数据
   const [works, setWorks] = useState<DistillWork[]>([]);
+  // works 的即时镜像：并发判断/补位以后端真实状态为准，避免页面重载后本地计数失效导致超并发
+  const worksRef = useRef<DistillWork[]>([]);
+  useEffect(() => {
+    worksRef.current = works;
+  }, [works]);
   const [allSkills, setAllSkills] = useState<DistillSkill[]>([]);
   const [fusions, setFusions] = useState<FusionPlan[]>([]);
   const [loading, setLoading] = useState(true);
@@ -346,30 +378,62 @@ export default function DistillationPage() {
   const [progress, setProgress] = useState<DistillProgress | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
-  // 蒸馏实时状态
-  const [distilling, setDistilling] = useState(false);
   // 蒸馏级数：1=一次蒸馏（碎片）；2=二次蒸馏（浓缩提炼）；3=三次蒸馏（再浓缩）
-  const [distillLevels, setDistillLevels] = useState(1);
+  const [distillLevels, setDistillLevels] = useState(3);
   // 蒸馏维度：勾选要分析的维度编号，默认全部
   const [distillDims, setDistillDims] = useState<number[]>(ALL_DIM_IDS);
   const [dimsDialogOpen, setDimsDialogOpen] = useState(false);
-  // 蒸馏模型设置
+  // 蒸馏模型设置（持久化到 localStorage：用户选过的供应商/模型，刷新/重蒸馏后仍生效）
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
-  const [modelConfig, setModelConfig] = useState<DistillModelConfig>({
-    mode: "default",
-    provider: "",
-    model: "",
-    customBaseUrl: "",
-    customApiKey: "",
-    customModel: "",
+  const [modelConfig, setModelConfig] = useState<DistillModelConfig>(() => {
+    try {
+      const saved = localStorage.getItem("distill_model_config");
+      if (saved) {
+        return {
+          mode: "default",
+          provider: "",
+          model: "",
+          customBaseUrl: "",
+          customApiKey: "",
+          customModel: "",
+          ...JSON.parse(saved),
+        };
+      }
+    } catch {
+      /* 解析失败用默认 */
+    }
+    return {
+      mode: "default",
+      provider: "",
+      model: "",
+      customBaseUrl: "",
+      customApiKey: "",
+      customModel: "",
+    };
   });
+  useEffect(() => {
+    try {
+      localStorage.setItem("distill_model_config", JSON.stringify(modelConfig));
+    } catch {
+      /* 存储失败不影响使用 */
+    }
+  }, [modelConfig]);
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
-  const [liveChunks, setLiveChunks] = useState<Record<number, LiveChunkState>>({});
-  const [liveProgress, setLiveProgress] = useState<{ done: number; total: number } | null>(null);
-  const [liveLog, setLiveLog] = useState<string[]>([]);
-  const abortRef = useRef<AbortController | null>(null);
+  // 多本并发蒸馏：work_id -> 该书的蒸馏任务状态
+  const [jobs, setJobs] = useState<Record<number, DistillJob>>({});
   const selectedWorkRef = useRef<number | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
+
+  // 并发调度 refs（避免 setState 异步导致的竞态）：
+  // - jobsRef：jobs 的即时镜像
+  // - activeJobsRef：当前已发起 SSE（running）的任务数，≤ MAX_CONCURRENT_DISTILL
+  // - pendingQueueRef：前端本地排队（未发起 SSE）的 work_id 队列
+  const jobsRef = useRef<Record<number, DistillJob>>({});
+  const activeJobsRef = useRef(0);
+  const pendingQueueRef = useRef<number[]>([]);
+  useEffect(() => {
+    jobsRef.current = jobs;
+  }, [jobs]);
 
   // 导入对话框
   const [importOpen, setImportOpen] = useState(false);
@@ -482,11 +546,6 @@ export default function DistillationPage() {
         setChunks(detail.chunks || []);
         setWorkSkills(skillsRes.skills || []);
         setProgress(prog);
-        const init: Record<number, LiveChunkState> = {};
-        for (const c of detail.chunks || []) {
-          init[c.chunk_index] = { status: c.status, currentRound: 0, rounds: {} };
-        }
-        setLiveChunks(init);
       } catch (e) {
         showError(errorMessage(e, "加载作品详情失败"));
         setChunks([]);
@@ -504,25 +563,166 @@ export default function DistillationPage() {
     if (selectedWorkId != null) void loadWorkDetail(selectedWorkId);
   }, [selectedWorkId, loadWorkDetail]);
 
-  // 日志自动滚动到底部
+  // 日志自动滚动到底部（当前选中作品的蒸馏日志）
+  const selectedJob = selectedWorkId != null ? jobs[selectedWorkId] : undefined;
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [liveLog]);
+  }, [selectedJob?.log]);
 
-  // 卸载时断开蒸馏流。注意：后端任务不再随连接断开而取消（后台继续跑），
+  // 恢复轮询定时器：页面切回后，对后端仍在蒸馏中的书轮询 /status 恢复进度显示
+  const recoveryTimersRef = useRef<Record<number, ReturnType<typeof setInterval>>>({});
+
+  // 卸载时断开所有蒸馏流。注意：后端任务不再随连接断开而取消（后台继续跑），
   // 切回页面时通过 loadWorkDetail / status 拉取实时进度。
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(
+    () => () => {
+      for (const j of Object.values(jobsRef.current)) j.controller.abort();
+      for (const t of Object.values(recoveryTimersRef.current)) clearInterval(t);
+    },
+    [],
+  );
 
-  const appendLog = useCallback((msg: string) => {
-    setLiveLog((prev) => [...prev.slice(-49), msg]);
+  /** 向某本书的蒸馏日志追加一行（只保留最近 50 行） */
+  const appendLog = useCallback((workId: number, msg: string) => {
+    setJobs((prev) => {
+      const job = prev[workId];
+      if (!job) return prev;
+      return { ...prev, [workId]: { ...job, log: [...job.log.slice(-49), msg] } };
+    });
   }, []);
 
-  const abortDistill = useCallback(async () => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    // 显式请求后端取消：已完成的片段/轮次保留，后续不再启动新的 LLM 调用
-    const workId = selectedWorkRef.current;
-    if (workId != null) {
+  /** 更新某本书蒸馏任务的字段（不存在则忽略） */
+  const patchJob = useCallback(
+    (workId: number, patch: Partial<Omit<DistillJob, "workId" | "controller">>) => {
+      setJobs((prev) => {
+        const job = prev[workId];
+        if (!job) return prev;
+        return { ...prev, [workId]: { ...job, ...patch } };
+      });
+    },
+    [],
+  );
+
+  /** 移除某本书的蒸馏任务（正常结束后清掉本地状态） */
+  const removeJob = useCallback((workId: number) => {
+    setJobs((prev) => {
+      if (!(workId in prev)) return prev;
+      const next = { ...prev };
+      delete next[workId];
+      return next;
+    });
+  }, []);
+
+  const stopRecoveryPoll = useCallback((workId: number) => {
+    const t = recoveryTimersRef.current[workId];
+    if (t) {
+      clearInterval(t);
+      delete recoveryTimersRef.current[workId];
+    }
+  }, []);
+
+  /** 为某本"后端仍在蒸馏"的书创建恢复任务（无 SSE，轮询 /status 更新进度） */
+  const startRecoveryPoll = useCallback(
+    (workId: number) => {
+      if (jobsRef.current[workId]) return; // 已有任务（如用户已手动重启），不重复
+      stopRecoveryPoll(workId);
+      setJobs((prev) =>
+        prev[workId]
+          ? prev
+          : {
+              ...prev,
+              [workId]: {
+                workId,
+                status: "running",
+                controller: new AbortController(),
+                log: ["任务在后台继续蒸馏中，已恢复进度显示..."],
+                progress: null,
+                liveChunks: {},
+                recovered: true,
+              },
+            },
+      );
+
+      const poll = async () => {
+        const job = jobsRef.current[workId];
+        if (!job?.recovered) return; // 任务已被移除 / 用户已手动重启，停止轮询
+        try {
+          const p = await fetchJson<DistillProgress>(`/api/distillation/status/${workId}`);
+          if (!jobsRef.current[workId]?.recovered) return;
+          const progress =
+            p.total_rounds > 0
+              ? { done: p.done_rounds, total: p.total_rounds }
+              : { done: p.done_chunks, total: p.total_chunks };
+          patchJob(workId, { progress });
+          if (p.status !== "distilling") {
+            // 后台任务已结束（完成/部分完成/失败/取消）
+            stopRecoveryPoll(workId);
+            removeJob(workId);
+            void load();
+          }
+        } catch {
+          /* 网络抖动等，忽略，下轮重试 */
+        }
+      };
+
+      void poll();
+      recoveryTimersRef.current[workId] = setInterval(() => void poll(), 5000);
+    },
+    [stopRecoveryPoll, patchJob, removeJob, load],
+  );
+
+  // 每次加载完作品列表后，为"仍在蒸馏"的书自动恢复进度显示（切页回来也能看到实时进度）
+  useEffect(() => {
+    if (loading) return;
+    for (const w of works) {
+      if (w.status === "distilling") {
+        startRecoveryPoll(w.id);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [works, loading, startRecoveryPoll]);
+
+  /** 更新某本书某个片段的实时状态（在 setJobs 更新器内基于最新快照计算，避免闭包过期） */
+  const patchLiveChunk = useCallback(
+    (workId: number, ci: number, updater: (cur: LiveChunkState) => LiveChunkState) => {
+      setJobs((prev) => {
+        const job = prev[workId];
+        if (!job) return prev;
+        const cur = job.liveChunks[ci] ?? { status: "pending", currentRound: 0, rounds: {} };
+        return { ...prev, [workId]: { ...job, liveChunks: { ...job.liveChunks, [ci]: updater(cur) } } };
+      });
+    },
+    [],
+  );
+
+  /** 某本书完成一轮：进度 +1（同样基于最新快照） */
+  const bumpJobProgress = useCallback((workId: number) => {
+    setJobs((prev) => {
+      const job = prev[workId];
+      if (!job || !job.progress) return prev;
+      return {
+        ...prev,
+        [workId]: {
+          ...job,
+          progress: { ...job.progress, done: Math.min(job.progress.done + 1, job.progress.total) },
+        },
+      };
+    });
+  }, []);
+
+  /** 停止某本书的蒸馏：断开 SSE + 显式请求后端取消（已完成部分保留） */
+  const abortDistill = useCallback(
+    async (workId: number) => {
+      const job = jobsRef.current[workId];
+      if (!job) return;
+      if (job.status === "queued") {
+        // 只是前端本地排队（尚未发起 SSE）：移除队列即可，无需请求后端
+        pendingQueueRef.current = pendingQueueRef.current.filter((x) => x !== workId);
+        removeJob(workId);
+        showSuccess("已取消排队");
+        return;
+      }
+      job.controller.abort();
       try {
         await fetchJson<{ cancelled: boolean }>(
           `/api/distillation/works/${workId}/cancel`,
@@ -532,18 +732,16 @@ export default function DistillationPage() {
       } catch (e) {
         showError(errorMessage(e, "中断请求失败"));
       }
-    }
-    setDistilling(false);
-  }, [showSuccess, showError]);
+      // 注意：不在这里 removeJob / pumpQueue——SSE 被 abort 后 launchDistill 的
+      // finally 会统一收尾（减活跃数、删 job、补位启动排队的下一本）
+    },
+    [removeJob, showSuccess, showError],
+  );
 
   const handleSelectWork = (id: number) => {
     if (id === selectedWorkId) return;
-    // 切换作品：只断开当前 SSE 流，不取消后台蒸馏任务（任务继续跑，切回可看进度）
-    abortRef.current?.abort();
-    abortRef.current = null;
+    // 切换作品：只切换查看视角，不中断任何蒸馏任务（各书任务独立继续跑）
     setSelectedWorkId(id);
-    setLiveLog([]);
-    setLiveProgress(null);
   };
 
   // ------------------------------------------------------------------
@@ -617,9 +815,11 @@ export default function DistillationPage() {
   // 蒸馏（SSE）
   // ------------------------------------------------------------------
 
-  const handleStartDistill = async (retryFailed = false) => {
-    if (selectedWorkId == null || distilling) return;
-    if (chunks.length === 0) {
+  /** 真正启动某本书的 SSE 蒸馏（创建 running job，占用一个并发位） */
+  const launchDistill = async (workId: number, retryFailed = false) => {
+    if (workId == null || jobsRef.current[workId]?.status === "running") return;
+    const work = works.find((w) => w.id === workId);
+    if (!work || work.chunk_count === 0) {
       showError("该作品没有可蒸馏的片段");
       return;
     }
@@ -627,23 +827,24 @@ export default function DistillationPage() {
       showError("请至少勾选一个蒸馏维度");
       return;
     }
-    const workId = selectedWorkId;
-    abortRef.current?.abort();
+    activeJobsRef.current += 1;
     const controller = new AbortController();
-    abortRef.current = controller;
-
-    setDistilling(true);
-    setLiveLog([]);
-    setLiveProgress({ done: 0, total: chunks.length * distillDims.length });
-    setLiveChunks((prev) => {
-      const next: Record<number, LiveChunkState> = {};
-      for (const k of Object.keys(prev)) next[Number(k)] = { status: "pending", currentRound: 0, rounds: {} };
-      return next;
-    });
+    const total = work.chunk_count * distillDims.length;
+    setJobs((prev) => ({
+      ...prev,
+      [workId]: {
+        workId,
+        status: "running",
+        controller,
+        log: [],
+        progress: { done: 0, total },
+        liveChunks: {},
+      },
+    }));
     setWorks((prev) => prev.map((w) => (w.id === workId ? { ...w, status: "distilling" } : w)));
-    appendLog(retryFailed
+    appendLog(workId, retryFailed
       ? `补蒸馏：仅重跑失败的片段/轮次（模型：${modelConfigLabel(modelConfig, modelProviders)}）`
-      : `开始蒸馏：${chunks.length} 个片段 × ${distillDims.length} 个维度${distillLevels > 1 ? `，${distillLevels} 级蒸馏（含浓缩提炼）` : ""}（模型：${modelConfigLabel(modelConfig, modelProviders)}）`);
+      : `开始蒸馏：${work.chunk_count} 个片段 × ${distillDims.length} 个维度${distillLevels > 1 ? `，${distillLevels} 级蒸馏（含浓缩提炼）` : ""}（模型：${modelConfigLabel(modelConfig, modelProviders)}）`);
 
     /** 蒸馏过程中轻量刷新 Skill 列表（全局 + 当前作品） */
     const refreshSkills = async () => {
@@ -664,91 +865,188 @@ export default function DistillationPage() {
         const ci = Number(evt.chunk_index ?? 0);
         const rn = Number(evt.round_num ?? 0);
         switch (evt.type) {
+          case "queued":
+            patchJob(workId, { status: "queued" });
+            appendLog(workId, `后端排队中${evt.waiting ? `（前面还有 ${evt.waiting} 本）` : ""}...`);
+            break;
           case "chunk_start":
-            setLiveChunks((prev) => ({ ...prev, [ci]: { status: "distilling", currentRound: 0, rounds: {} } }));
-            appendLog(`片段 ${ci + 1} 开始蒸馏（${formatChars(Number(evt.char_count ?? 0))}）`);
+            patchJob(workId, { status: "running" });
+            patchLiveChunk(workId, ci, () => ({ status: "distilling", currentRound: 0, rounds: {} }));
+            appendLog(workId, `片段 ${ci + 1} 开始蒸馏（${formatChars(Number(evt.char_count ?? 0))}）`);
             break;
           case "round_start":
-            setLiveChunks((prev) => {
-              const cur = prev[ci] ?? { status: "distilling", currentRound: 0, rounds: {} };
-              return {
-                ...prev,
-                [ci]: { ...cur, currentRound: rn, dimension: evt.dimension, rounds: { ...cur.rounds, [rn]: "running" } },
-              };
-            });
-            appendLog(`片段 ${ci + 1} · 第 ${rn} 轮（${evt.dimension || "综合特征"}）蒸馏中...`);
+            patchJob(workId, { status: "running" });
+            patchLiveChunk(workId, ci, (cur) => ({
+              ...cur,
+              status: "distilling",
+              currentRound: rn,
+              dimension: evt.dimension,
+              rounds: { ...cur.rounds, [rn]: "running" },
+            }));
+            appendLog(workId, `片段 ${ci + 1} · 第 ${rn} 轮（${evt.dimension || "综合特征"}）蒸馏中...`);
             break;
           case "round_done":
-            setLiveChunks((prev) => {
-              const cur = prev[ci];
-              if (!cur) return prev;
-              return { ...prev, [ci]: { ...cur, rounds: { ...cur.rounds, [rn]: "done" } } };
-            });
-            setLiveProgress((p) => (p ? { ...p, done: Math.min(p.done + 1, p.total) } : p));
+            patchLiveChunk(workId, ci, (cur) => ({
+              ...cur,
+              rounds: { ...cur.rounds, [rn]: "done" },
+            }));
+            bumpJobProgress(workId);
             break;
           case "round_failed":
-            setLiveChunks((prev) => {
-              const cur = prev[ci];
-              if (!cur) return prev;
-              return { ...prev, [ci]: { ...cur, rounds: { ...cur.rounds, [rn]: "failed" } } };
-            });
-            setLiveProgress((p) => (p ? { ...p, done: Math.min(p.done + 1, p.total) } : p));
-            appendLog(`片段 ${ci + 1} · 第 ${rn} 轮失败：${evt.error || "未知错误"}`);
+            patchLiveChunk(workId, ci, (cur) => ({
+              ...cur,
+              rounds: { ...cur.rounds, [rn]: "failed" },
+            }));
+            bumpJobProgress(workId);
+            appendLog(workId, `片段 ${ci + 1} · 第 ${rn} 轮失败：${evt.error || "未知错误"}`);
             break;
           case "skill_created":
             setProgress((p) => (p ? { ...p, skills_count: p.skills_count + 1 } : p));
-            appendLog(`生成 Skill：${evt.skill_name}（片段 ${ci + 1} · 维度 ${rn}）`);
+            appendLog(workId, `生成 Skill：${evt.skill_name}（片段 ${ci + 1} · 维度 ${rn}）`);
             void refreshSkills();
             break;
           case "chunk_done":
-            setLiveChunks((prev) => {
-              const cur = prev[ci] ?? { status: "pending", currentRound: 0, rounds: {} };
-              return { ...prev, [ci]: { ...cur, status: evt.status || "done", currentRound: 0 } };
-            });
-            appendLog(`片段 ${ci + 1} 蒸馏${evt.status === "done" ? "完成" : "失败（存在失败轮次）"}`);
+            patchLiveChunk(workId, ci, (cur) => ({
+              ...cur,
+              status: evt.status || "done",
+              currentRound: 0,
+            }));
+            appendLog(workId, `片段 ${ci + 1} 蒸馏${evt.status === "done" ? "完成" : "失败（存在失败轮次）"}`);
             break;
           case "work_done": {
             const st = workStatusOf(evt.status || "done");
-            appendLog(`蒸馏结束：${st.label}，累计生成 ${evt.skills_count ?? 0} 个 Skill`);
+            appendLog(workId, `蒸馏结束：${st.label}，累计生成 ${evt.skills_count ?? 0} 个 Skill`);
             break;
           }
           // 多级蒸馏：浓缩提炼事件
           case "condense_start":
-            appendLog(`第 ${evt.level} 级蒸馏（浓缩提炼）开始，来源 ${evt.source_count ?? 0} 个 Skill...`);
+            appendLog(workId, `第 ${evt.level} 级蒸馏（浓缩提炼）开始，来源 ${evt.source_count ?? 0} 个 Skill...`);
             break;
           case "condense_batch_start":
-            appendLog(`第 ${evt.level} 级浓缩 · 批次 ${evt.batch}/${evt.total} 提炼中...`);
+            appendLog(workId, `第 ${evt.level} 级浓缩 · 批次 ${evt.batch}/${evt.total} 提炼中...`);
             break;
           case "condense_batch_done":
             break;
           case "condense_done":
-            appendLog(`第 ${evt.level} 级浓缩完成：${evt.skill_name ?? ""}（${evt.name ?? ""}）`);
+            appendLog(workId, `第 ${evt.level} 级浓缩完成：${evt.skill_name ?? ""}（${evt.name ?? ""}）`);
             setProgress((p) => (p ? { ...p, skills_count: p.skills_count + 1 } : p));
             void refreshSkills();
             break;
           case "condense_failed":
-            appendLog(`第 ${evt.level} 级浓缩失败`);
+            appendLog(workId, `第 ${evt.level} 级浓缩失败`);
             break;
           case "error":
-            appendLog(`蒸馏错误：${evt.error || "未知错误"}`);
+            appendLog(workId, `蒸馏错误：${evt.error || "未知错误"}`);
             showError(evt.error || "蒸馏失败");
             break;
         }
       }, retryFailed);
     } catch (e) {
       if ((e as Error)?.name === "AbortError") {
-        appendLog("已手动停止蒸馏");
+        appendLog(workId, "已手动停止蒸馏");
       } else {
         showError(errorMessage(e, "蒸馏连接中断"));
-        appendLog(`连接中断：${errorMessage(e, "未知错误")}`);
+        appendLog(workId, `连接中断：${errorMessage(e, "未知错误")}`);
       }
     } finally {
-      setDistilling(false);
-      abortRef.current = null;
+      // 统一收尾：释放并发位 → 删本地 job → 补位启动排队的下一本
+      activeJobsRef.current = Math.max(0, activeJobsRef.current - 1);
+      removeJob(workId);
+      void pumpQueue();
       // 结束后全量刷新，确保与后端 DB 状态一致
       await load();
       if (selectedWorkRef.current === workId) await loadWorkDetail(workId);
     }
+  };
+
+  /** 本地排队补位：以"后端真实在跑数"判断空位，自动启动排队中的下一本。
+   *  同样以后端 works 为准，避免重载/切页后本地计数丢失导致超并发。
+   *  补位条件必须是「在跑数 < 上限」就启动下一本——不能写成
+   *  「在跑数 + 排队数 < 上限」：那在排队数超过空位数时永远不成立，
+   *  排队任务永远不被启动（越积越多，之后点什么都显示排队中）。 */
+  const pumpQueue = async () => {
+    let backendRunning = worksRef.current.filter((w) => w.status === "distilling").length;
+    try {
+      const ws = await fetchJson<{ works: DistillWork[] }>("/api/distillation/works");
+      setWorks(ws.works || []);
+      backendRunning = (ws.works || []).filter((w) => w.status === "distilling").length;
+    } catch {
+      // 拉取失败沿用当前 works
+    }
+    while (
+      backendRunning < MAX_CONCURRENT_DISTILL &&
+      pendingQueueRef.current.length > 0
+    ) {
+      const next = pendingQueueRef.current.shift()!;
+      if (jobsRef.current[next]?.status === "running") continue; // 已在跑（理论不会，防御性跳过）
+      backendRunning += 1; // 预占一个并发位，保证同一轮只补到上限
+      void launchDistill(next, false);
+    }
+  };
+
+  // 排队任务自动补位：后端任务结束/被取消可能发生在前端之外（如 API 取消、
+  // 切页后任务结束），前端收不到任务结束事件就不会触发 pumpQueue。
+  // 定时检查保证只要有空位，排队中的书会自动启动，不会一直卡在排队。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (pendingQueueRef.current.length > 0) void pumpQueue();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [pumpQueue]);
+
+  /** 提交某本书开始蒸馏：并发未满直接启动；满了本地排队（显示排队中，等空位自动启动）。
+   *  并发判断以后端真实状态（/works 里 distilling 的数量）为准——页面重载/切页后本地计数会丢失，
+   *  若只用本地计数会把"后端仍在跑"的任务漏算，导致超并发叠加（并发 3 却 6 本同时跑）。 */
+  const handleStartDistill = async (workId: number, retryFailed = false) => {
+    if (workId == null) return;
+    if (jobsRef.current[workId]?.status === "running") {
+      showError("这本书正在蒸馏中，请先停止再重新开始");
+      return;
+    }
+    if (jobsRef.current[workId]?.status === "queued") {
+      // 排队中的书再次点击 = 取消排队并重新判断并发（避免"点了没反应"）
+      pendingQueueRef.current = pendingQueueRef.current.filter((x) => x !== workId);
+      removeJob(workId);
+      appendLog(workId, "已取消排队，重新判断并发...");
+    }
+    const work = works.find((w) => w.id === workId);
+    if (!work || work.chunk_count === 0) {
+      showError("该作品没有可蒸馏的片段");
+      return;
+    }
+    if (distillDims.length === 0) {
+      showError("请至少勾选一个蒸馏维度");
+      return;
+    }
+    // 拉取最新 works，以后端真实在跑数作为并发依据（失败则沿用当前 works）
+    let backendRunning = worksRef.current.filter((w) => w.status === "distilling").length;
+    try {
+      const ws = await fetchJson<{ works: DistillWork[] }>("/api/distillation/works");
+      setWorks(ws.works || []);
+      backendRunning = (ws.works || []).filter((w) => w.status === "distilling").length;
+    } catch {
+      // 拉取失败沿用当前 works
+    }
+    if (backendRunning + pendingQueueRef.current.length >= MAX_CONCURRENT_DISTILL) {
+      // 并发已满 → 本地排队（不发起 SSE，避免浏览器并发连接过多导致卡顿、状态失真）
+      setJobs((prev) => ({
+        ...prev,
+        [workId]: {
+          workId,
+          status: "queued",
+          controller: new AbortController(),
+          log: [],
+          progress: null,
+          liveChunks: {},
+        },
+      }));
+      // 注意：不改本地 works 状态为 distilling——排队不是真在跑，改了会污染
+      // worksRef 里的并发计数（拉取失败时误算）并误触发恢复轮询
+      pendingQueueRef.current.push(workId);
+      appendLog(workId, `并发已满（同时最多 ${MAX_CONCURRENT_DISTILL} 本），排队中，等前面的书蒸馏完自动开始...`);
+      return;
+    }
+    void launchDistill(workId, retryFailed);
   };
 
   // ------------------------------------------------------------------
@@ -776,8 +1074,19 @@ export default function DistillationPage() {
       onConfirm: async () => {
         await fetchJson(`/api/distillation/works/${w.id}`, { method: "DELETE" });
         showSuccess("作品已删除");
+        // 清理该书的本地任务（蒸馏中 / 排队中）
+        const job = jobsRef.current[w.id];
+        if (job) {
+          if (job.status === "queued") {
+            // 前端本地排队：只移出队列即可
+            pendingQueueRef.current = pendingQueueRef.current.filter((x) => x !== w.id);
+          } else {
+            job.controller.abort();
+            void fetchJson(`/api/distillation/works/${w.id}/cancel`, { method: "POST" }).catch(() => {});
+          }
+          removeJob(w.id);
+        }
         if (selectedWorkRef.current === w.id) {
-          abortDistill();
           setSelectedWorkId(null);
           setChunks([]);
           setWorkSkills([]);
@@ -873,6 +1182,8 @@ export default function DistillationPage() {
   // ------------------------------------------------------------------
 
   const fusionCount = Object.keys(fusionSelected).length;
+  /** 当前作品里已勾选加入融合的 Skill 数 */
+  const selectedInBook = workSkills.filter((s) => s.id in fusionSelected).length;
 
   const toggleFusionSkill = (id: number) => {
     setFusionSelected((prev) => {
@@ -1234,6 +1545,7 @@ export default function DistillationPage() {
         <div className="space-y-2">
           {works.map((w) => {
             const st = workStatusOf(w.status);
+            const job = jobs[w.id];
             return (
               <div
                 key={w.id}
@@ -1253,7 +1565,40 @@ export default function DistillationPage() {
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-sm font-medium">{w.title}</span>
                   <div className="flex shrink-0 items-center gap-1">
-                    <Badge variant={st.variant}>{st.label}</Badge>
+                    {job?.status === "queued" ? (
+                      <Badge variant="warning">排队中</Badge>
+                    ) : (
+                      <Badge variant={st.variant}>{st.label}</Badge>
+                    )}
+                    {job ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 px-0 text-danger hover:bg-danger-muted"
+                        aria-label={`停止蒸馏 ${w.title}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void abortDistill(w.id);
+                        }}
+                      >
+                        <Square className="h-3.5 w-3.5" />
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 px-0"
+                        aria-label={`开始蒸馏 ${w.title}`}
+                        title={`开始蒸馏这本书（可多本同时蒸馏，最多 ${MAX_CONCURRENT_DISTILL} 本并发，其余排队）`}
+                        disabled={w.chunk_count === 0 || distillDims.length === 0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStartDistill(w.id);
+                        }}
+                      >
+                        <Play className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1271,6 +1616,25 @@ export default function DistillationPage() {
                 <p className="mt-1 text-xs text-muted tabular-nums">
                   {formatChars(w.total_chars)} · {w.chunk_count} 个片段 · {formatDate(w.created_at)}
                 </p>
+                {job && (
+                  <div className="mt-2 space-y-1">
+                    <Progress
+                      value={
+                        job.progress && job.progress.total > 0
+                          ? Math.round((job.progress.done / job.progress.total) * 100)
+                          : 0
+                      }
+                      className="h-1.5"
+                    />
+                    <div className="text-right text-xs text-muted tabular-nums">
+                      {job.status === "queued"
+                        ? `排队中（并发满 ${MAX_CONCURRENT_DISTILL} 本）...`
+                        : job.progress
+                          ? `${job.progress.done}/${job.progress.total} 轮`
+                          : ""}
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1281,8 +1645,8 @@ export default function DistillationPage() {
 
   // 右侧：作品详情（蒸馏进度 + Skill 列表）
   const overallPercent = (() => {
-    if (distilling && liveProgress && liveProgress.total > 0) {
-      return Math.round((liveProgress.done / liveProgress.total) * 100);
+    if (selectedJob?.progress && selectedJob.progress.total > 0) {
+      return Math.round((selectedJob.progress.done / selectedJob.progress.total) * 100);
     }
     if (progress && progress.total_rounds > 0) {
       return Math.round((progress.done_rounds / progress.total_rounds) * 100);
@@ -1293,7 +1657,9 @@ export default function DistillationPage() {
     return 0;
   })();
 
-  const activeChunkEntry = Object.entries(liveChunks).find(([, v]) => v.status === "distilling");
+  const activeChunkEntry = Object.entries(selectedJob?.liveChunks ?? {}).find(
+    ([, v]) => v.status === "distilling",
+  );
 
   const detailPanel = (
     <Card className="flex min-h-[420px] flex-col p-5">
@@ -1333,7 +1699,7 @@ export default function DistillationPage() {
                     key={lv}
                     type="button"
                     onClick={() => setDistillLevels(lv)}
-                    disabled={distilling}
+                    disabled={!!selectedJob}
                     className={cn(
                       "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
                       distillLevels === lv
@@ -1349,7 +1715,7 @@ export default function DistillationPage() {
                 variant="outline"
                 size="sm"
                 onClick={() => setDimsDialogOpen(true)}
-                disabled={distilling}
+                disabled={!!selectedJob}
                 title="选择要蒸馏的维度，默认分析全部"
               >
                 <Layers className="h-4 w-4" />
@@ -1359,16 +1725,16 @@ export default function DistillationPage() {
                 variant="outline"
                 size="sm"
                 onClick={() => setModelSettingsOpen(true)}
-                disabled={distilling}
+                disabled={!!selectedJob}
                 title="蒸馏使用的模型，默认跟随全局配置（config.yaml）"
               >
                 <Settings2 className="h-4 w-4" />
                 模型：{modelConfigLabel(modelConfig, modelProviders)}
               </Button>
-              {distilling ? (
-                <Button variant="danger" size="sm" onClick={abortDistill}>
+              {selectedJob ? (
+                <Button variant="danger" size="sm" onClick={() => void abortDistill(selectedWork.id)}>
                   <Square className="h-4 w-4" />
-                  停止蒸馏
+                  {selectedJob.status === "queued" ? "取消排队" : "停止蒸馏"}
                 </Button>
               ) : (
                 <>
@@ -1379,7 +1745,7 @@ export default function DistillationPage() {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => void handleStartDistill(true)}
+                        onClick={() => void handleStartDistill(selectedWork.id, true)}
                         disabled={chunks.length === 0}
                         title="只重跑失败的片段/轮次，不重复已成功的部分"
                       >
@@ -1387,7 +1753,7 @@ export default function DistillationPage() {
                         补蒸馏（重试失败）
                       </Button>
                     )}
-                  <Button variant="primary" size="sm" onClick={() => void handleStartDistill()} disabled={chunks.length === 0}>
+                  <Button variant="primary" size="sm" onClick={() => void handleStartDistill(selectedWork.id)} disabled={chunks.length === 0}>
                     <Play className="h-4 w-4" />
                     开始蒸馏
                   </Button>
@@ -1411,14 +1777,19 @@ export default function DistillationPage() {
               <span className="flex items-center gap-1.5 text-muted">
                 <Layers className="h-3.5 w-3.5" />
                 整体进度
-                {distilling && activeChunkEntry && (
-                  <span className="text-primary">
-                    · 正在蒸馏片段 {Number(activeChunkEntry[0]) + 1}
-                    {activeChunkEntry[1].currentRound > 0 &&
-                      ` · 第 ${activeChunkEntry[1].currentRound} 轮${
-                        activeChunkEntry[1].dimension ? `（${activeChunkEntry[1].dimension}）` : ""
-                      }`}
-                  </span>
+                {selectedJob?.status === "queued" ? (
+                  <span className="text-warning">· 排队中（同时最多 {MAX_CONCURRENT_DISTILL} 本，前面有任务在跑）</span>
+                ) : (
+                  selectedJob &&
+                  activeChunkEntry && (
+                    <span className="text-primary">
+                      · 正在蒸馏片段 {Number(activeChunkEntry[0]) + 1}
+                      {activeChunkEntry[1].currentRound > 0 &&
+                        ` · 第 ${activeChunkEntry[1].currentRound} 轮${
+                          activeChunkEntry[1].dimension ? `（${activeChunkEntry[1].dimension}）` : ""
+                        }`}
+                    </span>
+                  )
                 )}
               </span>
               <span className="tabular-nums text-muted">{overallPercent}%</span>
@@ -1439,7 +1810,7 @@ export default function DistillationPage() {
               ) : (
                 <div className="space-y-2">
                   {chunks.map((c) => {
-                    const live = liveChunks[c.chunk_index];
+                    const live = selectedJob?.liveChunks?.[c.chunk_index];
                     const status = live?.status ?? c.status;
                     const st = chunkStatusOf(status);
                     const finishedRounds = Object.values(live?.rounds ?? {}).filter(
@@ -1491,12 +1862,12 @@ export default function DistillationPage() {
                   })}
                 </div>
               )}
-              {liveLog.length > 0 && (
+              {(selectedJob?.log.length ?? 0) > 0 && (
                 <div
                   ref={logRef}
                   className="max-h-40 overflow-y-auto rounded-lg border border-border bg-background p-3 font-mono text-xs text-muted"
                 >
-                  {liveLog.map((line, i) => (
+                  {selectedJob?.log.map((line, i) => (
                     <div key={i}>{line}</div>
                   ))}
                 </div>
@@ -1511,8 +1882,27 @@ export default function DistillationPage() {
                 </p>
               ) : (
                 <div className="space-y-2">
-                  {workSkills.map((s) => (
-                    <div key={s.id} className="rounded-lg border border-border bg-surface p-3">
+                  {/* 顶部：选入融合提示 + 全选本书（可取消，不会反复点击累加） */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-surface-elevated px-3 py-2">
+                    <span className="text-xs text-muted">勾选要融合的 Skill，选好后到下方「技能融合」点创建</span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <Badge variant={selectedInBook > 0 ? "primary" : "default"}>{selectedInBook}/{workSkills.length} 已选</Badge>
+                      <Button variant="outline" size="sm" onClick={() => toggleSelectBook(workSkills)}>
+                        <CheckSquare className="h-3.5 w-3.5 mr-1" />
+                        {selectedInBook === workSkills.length && workSkills.length > 0 ? "取消全选" : "全选本书"}
+                      </Button>
+                    </span>
+                  </div>
+                  {workSkills.map((s) => {
+                    const selected = s.id in fusionSelected;
+                    return (
+                    <div
+                      key={s.id}
+                      className={cn(
+                        "rounded-lg border p-3 transition-colors",
+                        selected ? "border-primary bg-primary-muted" : "border-border bg-surface",
+                      )}
+                    >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
@@ -1538,6 +1928,16 @@ export default function DistillationPage() {
                           )}
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
+                          <Button
+                            variant={selected ? "primary" : "outline"}
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => toggleFusionSkill(s.id)}
+                            title={selected ? "取消选入融合" : "选入融合"}
+                          >
+                            {selected ? <Check className="h-3.5 w-3.5 mr-1" /> : <Square className="h-3.5 w-3.5 mr-1" />}
+                            {selected ? "已选" : "选入融合"}
+                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -1584,7 +1984,8 @@ export default function DistillationPage() {
                         />
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </TabsContent>
@@ -1595,8 +1996,47 @@ export default function DistillationPage() {
   );
 
   // 技能融合
+  /** Skill 按书分组（书=目录）：融合时可按书一键选择，不混入其他书的 Skill */
+  const skillGroups = useMemo(() => {
+    const map = new Map<string, DistillSkill[]>();
+    for (const s of allSkills) {
+      const key = s.work_id > 0 ? `work:${s.work_id}` : "book-to-skill";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(s);
+    }
+    return Array.from(map.entries())
+      .map(([key, skills]) => ({
+        key,
+        label: key === "book-to-skill" ? "拆书导入" : `《${skills[0].work_title}》`,
+        skills,
+      }))
+      .sort((a, b) => (a.key === "book-to-skill" ? 1 : b.key === "book-to-skill" ? -1 : a.label.localeCompare(b.label, "zh")));
+  }, [allSkills]);
+
+  /**
+   * 全选 / 取消全选某本书（分组）的全部 Skill：
+   * - 组内已全部选中 → 清除本书（避免像旧版那样反复点击无脑累加）
+   * - 否则 → 加入本书全部（不影响其他书的已选）
+   */
+  const toggleSelectBook = useCallback((skills: DistillSkill[]) => {
+    setFusionSelected((prev) => {
+      const ids = new Set(skills.map((s) => s.id));
+      const allSelected = skills.every((s) => s.id in prev);
+      const next = { ...prev };
+      if (allSelected) {
+        for (const id of ids) delete next[id];
+      } else {
+        for (const id of ids) next[id] = 1;
+      }
+      return next;
+    });
+  }, []);
+
+  /** 融合面板滚动锚点 */
+  const fusionRef = useRef<HTMLDivElement | null>(null);
+
   const fusionPanel = (
-    <Card className="space-y-3 p-4">
+    <Card ref={fusionRef} className="scroll-mt-4 space-y-3 p-4">
       <div className="flex items-center gap-2">
         <div className="rounded-lg border border-border bg-primary-muted p-1.5 text-primary">
           <GitMerge className="h-4 w-4" />
@@ -1610,55 +2050,80 @@ export default function DistillationPage() {
         <p className="py-4 text-center text-xs text-muted">暂无可融合 Skill，请先导入作品并蒸馏，或在 Skills 页拆书导入</p>
       ) : (
         <>
-          <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
-            {allSkills.map((s) => {
-              const selected = s.id in fusionSelected;
-              const isBookSkill = s.source === "book-to-skill";
+          <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+            {skillGroups.map((g) => {
+              const groupSelected = g.skills.filter((s) => s.id in fusionSelected).length;
               return (
-                <div
-                  key={`${s.id}-${s.name}`}
-                  className={cn(
-                    "flex items-center gap-2 rounded-lg border px-3 py-2 text-xs",
-                    selected ? "border-primary bg-primary-muted" : "border-border bg-surface",
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => toggleFusionSkill(s.id)}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                    aria-pressed={selected}
-                  >
-                    <span
-                      className={cn(
-                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
-                        selected ? "border-primary bg-primary text-primary-foreground" : "border-border-strong",
-                      )}
-                    >
-                      {selected && <Check className="h-3 w-3" />}
+                <div key={g.key} className="overflow-hidden rounded-lg border border-border">
+                  {/* 书分组头 + 全选本书 */}
+                  <div className="flex items-center justify-between gap-2 bg-surface-elevated px-2.5 py-1.5">
+                    <span className="truncate text-xs font-medium text-muted">{g.label}</span>
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      <Badge variant="default">{groupSelected}/{g.skills.length}</Badge>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-1.5 text-xs"
+                        onClick={() => toggleSelectBook(g.skills)}
+                        title={`全选/取消全选${g.label}的全部 ${g.skills.length} 个 Skill`}
+                      >
+                        {groupSelected === g.skills.length ? "取消全选" : "全选本书"}
+                      </Button>
                     </span>
-                    <span className="truncate font-mono">{s.name}</span>
-                    {isBookSkill ? (
-                      <Badge variant="primary" className="shrink-0">拆书</Badge>
-                    ) : (
-                      <span className="shrink-0 text-muted">
-                        《{s.work_title}》{skillSourceLabel(s.chunk_index, s.round_num)}
-                      </span>
-                    )}
-                  </button>
-                  {selected && (
-                    <span className="flex shrink-0 items-center gap-1">
-                      <span className="text-muted">权重</span>
-                      <Input
-                        type="number"
-                        min={0}
-                        step={0.5}
-                        className="h-7 w-16 px-2 text-xs"
-                        value={fusionSelected[s.id]}
-                        onChange={(e) => setFusionWeight(s.id, e.target.value)}
-                        aria-label={`Skill ${s.name} 的融合权重`}
-                      />
-                    </span>
-                  )}
+                  </div>
+                  <div className="space-y-1.5 p-1.5">
+                    {g.skills.map((s) => {
+                      const selected = s.id in fusionSelected;
+                      const isBookSkill = s.source === "book-to-skill";
+                      return (
+                        <div
+                          key={`${s.id}-${s.name}`}
+                          className={cn(
+                            "flex items-center gap-2 rounded-lg border px-3 py-2 text-xs",
+                            selected ? "border-primary bg-primary-muted" : "border-border bg-surface",
+                          )}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleFusionSkill(s.id)}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                            aria-pressed={selected}
+                          >
+                            <span
+                              className={cn(
+                                "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                                selected ? "border-primary bg-primary text-primary-foreground" : "border-border-strong",
+                              )}
+                            >
+                              {selected && <Check className="h-3 w-3" />}
+                            </span>
+                            <span className="truncate font-mono">{s.name}</span>
+                            {isBookSkill ? (
+                              <Badge variant="primary" className="shrink-0">拆书</Badge>
+                            ) : (
+                              <span className="shrink-0 text-muted">
+                                {skillSourceLabel(s.chunk_index, s.round_num)}
+                              </span>
+                            )}
+                          </button>
+                          {selected && (
+                            <span className="flex shrink-0 items-center gap-1">
+                              <span className="text-muted">权重</span>
+                              <Input
+                                type="number"
+                                min={0}
+                                step={0.5}
+                                className="h-7 w-16 px-2 text-xs"
+                                value={fusionSelected[s.id]}
+                                onChange={(e) => setFusionWeight(s.id, e.target.value)}
+                                aria-label={`Skill ${s.name} 的融合权重`}
+                              />
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               );
             })}
@@ -1689,8 +2154,8 @@ export default function DistillationPage() {
               {fusing ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
               {fusing ? "提炼融合中..." : `创建融合方案${fusionCount > 0 ? `（已选 ${fusionCount}）` : ""}`}
             </Button>
-            <Button variant="outline" size="sm" onClick={handleNineInOne}>
-              Skill融合（全选）
+            <Button variant="outline" size="sm" onClick={handleNineInOne} title="跨书选择所有 Skill（含拆书导入），多书混合融合">
+              全选全部（跨书）
             </Button>
           </div>
           {fusing && (

@@ -44,16 +44,17 @@ export function AppearanceManager({ projectId, entityType, entityId }: Appearanc
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
+    // silent=true：静默刷新（保存/删除后用），不切 loading 保持容器常驻不跳顶
     if (!projectId) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const data = await api.listEntityAppearances(projectId, { entity_type: entityType, entity_id: entityId });
       setItems(data);
     } catch (e: any) {
       showError("加载出场记录失败：" + e.message);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [projectId, entityType, entityId, showError]);
 
@@ -107,7 +108,7 @@ export function AppearanceManager({ projectId, entityType, entityId }: Appearanc
       }
       cancelForm();
       bumpDataVersion("bible");
-      await load();
+      await load(true);
     } catch (e: any) {
       showError("保存失败：" + e.message);
     } finally {
@@ -121,7 +122,7 @@ export function AppearanceManager({ projectId, entityType, entityId }: Appearanc
       await api.deleteEntityAppearance(projectId, a.id);
       showSuccess("出场记录已删除");
       bumpDataVersion("bible");
-      await load();
+      await load(true);
     } catch (e: any) {
       showError("删除失败：" + e.message);
     }

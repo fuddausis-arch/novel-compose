@@ -73,10 +73,17 @@ def build_outline_text(repo) -> str:
     except Exception:
         pass
 
-    text = "\n".join(parts)
-    # 截断防超长（约 12000 字）
-    if len(text) > 12000:
-        text = text[:12000] + "\n...（已截断）"
+    # 总量保护：按条目完整追加，超限时停止追加（整块跳过，不做硬切——
+    # 12000 字硬切会把后面的卷/弧"半截"丢掉，故事线识别就看不到后段剧情）
+    text_parts: list[str] = []
+    total = 0
+    _MAX = 12000
+    for p in parts:
+        if total + len(p) + 1 > _MAX:
+            break
+        text_parts.append(p)
+        total += len(p) + 1
+    text = "\n".join(text_parts)
     return text or "（项目暂无大纲数据）"
 
 

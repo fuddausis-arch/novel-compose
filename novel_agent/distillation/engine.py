@@ -55,6 +55,42 @@ ROUND_DIMENSIONS: dict[int, tuple[str, str]] = {
     13: ("节奏与句长指纹", "句长分布（短/中/长句占比）、对话占比、段落长短变化度——检测器第一信号（burstiness）的源头指纹"),
     14: ("禁词与套路词表", "原书回避的 AI 高频词与套路句式（如'不禁/仿佛/总而言之/不是…而是…'）——生成与检测共用同一份禁词表"),
     15: ("密度目标", "形容词密度、破折号密度、连接词密度、重复词密度的控制习惯——各检测器的词法统计信号"),
+    16: ("动作与打斗", "打斗段落节奏（起手→交锋→转折→收束）、动作描写粒度（招式/身体细节/环境交互）、力量感与压迫感表达、紧张感与胜负悬念营造"),
+    17: ("内心与心理", "内心独白风格（直接/隐喻/意识流）、情绪层次递进、内心冲突的构建方式（纠结/抉择/成长）、心理信息的投放节奏"),
+    18: ("环境与描写", "氛围营造手法（光线/声音/气味/温度）、感官细节运用、环境借景叙事（景随情变）、描写克制度（不堆砌/留白）"),
+    19: ("过渡与节奏", "场景间过渡方式（时间跳转/地点切换/情绪衔接/黑场）、场景衔接技巧、节奏换挡（紧张↔舒缓）、时间线/视角/空间连续性保持"),
+}
+
+# 蒸馏维度 → 适用 Agent（注入过滤用）。
+# 每个维度产出的 Skill 会打上 agent_roles 标签，生成流程按当前 agent_type 过滤注入，
+# 实现"每个 agent 只看自己负责维度的方法论"，避免全部维度全量注入撑爆上下文。
+DIMENSION_AGENTS: dict[int, list[str]] = {
+    1: ["novel-writer", "novel-single-writer", "novel-style-profiler", "novel-polisher", "novel-professional-polisher"],
+    2: ["novel-writer", "novel-single-writer", "novel-storyboard-integrator"],
+    3: ["novel-writer", "novel-single-writer", "novel-story-planner", "novel-outliner", "novel-volume-outliner"],
+    4: ["novel-story-planner"],
+    5: ["novel-director", "novel-outliner"],
+    6: ["novel-character-skeleton", "novel-character-belief", "novel-character-deep", "novel-character-maintainer"],
+    7: ["novel-palette-critic", "novel-writer", "novel-single-writer"],
+    8: ["novel-worldbuilder-corelaws", "novel-worldbuilder-spacetime", "novel-worldbuilder-society",
+        "novel-worldbuilder-historyculture", "novel-worldbuilder-existence", "novel-worldbuilder-information"],
+    9: ["novel-writer", "novel-single-writer", "novel-storyboard-integrator"],
+    10: ["novel-director", "novel-outliner"],
+    11: ["novel-dialogue-writer", "novel-character-voice"],
+    12: ["novel-character-maintainer"],
+    13: ["novel-writer", "novel-single-writer", "novel-storyboard-integrator", "novel-self-critic", "novel-polisher"],
+    14: ["novel-writer", "novel-single-writer", "novel-self-critic", "novel-polisher", "novel-professional-polisher"],
+    15: ["novel-writer", "novel-single-writer", "novel-storyboard-integrator", "novel-self-critic", "novel-polisher"],
+    16: ["novel-action-writer"],
+    17: ["novel-internal-writer"],
+    18: ["novel-description-writer"],
+    19: ["novel-transition-writer", "novel-storyboard-integrator"],
+}
+
+# 专属模板维度集：这些维度使用各自的结构化输出规格（产出 agent 可直接执行的结构化字段）
+_SPECIAL_SPEC_DIMS: dict[int, str] = {
+    8: "_WORLD", 9: "_SATISFACTION", 10: "_HOOK", 11: "_DIALOGUE",
+    16: "_ACTION", 17: "_INNER", 18: "_DESCRIPTION", 19: "_TRANSITION",
 }
 
 _DISTILL_SYSTEM = (
@@ -94,6 +130,32 @@ _CONDENSE_OUTPUT_SPEC = """【输出要求】
 数量要求：signature_moves 4-8 条，hard_rules ≤3 条，soft_guidelines 3-6 条，anti_patterns 2-4 条。
 禁止'单句不得超过X字'这类逐句硬限；数字只用于整体比例（如'长句占比≤30%'）或变化度（如'避免连续3句以上长度相近'）。"""
 
+# 三级浓缩（说明书）专用输出规格：在总纲基础上加"维度索引"，
+# 告诉模型本书有哪些维度的二级总纲、每个对应写作哪个环节、何时翻哪份——对应
+# 「三级=说明书、二级=规格、一级=素材库」分层：说明书导览二级，二级指引一级。
+_CONDENSE_INDEX_OUTPUT_SPEC = """【输出要求】
+只输出一个 JSON 对象（不要输出任何其他文字、不要用 markdown 围栏），格式：
+{
+  "name": "说明书名称（≤12字，如'全书风格说明书'）",
+  "description": "一句话概括本书整体风格与写法",
+  "dimension_index": [
+    {"dimension": "维度名（如'爽点设计'）", "writing_stage": "对应写作环节（如'写高潮章/打脸场景时'）", "how_to_use": "何时翻这份二级总纲、重点看什么（具体可操作）"}
+  ],
+  "signature_moves": [
+    {"pattern": "全书最核心的可复现写作手法（具体可操作）", "evidence": "原书例证（简短摘录）", "apply": "写作时如何落地", "exception": "何时可违背"}
+  ],
+  "hard_rules": ["极少数真正的红线（≤3条）"],
+  "soft_guidelines": [
+    {"rule": "倾向性规则", "why": "为什么这样写", "flexibility": "何时可适度违背"}
+  ],
+  "anti_patterns": ["禁止的写法（避免 AI 味/反例，必须 ≥6 条）", "..."],
+  "tags": ["2-5 个标签", "..."]
+}
+数量要求：dimension_index 必须覆盖输入中出现的每个维度（一个维度一条）；signature_moves 4-8 条；
+hard_rules ≤3 条；soft_guidelines 3-6 条；anti_patterns ≥6 条。
+禁止'单句不得超过X字'这类逐句硬限；数字只用于整体比例或变化度要求。
+dimension_index 的写作环节与用法必须基于各维度总纲的实际内容推断，禁止凭空编造。"""
+
 # 13-15 轮（人味统计指纹）专用输出规格：产出可量化指纹，供检测引擎/注入链路共用
 _SIGNATURE_OUTPUT_SPEC = """【输出要求】
 只输出一个 JSON 对象（不要输出任何其他文字、不要用 markdown 围栏），格式：
@@ -130,10 +192,86 @@ _JSON_OUTPUT_SPEC = """【输出要求】
   "soft_guidelines": [
     {"rule": "倾向性规则（可用整体比例如'长句占比≤30%'，或变化度要求如'避免连续3句以上长度相近'；禁止'单句不得超过X字'这类逐句硬限）", "why": "为什么这样写（原作的用意）", "flexibility": "何时可适度违背"}
   ],
-  "anti_patterns": ["禁止的写法（避免 AI 味/反例）", "..."],
+  "anti_patterns": ["禁止的写法（避免 AI 味/反例，必须 ≥6 条——最锐利的方法论藏在反例里，只列正面会产出肤浅结果）", "..."],
   "tags": ["标签", "..."]
 }
-数量要求：signature_moves 4-8 条，hard_rules ≤3 条，soft_guidelines 3-6 条，anti_patterns 2-4 条，tags 2-5 个。"""
+数量要求：signature_moves 4-8 条，hard_rules ≤3 条，soft_guidelines 3-6 条，anti_patterns ≥6 条，tags 2-5 个。"""
+
+# 维度专属模板：在通用结构（signature_moves/hard_rules/soft_guidelines/anti_patterns/tags）之上，
+# 各专属维度额外产出结构化字段，让对应 agent 拿到可直接执行的方法论。
+# 公共部分（每个专属模板都要求）：signature_moves 4-8 条、hard_rules ≤3、soft_guidelines 3-6、
+# anti_patterns ≥6（黑名单是方法论的核心，最锐利的理解藏在反例里）、tags 2-5 个。
+
+_SPECIAL_SPEC_TEMPLATE = """【输出要求】
+只输出一个 JSON 对象（不要输出任何其他文字、不要用 markdown 围栏），格式：
+{
+  "name": "{dim_name}特征集（≤12字）",
+  "description": "一句话概括该片段在此维度的风格",
+  {extra_fields}
+  "signature_moves": [
+    {{"pattern": "可复现的写作手法（具体、可操作）", "evidence": "原文例证（从片段摘录一两句）", "apply": "写作时如何落地", "exception": "何时可以违背"}}
+  ],
+  "hard_rules": ["极少数真正不能违反的红线（≤3条）", "..."],
+  "soft_guidelines": [
+    {{"rule": "倾向性规则（可用整体比例或变化度要求，禁止逐句硬限）", "why": "为什么这样写", "flexibility": "何时可适度违背"}}
+  ],
+  "anti_patterns": ["禁止的写法（必须 ≥6 条）", "..."],
+  "tags": ["2-5 个标签", "..."]
+}
+数量要求：signature_moves 4-8 条，hard_rules ≤3 条，soft_guidelines 3-6 条，anti_patterns ≥6 条，tags 2-5 个。
+所有专属字段必须从原文实际观察提炼，禁止凭空编造；禁止'单句不得超过X字'这类逐句硬限，数字只用于整体比例或变化度要求。"""
+
+# 专属维度 → 额外结构化字段（挂在顶层 JSON，渲染时按维度名输出小节）
+_SPECIAL_FIELDS: dict[str, tuple[str, dict[str, str]]] = {
+    # (维度名, {字段key: 字段含义})
+    "_WORLD": ("世界观与设定", {
+        "power_system": "力量体系/金手指规则：获取方式、升级路径、使用代价、边界禁忌（原书如何设定与约束）",
+        "setting_reveal": "设定投放方式：世界观信息如何借对话/行动/环境自然呈现（不写说明书）",
+        "terminology": "本书专属术语与用法（词条+正确用法）",
+        "consistency": "一致性维护规则：设定与力量体系如何自洽、不崩坏",
+    }),
+    "_SATISFACTION": ("爽点设计", {
+        "satisfaction_types": "爽点类型清单（打脸/碾压/逆袭/收获/智谋/装逼…原书惯用哪些）",
+        "setup_release": "铺垫→释放模式：压抑多久、如何引爆、释放后的余韵处理",
+        "density": "爽点密度与间隔（每千字几个、间隔多远、何时密集何时稀疏）",
+    }),
+    "_HOOK": ("章节钩子", {
+        "hook_types": "断章钩子类型清单（悬念/危机/转折/金句/身份揭示…原书惯用哪些）",
+        "hook_position": "钩子出现的位置与频率（章末/章首/中间）",
+        "cliffhanger_style": "断章具体写法：停在动作/对话/信息揭示的哪一刻、如何制造意犹未尽",
+        "opening_hooks": "开篇抓人手法（首段如何建立冲突或悬念）",
+    }),
+    "_DIALOGUE": ("对话与台词", {
+        "dialogue_ratio": "对话占比与节奏（整体比例）",
+        "voice_markers": "角色语言辨识标志（口头禅/句式/用词/语速特征）",
+        "subtext_style": "潜台词写法：言外之意如何暗示（不直说）",
+        "dialogue_action": "对话中如何夹杂动作/神态推进（对话不悬空）",
+    }),
+    "_ACTION": ("动作与打斗", {
+        "fight_rhythm": "打斗段落节奏：起手→交锋→转折→收束的节拍与篇幅分配",
+        "action_beats": "动作描写粒度：招式/身体细节/环境交互的具体写法",
+        "power_feel": "力量感与压迫感的表达手法（如何让读者感受到强弱）",
+        "tension_techniques": "打斗中紧张感与胜负悬念的营造（何时铺垫何时爆发）",
+    }),
+    "_INNER": ("内心与心理", {
+        "inner_voice": "内心独白风格（直接/隐喻/意识流/动作化）",
+        "emotion_layers": "情绪层次递进：表层反应→真实动机的展现顺序",
+        "conflict_build": "内心冲突的构建方式（纠结/抉择/成长瞬间如何处理）",
+        "reveal_pacing": "心理信息投放节奏（不冗长、与外部剧情交替）",
+    }),
+    "_DESCRIPTION": ("环境与描写", {
+        "atmosphere": "氛围营造手法（光线/声音/气味/温度/色调如何组合）",
+        "sensory_detail": "感官细节运用（视觉/听觉/触觉/嗅觉的选取与比例）",
+        "setting_narrative": "环境借景叙事：景物如何随人物心境变化（景随情变）",
+        "restraint": "描写克制度：不堆砌、留白、与剧情节奏配合",
+    }),
+    "_TRANSITION": ("过渡与节奏", {
+        "transition_types": "场景过渡方式清单（时间跳转/地点切换/情绪衔接/黑场…原书惯用哪些）",
+        "scene_link": "场景衔接技巧（承上启下/并行对照/反差切换）",
+        "rhythm_shift": "节奏换挡：紧张↔舒缓的切换点与手法",
+        "continuity": "时间线/视角/空间连续性维护（不跳戏不混乱）",
+    }),
+}
 
 # 效果对比用的基础系统提示词
 _COMPARE_BASE_SYSTEM = (
@@ -258,10 +396,16 @@ class DistillationEngine:
     def build_round_prompt(round_num: int, content: str) -> tuple[str, str]:
         """构造单轮蒸馏的 (system, user) prompt。
 
-        13-15 轮（人味统计指纹）使用独立输出规格，产出可量化指纹。
+        13-15 轮（人味统计指纹）使用独立输出规格，产出可量化指纹；
+        8/9/10/11/16/17/18/19 轮使用维度专属输出规格（结构化专属字段）；
+        其余维度使用通用规格。
         """
         dim_name, dim_points = ROUND_DIMENSIONS.get(round_num, ROUND_DIMENSIONS[1])
-        spec = _SIGNATURE_OUTPUT_SPEC if round_num in (13, 14, 15) else _JSON_OUTPUT_SPEC
+        spec_key = _SPECIAL_SPEC_DIMS.get(round_num)
+        if spec_key:
+            spec = DistillationEngine._build_special_output_spec(spec_key)
+        else:
+            spec = _SIGNATURE_OUTPUT_SPEC if round_num in (13, 14, 15) else _JSON_OUTPUT_SPEC
         user = (
             f"请对以下小说文本片段进行第 {round_num} 轮蒸馏分析，"
             f"提取【{dim_name}】。\n\n"
@@ -271,16 +415,23 @@ class DistillationEngine:
         )
         return _DISTILL_SYSTEM, user
 
+    @staticmethod
+    def _build_special_output_spec(dim_key: str) -> str:
+        """生成维度专属输出规格（通用结构 + 该维度的结构化字段）。"""
+        dim_name, fields = _SPECIAL_FIELDS[dim_key]
+        extra = ",\n  ".join(f'"{k}": "{v}"' for k, v in fields.items())
+        return _SPECIAL_SPEC_TEMPLATE.format(dim_name=dim_name, extra_fields=extra)
+
     async def distill_chunk(self, chunk_id: int, round_num: int,
-                            client: LLMClient, reuse_failed_round: bool = False) -> dict:
+                            client: LLMClient, reuse_failed_round: bool = False,
+                            thinking: bool | None = None) -> dict:
         """对单个片段执行一轮蒸馏，并生成对应 Skill。
 
         Args:
             reuse_failed_round: 补蒸馏模式——若该片段该轮已有未成功的记录（failed /
                 中断残留的 running），复用其 round_id 覆盖结果，避免 DB 累积重复记录。
-
-        Returns:
-            {"round_id": int, "skill_id": int, "skill_name": str, "skill_data": dict}
+            thinking: 是否开启思考模式（None=跟随模型/provider 默认）。
+                火山 coding 网关不兼容思考参数（带上后请求挂起），由 client 自动降级关闭。
         """
         chunk = self.store.get_chunk(chunk_id)
         if not chunk:
@@ -296,6 +447,7 @@ class DistillationEngine:
         try:
             result_text = await client.generate(
                 user, system=system, node_name="distill",
+                thinking=thinking,  # None → client 按 config.enable_thinking（模型管理页配置）
             )
         except Exception:
             self.store.complete_round(round_id, "", "", status=DistillStatus.FAILED.value)
@@ -335,15 +487,16 @@ class DistillationEngine:
                            retry_failed: bool = False,
                            skip_done_rounds: bool = False,
                            on_event: OnEvent | None = None,
-                           is_cancelled=None) -> dict:
+                           is_cancelled=None,
+                           enable_thinking: bool | None = None) -> dict:
         """对整部作品的所有片段执行多轮蒸馏，逐事件回调进度。
 
         is_cancelled: 可选回调（返回 bool）。在片段/轮次边界检查，为 True 时
         优雅停止（已完成的片段/轮次产物保留），不再启动新的 LLM 调用。
 
         Args:
-            dimensions: 要蒸馏的维度编号列表（1..15，见 ROUND_DIMENSIONS；
-                13-15 为人味统计指纹维度，产出 rhythm_profile/ban_words/density_targets）。
+            dimensions: 要蒸馏的维度编号列表（1..19，见 ROUND_DIMENSIONS；
+                13-15 为人味统计指纹维度，16-19 为动作/内心/描写/过渡专项维度）。
                 None 时默认分析全部维度。
             levels: 多级蒸馏级数（1=碎片，2=二次浓缩，3=三次浓缩）。
             retry_failed: 补蒸馏模式——只重跑失败的片段/轮次（跳过已 done 的），
@@ -411,6 +564,7 @@ class DistillationEngine:
                     result = await self.distill_chunk(
                         chunk_id, round_num, client,
                         reuse_failed_round=retry_failed,
+                        thinking=enable_thinking,
                     )
                     await self._emit(on_event, {
                         "type": "round_done", "work_id": work_id,
@@ -441,6 +595,8 @@ class DistillationEngine:
                 })
 
         # 多级蒸馏：对一次蒸馏产物逐级浓缩（二次/三次蒸馏）
+        # 二级按维度分组浓缩（每维度 1 个总纲=规格），三级把全部二级总纲
+        # 再浓缩成 1 个精华（说明书），对应「三级=说明书、二级=规格、一级=素材库」分层。
         if not cancelled and levels >= 2:
             source_skills = self.store.list_skills(work_id)
             if source_skills:
@@ -449,16 +605,17 @@ class DistillationEngine:
                         "type": "condense_start", "level": level,
                         "source_count": len(source_skills),
                     })
-                    condensed = await self.condense_skills(
+                    condensed_list = await self.condense_skills(
                         source_skills, client, level=level, on_event=on_event,
+                        group_by_dimension=(level == 2),
                     )
-                    if condensed is None:
+                    if not condensed_list:
                         failed += 1
                         await self._emit(on_event, {
                             "type": "condense_failed", "level": level,
                         })
                         break
-                    source_skills = [condensed]
+                    source_skills = condensed_list
 
         if cancelled:
             # work 状态已由 cancel 端点置为 cancelled，这里不覆盖为 done/failed
@@ -492,15 +649,49 @@ class DistillationEngine:
     _FUSE_CONCURRENCY = 4  # 并行融合的并发数（多批同时提炼，受 LLM API 限流与连接池约束）
 
     async def condense_skills(self, skills: list[dict], client: LLMClient,
-                              level: int, on_event: OnEvent | None = None) -> dict | None:
-        """把一批碎片 Skill 交给 LLM 提炼浓缩成 1 个精炼总技能（第 level 级浓缩）。
+                              level: int, on_event: OnEvent | None = None,
+                              group_by_dimension: bool = False) -> list[dict] | None:
+        """把一批 Skill 交给 LLM 提炼浓缩成精炼总技能（第 level 级浓缩）。
 
         分批 → 每批一次 LLM 提炼 → 归并（递归）直到剩 1 块 → 生成总技能。
-        产物：DB 记录（chunk_index=-1, round_num=level）+ skills 目录 distill_w{id}_level{level}.json
+        产物：DB 记录（chunk_index=-1, round_num=level）+ skills 目录
+              distill_w{id}_level{level}.json（二级按维度分组时为
+              distill_w{id}_level{level}_d{dim}.json，每维度一个）。
+
+        Args:
+            group_by_dimension: True（二级浓缩）时按维度（skill.round_num，一级碎片
+                的 round_num 即维度号）分组，每组浓缩成 1 个该维度总纲——
+                对应「二级=规格」分层：每本书每个维度一份浓缩规格，供对应 agent 定向注入。
+                False（三级及以上）时全部来源融合浓缩成 1 个精华（「三级=说明书」）。
 
         Returns:
-            浓缩后的 skill dict；失败（无任何可浓缩内容）返回 None
+            浓缩后的 skill dict 列表（每个维度一个）；无任何可浓缩内容返回 None
         """
+        usable = [s for s in skills if (s.get("content") or "").strip()]
+        if not usable:
+            return None
+
+        if group_by_dimension:
+            groups: dict[int, list[dict]] = {}
+            for s in usable:
+                dim = s.get("round_num") or 0  # 一级碎片 round_num 即维度号
+                groups.setdefault(dim, []).append(s)
+            ordered = sorted(groups.items())  # 维度号升序，产出顺序稳定
+        else:
+            ordered = [(0, usable)]
+
+        results: list[dict] = []
+        for dim, group in ordered:
+            single = await self._condense_group(
+                group, client, level, on_event=on_event, dim=dim if dim else None)
+            if single:
+                results.append(single)
+        return results or None
+
+    async def _condense_group(self, skills: list[dict], client: LLMClient,
+                              level: int, on_event: OnEvent | None = None,
+                              dim: int | None = None) -> dict | None:
+        """浓缩单组 Skill（一个维度或全部来源）成 1 个精炼总技能。"""
         blocks = [s.get("content") or "" for s in skills if (s.get("content") or "").strip()]
         if not blocks:
             return None
@@ -537,16 +728,20 @@ class DistillationEngine:
         except Exception:
             pass
 
+        dim_name = ROUND_DIMENSIONS.get(dim, ("综合", ""))[0] if dim else ""
         if data:
-            name = str(data.get("name") or "").strip() or f"整书风格·第{level}级"
-            description = str(data.get("description") or "").strip() or f"对全书蒸馏产物的第{level}级浓缩提炼"
+            name = str(data.get("name") or "").strip() or \
+                (f"{dim_name}·第{level}级" if dim_name else f"整书风格·第{level}级")
+            description = str(data.get("description") or "").strip() or (
+                f"对《{skills[0].get('work_title') or ''}》『{dim_name}』维度的第{level}级浓缩提炼"
+                if dim_name else f"对全书蒸馏产物的第{level}级浓缩提炼")
             tags = data.get("tags") or [f"第{level}级浓缩"]
             if isinstance(tags, str):
                 tags = [tags]
-            content = self._compose_condensed_content(level, data)
+            content = self._compose_condensed_content(level, data, dim_name=dim_name)
         else:
             # LLM 未返回 JSON：把最终文本直接作为内容
-            name = f"整书风格·第{level}级"
+            name = f"{dim_name}·第{level}级" if dim_name else f"整书风格·第{level}级"
             description = f"对全书蒸馏产物的第{level}级浓缩提炼"
             tags = [f"第{level}级浓缩"]
             content = final_text
@@ -554,6 +749,8 @@ class DistillationEngine:
         work_id = int(skills[0].get("work_id") or 0)
         work_title = skills[0].get("work_title") or ""
         file_name = f"distill_w{work_id}_level{level}"
+        if dim is not None:
+            file_name += f"_d{dim}"
         if (self._skills_dir() / f"{file_name}.json").exists():
             file_name = f"{file_name}_{uuid.uuid4().hex[:6]}"
         skill_id = self.store.create_skill(
@@ -562,8 +759,14 @@ class DistillationEngine:
             name=file_name, description=f"【{name}】{description}",
             content=content, tags=tags,
         )
-        self._write_skill_file(file_name, name, description, content, tags)
-        logger.info("第%d级浓缩完成: %s (%d 个来源)", level, file_name, len(skills))
+        # 二级维度总纲是规则型（全量注入），按维度打 agent 标签定向注入；
+        # agent_roles 沿用该维度的一级映射，保证三级「说明书」全量注入时不遗漏
+        agent_roles = DIMENSION_AGENTS.get(dim, []) if dim is not None else []
+        self._write_skill_file(file_name, name, description, content, tags,
+                               status="active", category="rule",
+                               agent_roles=agent_roles)
+        logger.info("第%d级浓缩完成: %s (%d 个来源%s)", level, file_name,
+                    len(skills), f"，维度={dim_name}" if dim_name else "")
         await self._emit(on_event, {
             "type": "condense_done", "level": level,
             "skill_id": skill_id, "skill_name": file_name, "name": name,
@@ -592,12 +795,26 @@ class DistillationEngine:
         return batches
 
     async def _llm_condense(self, batch_texts: list[str], client: LLMClient, level: int) -> str:
-        """单批浓缩：LLM 提炼，返回浓缩文本（JSON 或 markdown）。"""
+        """单批浓缩：LLM 提炼，返回浓缩文本（JSON 或 markdown）。
+
+        level>=3（三级说明书）：要求输出含 dimension_index 维度索引——
+        告诉模型本书有哪些维度的二级总纲、每个对应写作哪个环节、何时翻哪份。
+        """
+        spec = _CONDENSE_INDEX_OUTPUT_SPEC if level >= 3 else _CONDENSE_OUTPUT_SPEC
+        if level >= 3:
+            brief = (
+                f"下面是本书 {len(batch_texts)} 个维度的二级总纲，请浓缩成一份"
+                f"'写作风格说明书'，并生成维度索引（每个维度对应哪个写作环节、何时翻哪份总纲）：\n\n"
+            )
+        else:
+            brief = (
+                f"下面是 {len(batch_texts)} 段写作特征分析（按重要性排序），请提炼浓缩：\n\n"
+            )
         user = (
             f"【第{level}级蒸馏 · 浓缩提炼】\n"
-            f"下面是 {len(batch_texts)} 段写作特征分析（按重要性排序），请提炼浓缩：\n\n"
+            + brief
             + "\n\n---\n\n".join(batch_texts)
-            + "\n\n" + _CONDENSE_OUTPUT_SPEC
+            + "\n\n" + spec
         )
         return await client.generate(user, system=_CONDENSE_SYSTEM, node_name="distill_condense",
                                      thinking=False)
@@ -681,6 +898,9 @@ class DistillationEngine:
                     lines.append(f"- {str(a).strip()}")
             lines.append("")
 
+        # 维度专属结构化字段（世界观/爽点/钩子/对话/动作/内心/描写/过渡）
+        lines += DistillationEngine._render_special_fields(skill_data)
+
         # 人味统计指纹（13-15 轮产出：直击检测器统计信号）
         lines += DistillationEngine._render_human_signature(skill_data)
 
@@ -698,6 +918,32 @@ class DistillationEngine:
                 for i, g in enumerate(guidelines, 1):
                     lines.append(f"{i}. {g}")
                 lines.append("")
+        return lines
+
+    @staticmethod
+    def _render_special_fields(skill_data: dict) -> list[str]:
+        """渲染维度专属结构化字段（世界观/爽点/钩子/对话/动作/内心/描写/过渡）。
+
+        这些字段来自专属模板的顶层 JSON key，直接对应该维度的 agent 执行诉求。
+        """
+        lines: list[str] = []
+        for dim_key, (dim_name, fields) in _SPECIAL_FIELDS.items():
+            present = [(k, v) for k, v in fields.items()
+                       if skill_data.get(k) not in (None, "", [], {})]
+            if not present:
+                continue
+            lines.append(f"## {dim_name}（结构化拆解）")
+            lines.append("")
+            for k, v in present:
+                label = str(fields[k]).split("：", 1)[0]
+                if isinstance(v, list):
+                    lines.append(f"- **{label}**")
+                    for item in v:
+                        if str(item).strip():
+                            lines.append(f"  - {str(item).strip()}")
+                else:
+                    lines.append(f"- **{label}**：{str(v).strip()}")
+            lines.append("")
         return lines
 
     @staticmethod
@@ -754,12 +1000,36 @@ class DistillationEngine:
         return lines
 
     @staticmethod
-    def _compose_condensed_content(level: int, data: dict) -> str:
-        """把浓缩 JSON 组装成可读的 markdown 总技能内容（格式 v2）。"""
-        lines = [f"# 第{level}级蒸馏 · 写作风格总纲", ""]
+    def _compose_condensed_content(level: int, data: dict, dim_name: str = "") -> str:
+        """把浓缩 JSON 组装成可读的 markdown 总技能内容（格式 v2）。
+
+        dim_name: 二级按维度分组时传入维度名（如"爽点设计"），标题中标注。
+        dimension_index（三级说明书）：渲染在正文前，起到"说明书导览二级"的作用。
+        """
+        title = f"{dim_name} · " if dim_name else ""
+        lines = [f"# {title}第{level}级蒸馏 · 写作风格总纲", ""]
         desc = str(data.get("description") or "").strip()
         if desc:
             lines += [desc, ""]
+        # 三级说明书：维度索引（每个二级总纲对应哪个写作环节、何时翻）
+        index = data.get("dimension_index")
+        if index:
+            lines += ["## 维度索引（写作时怎么用这套体系）", ""]
+            for i, item in enumerate(index, 1):
+                if isinstance(item, str):
+                    lines.append(f"{i}. {item.strip()}")
+                elif isinstance(item, dict):
+                    dim = str(item.get("dimension") or "").strip()
+                    stage = str(item.get("writing_stage") or "").strip()
+                    how = str(item.get("how_to_use") or "").strip()
+                    if dim:
+                        line = f"{i}. **{dim}**"
+                        if stage:
+                            line += f"｜{stage}"
+                        lines.append(line)
+                        if how:
+                            lines.append(f"   用法：{how}")
+            lines.append("")
         lines += DistillationEngine._render_style_body(data)
         return "\n".join(lines).strip()
 
@@ -806,8 +1076,14 @@ class DistillationEngine:
         )
         skill = self.store.get_skill(skill_id)
         # 文件 enabled 跟随 skill status（新建即 active → True）
+        # 碎片是局部素材（一个片段×一个维度），归素材库型：写章时按上下文检索注入，
+        # 不按 agent 定向过滤（写"战斗"要跨维度检索动作/环境/对话素材），故不打 agent_roles 标签。
+        # 但写 dimension 维度号：检索时按当前 agent 的维度加权（同维度加分、跨维度不丢），
+        # 只有定向注入的二级维度总纲/三级说明书才打 agent_roles 标签（见 _condense_group）。
         self._write_skill_file(file_name, display_name, description, content, tags,
-                               status=skill.get("status", "active") if skill else "active")
+                               status=skill.get("status", "active") if skill else "active",
+                               category="material",
+                               dimension=round_num)
         logger.info("Skill 已生成: id=%d name=%s (《%s》片段%d 第%d轮)",
                     skill_id, file_name, work["title"], chunk_index, round_num)
         return skill
@@ -840,12 +1116,26 @@ class DistillationEngine:
     def _write_skill_file(self, file_name: str, display_name: str,
                           description: str, content: str,
                           tags: list[str] | None = None,
-                          status: str = "active") -> Path:
+                          status: str = "active",
+                          category: str = "rule",
+                          agent_roles: list[str] | None = None,
+                          dimension: int | None = None) -> Path:
         """按 routes_skills 的 JSON 格式写入 Skills 系统，供生成流程加载。
 
         enabled 跟随 skill 状态：active → True，archived → False。
         注入侧（routes_skills.load_enabled_skills_for_injection*）会跳过
         enabled=False 的 skill，因此归档/禁用的 skill 不再注入生成流程。
+
+        category：rule=规则型（全量注入）/ material=素材库型（按上下文检索注入）。
+        蒸馏碎片传 material（量大且重复，只能按需检索），总纲/融合传 rule。
+
+        agent_roles：该 skill 适用的 agent 列表（蒸馏维度→agent 映射）。
+        注入侧按当前 agent_type 过滤：有 agent_roles 且不含当前 agent 的 skill 跳过，
+        实现"每个 agent 只看自己负责维度的总纲"，避免全量注入撑爆上下文。
+        素材库碎片不传（空=通用不过滤，写"战斗"可跨维度检索动作/环境/对话素材）。
+
+        dimension：蒸馏维度号（1-19），碎片写入供检索侧加权——当前 agent 负责的
+        维度命中时检索加分（同维度素材排前），但不过滤跨维度素材。
         """
         path = self._skills_dir() / f"{file_name}.json"
         data = {
@@ -853,11 +1143,14 @@ class DistillationEngine:
             "description": f"【{display_name}】{description}" if description else f"【{display_name}】",
             "enabled": status != "archived",
             "auto_inject": True,
+            "category": category,
             "sections": [{"name": "distilled_style", "content": content}],
             "tools": [],
             "references": [],
             "distilled": True,
             "tags": tags or [],
+            "agent_roles": agent_roles or [],
+            "dimension": dimension,
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
