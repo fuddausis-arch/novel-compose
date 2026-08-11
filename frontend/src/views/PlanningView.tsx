@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, Play, CheckCircle, XCircle, Globe, Users, AlertCircle, AlertTriangle, Info, Lightbulb, Target, Layers, Sparkles, ChevronDown, ChevronRight } from "lucide-react";
+import { Loader2, Play, CheckCircle, XCircle, Globe, Users, AlertCircle, AlertTriangle, Info, Lightbulb, Target, Layers, Sparkles, ChevronDown, ChevronRight, BookOpen } from "lucide-react";
 import { api } from "@/api";
 import { useAppStore } from "@/store";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,9 @@ export function PlanningView({ setLoading: setGlobalLoading }: { setLoading?: (l
   const [showGolden, setShowGolden] = useState(false);
   const [showProtagonist, setShowProtagonist] = useState(false);
   const [showConcept, setShowConcept] = useState(false);
+  const [showStyleBooks, setShowStyleBooks] = useState(false);
+  const [styleBooks, setStyleBooks] = useState<number[]>([]);
+  const [distillWorks, setDistillWorks] = useState<{ id: number; title: string; status: string }[]>([]);
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PlanningResult | null>(null);
@@ -45,6 +48,8 @@ export function PlanningView({ setLoading: setGlobalLoading }: { setLoading?: (l
   // 加载模板列表 + 从项目初始化字段
   useEffect(() => {
     api.listGenreTemplates().then(setTemplates).catch(() => {});
+    // 参考书单：加载已蒸馏作品供选择
+    api.listDistillWorks().then((r) => setDistillWorks(r.works || [])).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -53,6 +58,7 @@ export function PlanningView({ setLoading: setGlobalLoading }: { setLoading?: (l
     setWordCountTarget(project.word_count_target || 0);
     setConstitution(project.constitution || "");
     setTargetVolumes(project.target_volumes || 3);
+    setStyleBooks(project.style_books || []);
     // 解析金手指
     try {
       if (project.golden_finger) {
@@ -120,6 +126,7 @@ export function PlanningView({ setLoading: setGlobalLoading }: { setLoading?: (l
         golden_finger: gfJson,
         protagonist: protagonistJson,
         central_concept: conceptJson,
+        style_books: styleBooks,
       });
       await loadProject(project.id);
     } catch (e) {
@@ -346,6 +353,56 @@ export function PlanningView({ setLoading: setGlobalLoading }: { setLoading?: (l
                 <Input type="number" min={0} step={10000} placeholder="如 2000000" value={wordCountTarget} onChange={(e) => setWordCountTarget(Number(e.target.value))} />
                 <p className="text-xs text-muted">AI 据此校准卷数密度</p>
               </div>
+            </div>
+
+            {/* 参考书单（折叠） */}
+            <div className="rounded-lg border border-border">
+              <button type="button" onClick={() => setShowStyleBooks((v) => !v)} className="flex w-full items-center justify-between px-4 py-3 text-left">
+                <span className="flex items-center gap-2 text-sm font-medium">
+                  <BookOpen className="h-4 w-4 text-primary" />
+                  参考书单（可选）
+                  {styleBooks.length > 0 && (
+                    <Badge variant="default">{styleBooks.length} 本已选</Badge>
+                  )}
+                </span>
+                {showStyleBooks ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </button>
+              {showStyleBooks && (
+                <div className="space-y-3 border-t border-border p-4">
+                  <p className="text-xs text-muted">
+                    选择已蒸馏的参考书，写章时只注入选中书的写作技法（按维度定向）。不选=注入全部已蒸馏技能。
+                  </p>
+                  {distillWorks.length === 0 ? (
+                    <p className="text-xs text-muted">暂无已蒸馏作品，请先到「设置 → 蒸馏」页蒸馏参考书。</p>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                      {distillWorks.map((w) => {
+                        const checked = styleBooks.includes(w.id);
+                        return (
+                          <label
+                            key={w.id}
+                            className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm ${checked ? "border-primary bg-primary/5" : "border-border"}`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4"
+                              checked={checked}
+                              onChange={() =>
+                                setStyleBooks((prev) =>
+                                  checked ? prev.filter((x) => x !== w.id) : [...prev, w.id]
+                                )
+                              }
+                            />
+                            <span className="min-w-0 flex-1 truncate">{w.title}</span>
+                            <span className="shrink-0 text-xs text-muted">{w.status}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <p className="text-xs text-muted">选择后点右上角「保存规划」生效；写章时按书单过滤注入。</p>
+                </div>
+              )}
             </div>
 
             {/* 金手指设定（折叠） */}

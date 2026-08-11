@@ -14,6 +14,7 @@ export interface Project {
   target_volumes?: number;
   golden_finger?: string;
   protagonist?: string;
+  style_books?: number[]; // 参考书单：distill_works.id 列表
   created_at: string;
   updated_at: string;
 }

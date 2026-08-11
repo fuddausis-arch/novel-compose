@@ -5075,7 +5075,10 @@ async def interactive_chat_stream(request: Request, req: InteractiveChatRequest)
             from novel_agent.api.routes_skills import load_enabled_skills_for_injection_with_context
             # 用章节标题+大纲作为上下文，让 book-to-skill 技能按需加载相关 section
             skill_context = f"第{chapter_num}章 {outline_title or ''} {outline_summary or ''}"
-            skills_inject_text = load_enabled_skills_for_injection_with_context(skill_context)
+            # 项目参考书单：注入蒸馏 skill 时按选中的书过滤（非蒸馏 skill 不受限）
+            _book_ids = (project.style_books or []) if project else []
+            skills_inject_text = load_enabled_skills_for_injection_with_context(
+                skill_context, book_ids=_book_ids)
             if skills_inject_text:
                 prompt += skills_inject_text + "\n"
         except Exception as e:

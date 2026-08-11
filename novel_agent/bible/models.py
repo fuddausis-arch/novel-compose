@@ -34,6 +34,7 @@ class Project(Base):
     golden_finger = Column(Text, default="")      # JSON: 金手指设定 {name,type,core_ability,limitation,growth,origin}
     protagonist = Column(Text, default="")        # JSON: 主角设定 {name,identity,core_contradiction,sensory_memories,absolute_taboos,motivation,initial_state}
     generation_checkpoint = Column(JSON, default=dict)  # 元认知 checkpoint：失败章节、已完成、待生成范围
+    style_books = Column(JSON, default=list)  # 参考书单：已蒸馏作品 id 列表（distill_works.id），注入蒸馏 skill 时按书过滤
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

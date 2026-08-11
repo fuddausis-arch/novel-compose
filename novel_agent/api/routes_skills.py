@@ -642,6 +642,37 @@ def _matches_agent(skill: dict, agent_type: str | None) -> bool:
     return agent_type in roles
 
 
+def _book_id_of_skill(skill: dict) -> int | None:
+    """从 skill 名反推蒸馏作品 id（distill_w{id}_*）→ 参考书单过滤用。
+
+    返回 None 表示非蒸馏 skill（内置/自建/拆书/融合等），不受书单限制。
+    仅匹配蒸馏产物（碎片/二级总纲/三级说明书）：distill_w{N}_c/r/level*。
+    融合总纲（distill_fusion_*）是用户主动挑选多书融合的产物，视为"用户自定义"不按单书过滤。
+    """
+    name = skill.get("name", "") or ""
+    m = re.match(r"^distill_w(\d+)_", name)
+    if m and not name.startswith("distill_fusion_"):
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def _matches_book(skill: dict, book_ids: list[int] | None) -> bool:
+    """参考书单过滤：book_ids 为空/None → 不过滤（向后兼容，旧项目无书单全注入）；
+    book_ids 非空 → 蒸馏 skill 必须属于书单中的书，非蒸馏 skill 不受限。
+
+    对应「写某本书时只参考选中的已蒸馏书」：注入范围 = 选中书 ∩ 当前 agent 维度。
+    """
+    if not book_ids:
+        return True
+    bid = _book_id_of_skill(skill)
+    if bid is None:
+        return True  # 非蒸馏 skill（内置/自建/拆书/融合）不按书过滤
+    return bid in book_ids
+
+
 # agent → 负责的蒸馏维度集合（从 engine.DIMENSION_AGENTS 反查，惰性加载缓存）
 _AGENT_DIM_CACHE: dict[str, set[int]] = {}
 _DIM_AGENT_SOURCE_LOADED = False
@@ -670,7 +701,8 @@ def _agent_dimensions(agent_type: str | None) -> frozenset[int]:
 
 
 def load_enabled_skills_for_injection(exclude_sources: tuple[str, ...] = (),
-                                      agent_type: str | None = None) -> str:
+                                      agent_type: str | None = None,
+                                      book_ids: list[int] | None = None) -> str:
     """加载所有启用的 Skills，拼接成 prompt section 供注入。
 
     供两条生成路径共用，确保 Skills 注入逻辑一致、不分叉：
@@ -687,6 +719,8 @@ def load_enabled_skills_for_injection(exclude_sources: tuple[str, ...] = (),
         agent_type: 当前执行 agent 的 type（如 novel-writer / novel-worldbuilder-corelaws）。
             给定后按 agent_roles 过滤定向 skill（见 _matches_agent），实现
             「每个 agent 只注入自己维度」的蒸馏-Agent 对齐。默认 None 不过滤（向后兼容）。
+        book_ids: 项目参考书单（distill_works.id 列表）。非空时只注入选中书的蒸馏 skill
+            （见 _matches_book），非蒸馏 skill 不受限；空/None 不过滤（向后兼容）。
     """
     try:
         _seed_default_skills_if_empty()
@@ -716,6 +750,7 @@ def load_enabled_skills_for_injection(exclude_sources: tuple[str, ...] = (),
         and s.get("source") not in exclude_sources
         and _injectable_without_context(s)
         and _matches_agent(s, agent_type)
+        and _matches_book(s, book_ids)
     ]
     if not enabled_skills:
         return ""
@@ -1453,7 +1488,8 @@ def remove_skill_from_index(skill_name: str):
 
 
 def load_enabled_skills_for_injection_with_context(context: str = "",
-                                                   agent_type: str | None = None) -> str:
+                                                   agent_type: str | None = None,
+                                                   book_ids: list[int] | None = None) -> str:
     """带上下文的 skill 注入：普通 skill 全量注入，book-to-skill 按上下文按需加载。
 
     当 context 非空时，book-to-skill 技能只注入与上下文相关的 section（跨 skill 索引检索），
@@ -1463,11 +1499,13 @@ def load_enabled_skills_for_injection_with_context(context: str = "",
         context: 当前章节的上下文信息（章节标题+摘要+大纲），用于按需检索
         agent_type: 当前执行 agent 的 type；给定后按 agent_roles 过滤定向 skill，
             与 load_enabled_skills_for_injection 一致（默认 None 不过滤，向后兼容）
+        book_ids: 项目参考书单（distill_works.id 列表）。非空时只注入选中书的蒸馏 skill
+            （碎片检索与规则型总纲都按书过滤），非蒸馏 skill 不受限；空/None 不过滤（向后兼容）。
     """
     if not context.strip():
         # 无上下文时走原有逻辑（语料型 skill 内容庞大，无上下文无法检索，不注入）
         return load_enabled_skills_for_injection(
-            exclude_sources=("corpus",), agent_type=agent_type)
+            exclude_sources=("corpus",), agent_type=agent_type, book_ids=book_ids)
 
     try:
         _seed_default_skills_if_empty()
@@ -1486,6 +1524,7 @@ def load_enabled_skills_for_injection_with_context(context: str = "",
         s for s in skills
         if s.get("enabled", True) and s.get("auto_inject", True)
         and _matches_agent(s, agent_type)
+        and _matches_book(s, book_ids)
     ]
     if not enabled_skills:
         return ""

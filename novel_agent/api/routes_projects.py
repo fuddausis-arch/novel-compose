@@ -151,6 +151,7 @@ class ProjectUpdate(BaseModel):
     word_count_target: int | None = None
     target_volumes: int | None = None
     golden_finger: str | None = None
+    style_books: list[int] | None = None  # 参考书单：distill_works.id 列表，注入蒸馏 skill 时按书过滤
 
 
 def _project_to_dict(p: Project) -> dict:
@@ -161,6 +162,7 @@ def _project_to_dict(p: Project) -> dict:
             "word_count_target": p.word_count_target or 0,
             "target_volumes": p.target_volumes or 0,
             "golden_finger": p.golden_finger or "",
+            "style_books": p.style_books or [],
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "updated_at": p.updated_at.isoformat() if p.updated_at else None}
 
@@ -174,7 +176,7 @@ def update_project(project_id: int, data: ProjectUpdate):
             raise HTTPException(404, "项目不存在")
         for k in ("title", "genre", "summary", "style", "constitution",
                   "target_audience", "central_concept", "word_count_target",
-                  "target_volumes", "golden_finger"):
+                  "target_volumes", "golden_finger", "style_books"):
             v = getattr(data, k)
             if v is not None:
                 setattr(p, k, v)

@@ -345,12 +345,14 @@ class WorkflowRunner:
         resources: WorkflowResources | None = None,
         on_event: EventCallback | None = None,
         cfg: Any = None,
+        project_id: int | None = None,
     ) -> None:
         self.defn = definition
         self.llm = llm_client  # 默认 client（兜底，未映射的 agent_type 用）
         self.workspace = Path(workspace)
         self.res = resources or WorkflowResources()
         self.on_event = on_event
+        self.project_id = project_id  # 项目参考书单查询用（注入蒸馏 skill 时按书过滤）
         # 模型按 agent_type 分配：cfg 给定时，按 AGENT_TYPE_TO_ROLE 映射
         # 为每个 role 创建独立 LLMClient 并缓存，解锁跨模型审校。
         self._cfg = cfg
@@ -538,17 +540,42 @@ class WorkflowRunner:
 
         蒸馏-Agent 对齐：传入 agent_type 后，注入侧按 skill 的 agent_roles 过滤，
         每个 agent 只拿到自己负责维度的蒸馏 skill + 全部通用 skill。
+        参考书单：项目选了参考书时，只注入选中书的蒸馏 skill（非蒸馏 skill 不受限）。
         """
         if agent_type not in self._skills_text:
+            book_ids = self._project_book_ids()
             try:
                 from novel_agent.api.routes_skills import load_enabled_skills_for_injection
                 self._skills_text[agent_type] = load_enabled_skills_for_injection(
-                    exclude_sources=("corpus",), agent_type=agent_type or None)
+                    exclude_sources=("corpus",), agent_type=agent_type or None,
+                    book_ids=book_ids)
             except Exception as e:
                 logger.warning("Skills 注入加载失败（工作流路径，agent=%s）: %s",
                                agent_type or "-", e)
                 self._skills_text[agent_type] = ""
         return self._skills_text[agent_type]
+
+    def _project_book_ids(self) -> list[int]:
+        """项目参考书单（distill_works.id 列表）；无 project_id 或读取失败返回空（不过滤）。"""
+        if not self.project_id:
+            return []
+        try:
+            from novel_agent.bible.models import Project
+            from novel_agent.config import load_config
+            cfg = load_config()
+            from sqlalchemy import create_engine
+            from sqlalchemy.orm import sessionmaker
+            engine = create_engine(cfg.database_path)
+            Session = sessionmaker(bind=engine)
+            s = Session()
+            try:
+                p = s.query(Project).filter(Project.id == self.project_id).first()
+                return (p.style_books or []) if p else []
+            finally:
+                s.close()
+        except Exception as e:
+            logger.warning("读取项目参考书单失败（按书过滤降级为不过滤）: %s", e)
+            return []
 
     def _refresh_file_variables(self, *texts: str) -> None:
         """渲染前刷新文本引用的 file 变量：从磁盘现读最新内容并级联重渲染文本变量。
@@ -908,7 +935,7 @@ async def run_workflow(
     """
     definition = load_definition(workflow_id, project_id=project_id)
     runner = WorkflowRunner(definition, llm_client, Path(workspace),
-                            on_event=on_event, cfg=cfg)
+                            on_event=on_event, cfg=cfg, project_id=project_id)
     try:
         return await runner.run(inputs)
     finally:

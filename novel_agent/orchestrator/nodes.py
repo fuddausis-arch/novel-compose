@@ -125,6 +125,14 @@ def _build_bible_injections(repo: BibleRepository, chapter_num: int, skill_conte
     """
     parts: list[str] = []
 
+    # 项目参考书单（蒸馏作品 id 列表）：注入蒸馏 skill 时按书过滤
+    try:
+        from novel_agent.bible.models import Project
+        proj = repo.db.query(Project).filter(Project.id == repo.project_id).first()
+        book_ids = (proj.style_books or []) if proj else []
+    except Exception:
+        book_ids = []
+
     # 注入：导入章纲（套壳改写模式）
     try:
         from novel_agent.bible.models import ImportedChapter
@@ -214,10 +222,10 @@ def _build_bible_injections(repo: BibleRepository, chapter_num: int, skill_conte
 
     # 注入：Skills（启用的能力约束，与交互式创作路径一致）
     # 带上下文注入：普通 skill 全量，语料型 skill（source=corpus，桥段/场景/人设/题材库）
-    # 按章节上下文检索相关条目，只注入命中的部分
+    # 按章节上下文检索相关条目，只注入命中的部分；按项目参考书单过滤蒸馏 skill
     try:
         from novel_agent.api.routes_skills import load_enabled_skills_for_injection_with_context
-        skills_text = load_enabled_skills_for_injection_with_context(skill_context)
+        skills_text = load_enabled_skills_for_injection_with_context(skill_context, book_ids=book_ids)
         if skills_text:
             parts.append(skills_text)
     except Exception as e:

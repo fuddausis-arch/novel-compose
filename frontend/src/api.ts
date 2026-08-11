@@ -61,6 +61,7 @@ export const api = {
   updateProject: (id: number, data: Partial<Project>) => request<Project>(`/api/projects/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteProject: (id: number, purgeData: boolean = true) => request<{ deleted: boolean; project_id: number; data_purged: number }>(`/api/projects/${id}?purge_data=${purgeData}`, { method: "DELETE" }),
   listGenreTemplates: () => request<{ key: string; title: string; description: string }[]>("/api/projects/templates/genres"),
+  listDistillWorks: () => request<{ works: { id: number; title: string; status: string; total_chars: number }[] }>("/api/distillation/works"),
 
   // Bible: characters
   listCharacters: (projectId: number) => request<Character[]>(`/api/bible/${projectId}/characters`),
