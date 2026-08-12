@@ -349,3 +349,39 @@ def test_mvp_precheck_ok_when_products_exist(tmp_path):
     (tmp_path / "meta" / "story_plan.md").write_text("plan", encoding="utf-8")
     (tmp_path / "meta" / "world_foundation.md").write_text("wf", encoding="utf-8")
     assert _mvp_precheck_missing(tmp_path) == []
+
+
+# ── 补充3 事中仲裁残留检测（工程师改动）────────────────────
+
+import importlib.util
+from pathlib import Path as _Path
+
+_verify_mod = importlib.util.spec_from_file_location(
+    "verify_mvp_integration",
+    _Path(__file__).resolve().parent.parent.parent / "tools" / "verify_mvp_integration.py",
+)
+_verify_mvp = importlib.util.module_from_spec(_verify_mod)
+_verify_mod.loader.exec_module(_verify_mvp)
+_mutex_hits = _verify_mvp._mutex_hits
+
+
+def test_mutex_hits_detects_contradiction():
+    """同部位互斥状态同章出现 → 报出矛盾对（动作写手与描写写手打架）。"""
+    text = "他瞳孔骤然放大。然而下一秒瞳孔收缩，恢复了正常大小。"
+    hits = _mutex_hits(text)
+    assert len(hits) >= 1
+    assert "瞳孔" in hits[0]
+
+
+def test_mutex_hits_no_false_positive():
+    """只出现互斥组的一侧，或连贯动作（先握拳后松手）→ 不误报。"""
+    assert _mutex_hits("他攥紧拳头，指节发白。") == []
+    assert _mutex_hits("他攥紧拳头，又慢慢松开。") == []
+    assert _mutex_hits("") == []
+
+
+def test_mutex_hits_multi_pairs():
+    """多个互斥对同时存在 → 全部报出。"""
+    text = "他脸色煞白，脸涨得通红，冷汗直冒，浑身发热。"
+    hits = _mutex_hits(text)
+    assert len(hits) == 2  # 脸色组 + 出汗组
