@@ -222,9 +222,10 @@ class CoreMemoryAssembler:
         if resolve_text:
             sections.append(resolve_text)
             remaining -= len(resolve_text) + 2
-        # 2.5 逾期未回收伏笔提示（硬约束）
+        # 2.5 逾期未回收伏笔提示（硬约束，按 weight 降序优先展示高权重伏笔）
         overdue = self.repo.get_overdue_foreshadows(chapter)
         if overdue:
+            overdue = sorted(overdue, key=lambda f: -(getattr(f, "weight", 50) or 50))
             overdue_lines = ["【逾期伏笔提醒】以下伏笔已超过计划回收章节，请在本章或近期回收："]
             for f in overdue[:5]:
                 overdue_lines.append(f"- {f.foreshadow_id}：{f.description}（计划第{f.planned_resolve_chapter}章回收）")
@@ -494,14 +495,18 @@ class CoreMemoryAssembler:
         return "\n".join(lines)
 
     def _format_to_plant(self, foreshadows) -> str:
+        """格式化本章应埋伏笔（P2：按 weight 降序，高权重伏笔优先展示）。"""
+        ordered = sorted(foreshadows, key=lambda f: -(getattr(f, "weight", 50) or 50))
         lines = ["【本章应埋伏笔】"]
-        for f in foreshadows:
+        for f in ordered:
             lines.append(f"- {f.foreshadow_id}：{f.description}（计划第 {f.planned_resolve_chapter} 章回收）")
         return "\n".join(lines)
 
     def _format_to_resolve(self, foreshadows) -> str:
+        """格式化本章应回收伏笔（P2：按 weight 降序）。"""
+        ordered = sorted(foreshadows, key=lambda f: -(getattr(f, "weight", 50) or 50))
         lines = ["【本章应回收伏笔】"]
-        for f in foreshadows:
+        for f in ordered:
             lines.append(f"- {f.foreshadow_id}：{f.description}")
         return "\n".join(lines)
 

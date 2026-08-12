@@ -541,3 +541,23 @@ def test_persist_roundtable_conclusions(repo_session):
     ws = repo_session.query(WorldSetting).filter(
         WorldSetting.project_id == 99, WorldSetting.title == "灵气规则").first()
     assert ws is not None
+
+
+# ── P2 伏笔按权重降序（工程师改动）────────────────────────
+
+from novel_agent.bible.models import Foreshadow
+
+
+def test_foreshadow_weight_desc_in_plant(repo_session):
+    """本章应埋伏笔按 weight 降序：P0 高权重伏笔排最前。"""
+    repo = _make_repo(repo_session)
+    asm = CoreMemoryAssembler(repo)
+    fs = [
+        Foreshadow(project_id=99, foreshadow_id="L-001", weight=90, description="主线大伏笔"),
+        Foreshadow(project_id=99, foreshadow_id="S-001", weight=10, description="小伏笔"),
+        Foreshadow(project_id=99, foreshadow_id="M-001", weight=50, description="中伏笔"),
+    ]
+    text = asm._format_to_plant(fs)
+    assert text.index("L-001") < text.index("M-001") < text.index("S-001")
+    overdue_text = asm._format_to_resolve(fs)
+    assert overdue_text.index("L-001") < overdue_text.index("S-001")
