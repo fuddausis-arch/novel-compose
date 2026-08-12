@@ -191,6 +191,11 @@ class Config:
         return self.project_data_dir / "bible.db"
 
     @property
+    def database_path(self) -> Path:
+        """SQLite 库路径（兼容别名，供 workflows/loader 等工作流路径按需直连）。"""
+        return self.bible_db_path
+
+    @property
     def chroma_dir(self) -> Path:
         return self.project_data_dir / "chroma"
 

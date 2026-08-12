@@ -324,6 +324,37 @@ def assemble_context(state: ChapterGenState, repo: BibleRepository,
     except Exception as e:
         logger.debug("assemble_context: 注入 Bible 约束失败: %s", e)
 
+    # P0-1：注入当前故事线（与交互式创作对齐——正式流水线也要让写手知道
+    # 本章属于哪条线、要推进什么节点、哪条线快断了）
+    try:
+        from novel_agent.memory.core import format_active_storylines
+        sl_text = format_active_storylines(repo, state["chapter"])
+        # 本章应推进的节点（StorylineNode，按章号匹配）
+        node_lines = []
+        try:
+            from novel_agent.bible.models import StorylineNode
+            nodes = repo.db.query(StorylineNode).filter(
+                StorylineNode.chapter == state["chapter"]
+            ).all()
+            for n in nodes:
+                line = f"- {n.title or '节点'}"
+                if n.description:
+                    line += f"：{n.description[:120]}"
+                node_lines.append(line)
+        except Exception:
+            pass
+        if sl_text or node_lines:
+            parts = []
+            if sl_text:
+                parts.append(sl_text)
+            if node_lines:
+                parts.append("【本章应推进的叙事节点】\n" + "\n".join(node_lines))
+            context = f"{context}\n\n{' '.join(parts)}"
+            logger.info("assemble_context 第%d章：注入故事线+本章节点（%d条线/%d节点）",
+                        state["chapter"], sl_text.count("- ["), len(node_lines))
+    except Exception as e:
+        logger.debug("assemble_context: 注入故事线失败: %s", e)
+
     return {"context": context, "status": "assembled"}
 
 
