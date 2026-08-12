@@ -367,6 +367,9 @@ class TruthEvent(Base):
                                                    # relationship_change/timeline_event
     entity_id = Column(String(100), default="")    # 伏笔id/角色名/物品名
     payload = Column(JSON, default=dict)
+    # P1-5 事实级校验：事件因果链（可溯源到前因/由谁解决）
+    cause_of = Column(JSON, default=list)          # 本事件的成因：["#12", "#14"] 或自由描述
+    resolved_by = Column(JSON, default=list)       # 谁解决了本事件/伏笔：["#23"] 或描述
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -817,6 +820,8 @@ class PostHocResult(Base):
     world_adjudication = Column(JSON, default=list)                # 世界事实裁决 adopt/pending/conflict
     story_adjudication = Column(JSON, default=list)                # 故事差异确认 landed/missed/deviated
     event_classification = Column(JSON, default=list)              # 事件归类 hook/debt/discard
+    # P1-5 事实级校验：本章事实对账节点产出的矛盾清单（正文 vs 事件流/设定的互斥状态）
+    fact_conflicts = Column(JSON, default=list)
     summary = Column(JSON, default=dict)                           # 统计摘要 {"total_issues":0,"critical_count":0,...}
     created_at = Column(DateTime, default=datetime.utcnow)
 

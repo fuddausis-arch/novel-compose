@@ -385,3 +385,58 @@ def test_mutex_hits_multi_pairs():
     text = "他脸色煞白，脸涨得通红，冷汗直冒，浑身发热。"
     hits = _mutex_hits(text)
     assert len(hits) == 2  # 脸色组 + 出汗组
+
+
+# ── P1-5 事实级校验（工程师改动）───────────────────────────
+
+from novel_agent.audit.fact_reconciliation import (
+    rule_fact_reconciliation, save_fact_conflicts,
+)
+
+
+def test_fact_reconciliation_mutex_internal():
+    """规则层：章内同部位互斥状态 → 报矛盾。"""
+    text = "他瞳孔骤然放大，然而下一秒瞳孔又收缩回去。"
+    conflicts = rule_fact_reconciliation(text)
+    assert len(conflicts) >= 1
+    assert conflicts[0]["severity"] == "high"
+
+
+def test_fact_reconciliation_known_state_reversed():
+    """规则层：事件流记录失明，正文写看见 → 报矛盾。"""
+    text = "陈默站在墙边，一眼看见了窗外的火光。"
+    conflicts = rule_fact_reconciliation(text, known_states={"陈默": ["失明"]})
+    assert len(conflicts) == 1
+    assert "失明" in conflicts[0]["fact"]
+
+
+def test_fact_reconciliation_clean_text():
+    """规则层：无矛盾文本 → 空清单（不误报）。"""
+    assert rule_fact_reconciliation("他攥紧拳头，又慢慢松开。") == []
+    assert rule_fact_reconciliation("", known_states={"陈默": ["失明"]}) == []
+
+
+def test_fact_conflicts_save_upsert(repo_session):
+    """矛盾清单落库 PostHocResult.fact_conflicts：幂等 upsert。"""
+    repo = _make_repo(repo_session)
+    save_fact_conflicts(repo, 3, [{"fact": "测试矛盾", "severity": "high"}])
+    save_fact_conflicts(repo, 3, [{"fact": "更新后矛盾", "severity": "low"}])
+    from novel_agent.bible.models import PostHocResult
+    row = repo_session.query(PostHocResult).filter(
+        PostHocResult.project_id == 99, PostHocResult.chapter == 3).first()
+    assert row is not None
+    assert row.fact_conflicts == [{"fact": "更新后矛盾", "severity": "low"}]
+
+
+def test_truth_event_causal_fields(repo_session):
+    """TruthEvent 因果字段 cause_of/resolved_by 可写可读。"""
+    from novel_agent.bible.models import TruthEvent
+    e = TruthEvent(project_id=99, chapter=1, type="timeline_event",
+                   entity_id="火焰结界", payload={"description": "结界破碎"},
+                   cause_of=["#1"], resolved_by=["#2"])
+    repo_session.add(e)
+    repo_session.commit()
+    got = repo_session.query(TruthEvent).filter(
+        TruthEvent.project_id == 99).first()
+    assert got.cause_of == ["#1"]
+    assert got.resolved_by == ["#2"]

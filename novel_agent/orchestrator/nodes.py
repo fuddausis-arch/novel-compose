@@ -2038,6 +2038,30 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
     # 正文已落盘成功，消费用户反馈（C2：失败不消费，反馈可重跑复用）
     _mark_feedbacks_applied(state, repo)
 
+    # P1-5 事实级校验：写完每章对账正文事实与事件流/设定（规则层必跑 + LLM 层尽力）。
+    # 失败不阻塞主流程；矛盾清单落 PostHocResult.fact_conflicts。
+    if repo:
+        try:
+            from novel_agent.audit.fact_reconciliation import (
+                extract_known_states, rule_fact_reconciliation,
+                run_fact_reconciliation, save_fact_conflicts,
+            )
+            known = extract_known_states(repo, chapter)
+            conflicts = rule_fact_reconciliation(content, known)
+            if llm_client:
+                llm_conflicts = await run_fact_reconciliation(
+                    content, repo, chapter, llm_client)
+                for c in llm_conflicts:
+                    if isinstance(c, dict) and c not in conflicts:
+                        conflicts.append(c)
+            save_fact_conflicts(repo, chapter, conflicts)
+            if conflicts:
+                logger.warning(
+                    "ch%d 事实对账发现 %d 处矛盾：%s", chapter, len(conflicts),
+                    "；".join(str(c.get("fact", ""))[:60] for c in conflicts[:5]))
+        except Exception as e:
+            logger.warning("ch%d 事实对账失败（不阻塞）: %s", chapter, e)
+
     return {"status": "completed"}
 
 
