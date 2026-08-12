@@ -328,3 +328,24 @@ def test_transition_slots_empty_or_bad():
     assert _has_transition_slots("") is False
     assert _has_transition_slots("{}") is False
     assert _has_transition_slots("not-json") is False
+
+
+# ── P1-3 mvp 前置依赖友好报错（工程师改动）─────────────────
+
+from novel_agent.workflows.loader import _mvp_precheck_missing
+
+
+def test_mvp_precheck_missing_reports_both(tmp_path):
+    """空工作区：同时缺 build 与 story-plan 产物，中文可读。"""
+    missing = _mvp_precheck_missing(tmp_path)
+    assert len(missing) == 2
+    assert any("build" in m for m in missing)
+    assert any("story-plan" in m for m in missing)
+
+
+def test_mvp_precheck_ok_when_products_exist(tmp_path):
+    """上游产物齐全：前置检查通过（空列表）。"""
+    (tmp_path / "meta").mkdir(parents=True)
+    (tmp_path / "meta" / "story_plan.md").write_text("plan", encoding="utf-8")
+    (tmp_path / "meta" / "world_foundation.md").write_text("wf", encoding="utf-8")
+    assert _mvp_precheck_missing(tmp_path) == []

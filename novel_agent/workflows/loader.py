@@ -346,6 +346,23 @@ def _has_transition_slots(skeleton_raw: str) -> bool:
         return False
 
 
+# P1-3：mvp 依赖的上游核心产物（相对 workspace）。volume_outline 首章可能不存在，
+# 不作为硬前置；story_plan 与 world_foundation 是 story-plan / build 的必要产物。
+_MVP_REQUIRED_PRODUCTS = (
+    ("meta/story_plan.md", "story-plan（故事规划）"),
+    ("meta/world_foundation.md", "build（世界观总纲）"),
+)
+
+
+def _mvp_precheck_missing(workspace: Path) -> list[str]:
+    """P1-3：返回 mvp 缺失的上游产物描述列表（空 = 前置满足，可运行）。"""
+    missing = []
+    for rel, step in _MVP_REQUIRED_PRODUCTS:
+        if not (Path(workspace) / rel).exists():
+            missing.append(f"{step}（{rel}）")
+    return missing
+
+
 class WorkflowRunner:
     """单条工作流定义的执行器。
 
@@ -970,6 +987,23 @@ async def run_workflow(
         {"status": "completed"/"failed", "variables": ..., "node_runs": [...]}
     """
     definition = load_definition(workflow_id, project_id=project_id)
+
+    # P1-3：mvp 前置依赖友好报错——没跑过上游工作流直接跑 mvp 时，
+    # 缺产物给中文友好提示（替代底层"缺少本地存档文件"的报错）
+    if workflow_id == "mvp":
+        missing = _mvp_precheck_missing(Path(workspace))
+        if missing:
+            return {
+                "status": "failed",
+                "error": (
+                    "缺少上游产物，无法运行 mvp：\n- "
+                    + "\n- ".join(missing)
+                    + "\n请先在「工作流」页按顺序运行：build → story-plan → outline → mvp。"
+                ),
+                "variables": {},
+                "node_runs": [],
+            }
+
     runner = WorkflowRunner(definition, llm_client, Path(workspace),
                             on_event=on_event, cfg=cfg, project_id=project_id)
     try:
