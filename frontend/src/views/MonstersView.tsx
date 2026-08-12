@@ -122,6 +122,18 @@ export function MonstersView({ project, monsters, refresh, setLoading, onSelectA
                 {m.species && <Badge variant="default">{m.species}</Badge>}
                 {m.habitats && <Badge variant="default">{m.habitats}</Badge>}
               </div>
+              {m.tags && m.tags.length > 0 && (
+                <p className="text-xs text-muted">
+                  <span className="text-foreground">标签：</span>
+                  {m.tags.join("、")}
+                </p>
+              )}
+              {m.weight !== undefined && (
+                <p className="text-xs text-muted">
+                  <span className="text-foreground">权重：</span>
+                  {m.weight}
+                </p>
+              )}
             </EntityCard>
           ))}
         </div>

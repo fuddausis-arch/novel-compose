@@ -41,6 +41,8 @@ export interface WorldSetting {
   title: string;
   content: string;
   order: number;
+  tags?: string[];
+  weight?: number;
 }
 
 export interface Character {
@@ -68,6 +70,8 @@ export interface Character {
   combat_style?: string;
   growth_curve?: string;
   emotional_anchor?: string;
+  tags?: string[];
+  weight?: number;
 }
 
 export interface Instance {
@@ -85,6 +89,8 @@ export interface Instance {
   cost: string;
   description: string;
   order: number;
+  tags?: string[];
+  weight?: number;
 }
 
 export interface Foreshadow {
@@ -97,6 +103,8 @@ export interface Foreshadow {
   planned_resolve_chapter: number;
   status: string;
   depends_on: string;
+  tags?: string[];
+  weight?: number;
 }
 
 export interface Faction {
@@ -115,6 +123,8 @@ export interface Faction {
   resources: string;
   created_at: string;
   updated_at: string;
+  tags?: string[];
+  weight?: number;
 }
 
 export interface FactionRelationship {
@@ -161,6 +171,8 @@ export interface Monster {
   first_appearance: number;
   created_at: string;
   updated_at: string;
+  tags?: string[];
+  weight?: number;
 }
 
 export type EntityType = "character" | "faction" | "monster";

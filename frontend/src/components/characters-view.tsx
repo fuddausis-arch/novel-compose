@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { AiPreviewDialog } from "@/components/ai-preview-dialog";
 import { AiSuggestionDialog } from "@/components/ai-suggestion-dialog";
 import { GenerationStreamDialog, type GenStreamItem } from "@/components/generation-stream-dialog";
+import { TagWeightFields } from "@/components/ui/tag-weight-fields";
 
 interface CharactersViewProps {
   project: Project | null;
@@ -281,6 +282,12 @@ export function CharactersView({ project, characters, refresh }: CharactersViewP
                       onChange={(e) => setEditForm({ ...editForm, [f.key]: e.target.value })}
                     />
                   ))}
+                  <TagWeightFields
+                    tags={(editForm.tags || []) as string[]}
+                    weight={editForm.weight ?? 50}
+                    onTags={(t) => setEditForm({ ...editForm, tags: t })}
+                    onWeight={(w) => setEditForm({ ...editForm, weight: w })}
+                  />
                   <div className="flex gap-2">
                     <Button size="sm" variant="primary" onClick={handleGenerateOne} disabled={generatingChar}>
                       <Sparkles className="h-3.5 w-3.5 mr-1" />
@@ -320,6 +327,8 @@ export function CharactersView({ project, characters, refresh }: CharactersViewP
                     {c.emotional_anchor && <p><span className="text-foreground">情感锚点：</span>{c.emotional_anchor}</p>}
                     {c.relationships && <p><span className="text-foreground">关系：</span>{c.relationships}</p>}
                     {c.secrets && <p><span className="text-foreground">秘密：</span>{c.secrets}</p>}
+                    {(c.tags && c.tags.length > 0) && <p><span className="text-foreground">标签：</span>{c.tags.join("、")}</p>}
+                    {c.weight !== undefined && <p><span className="text-foreground">权重：</span>{c.weight}</p>}
                   </div>
                 </div>
               )}

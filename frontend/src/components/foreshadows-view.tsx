@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { TagWeightFields } from "@/components/ui/tag-weight-fields";
 import {
   Dialog,
   DialogContent,
@@ -188,6 +189,8 @@ export function ForeshadowsView(_: ForeshadowsViewProps) {
                 <span>埋下：第{f.plant_chapter}章</span>
                 <span>计划回收：第{f.planned_resolve_chapter}章</span>
                 {f.depends_on && <span>依赖：{f.depends_on}</span>}
+                {f.tags && f.tags.length > 0 && <span>标签：{f.tags.join("、")}</span>}
+                {f.weight !== undefined && <span>权重：{f.weight}</span>}
               </div>
             </CardContent>
           </Card>
@@ -262,6 +265,12 @@ export function ForeshadowsView(_: ForeshadowsViewProps) {
                 onChange={(e) => setForm({ ...form, depends_on: e.target.value })}
               />
             </div>
+            <TagWeightFields
+              tags={(form.tags || []) as string[]}
+              weight={form.weight ?? 50}
+              onTags={(t) => setForm({ ...form, tags: t })}
+              onWeight={(w) => setForm({ ...form, weight: w })}
+            />
             <div className="flex justify-end gap-2 pt-1">
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>
                 取消

@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { TagWeightFields } from "@/components/ui/tag-weight-fields";
 import { AiPreviewDialog } from "@/components/ai-preview-dialog";
 import { AiSuggestionDialog } from "@/components/ai-suggestion-dialog";
 import { GenerationStreamDialog, type GenStreamItem } from "@/components/generation-stream-dialog";
@@ -240,6 +241,12 @@ export function WorldView({ project, worldSettings, refresh }: WorldViewProps) {
                 <Input placeholder="标题" value={newForm.title} onChange={(e) => setNewForm({ ...newForm, title: e.target.value })} />
               </div>
               <Textarea placeholder="内容" value={newForm.content} onChange={(e) => setNewForm({ ...newForm, content: e.target.value })} />
+              <TagWeightFields
+                tags={(newForm.tags || []) as string[]}
+                weight={newForm.weight ?? 50}
+                onTags={(t) => setNewForm({ ...newForm, tags: t })}
+                onWeight={(w) => setNewForm({ ...newForm, weight: w })}
+              />
               <div className="flex gap-2">
                 <Button size="sm" onClick={handleCreate}>保存</Button>
                 <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>取消</Button>
@@ -275,6 +282,12 @@ export function WorldView({ project, worldSettings, refresh }: WorldViewProps) {
                         <Input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} />
                       </div>
                       <Textarea value={editForm.content} onChange={(e) => setEditForm({ ...editForm, content: e.target.value })} />
+                      <TagWeightFields
+                        tags={(editForm.tags || []) as string[]}
+                        weight={editForm.weight ?? 50}
+                        onTags={(t) => setEditForm({ ...editForm, tags: t })}
+                        onWeight={(w) => setEditForm({ ...editForm, weight: w })}
+                      />
                       <div className="flex gap-2">
                         <Button size="sm" onClick={handleUpdate}><Save className="h-3.5 w-3.5 mr-1" /> 保存</Button>
                         <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}><X className="h-3.5 w-3.5 mr-1" /> 取消</Button>
@@ -290,6 +303,12 @@ export function WorldView({ project, worldSettings, refresh }: WorldViewProps) {
                         </div>
                       </div>
                       <p className="text-sm text-muted mt-1 whitespace-pre-wrap">{s.content}</p>
+                      {s.tags && s.tags.length > 0 && (
+                        <div className="text-xs text-muted mt-1">标签：{s.tags.join("、")}</div>
+                      )}
+                      {s.weight !== undefined && (
+                        <div className="text-xs text-muted mt-1">权重：{s.weight}</div>
+                      )}
                     </div>
                   )}
                 </div>

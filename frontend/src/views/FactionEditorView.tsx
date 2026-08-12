@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { TagWeightFields } from "@/components/ui/tag-weight-fields";
 
 interface FactionEditorViewProps {
   factionId: number;
@@ -187,6 +188,13 @@ export function FactionEditorView({ factionId, onBack }: FactionEditorViewProps)
           <Textarea placeholder="历史" value={form.history || ""} onChange={(e) => setForm({ ...form, history: e.target.value })} />
           <Textarea placeholder="目标" value={form.goals || ""} onChange={(e) => setForm({ ...form, goals: e.target.value })} />
           <Textarea placeholder="层级结构" value={form.hierarchy || ""} onChange={(e) => setForm({ ...form, hierarchy: e.target.value })} />
+
+          <TagWeightFields
+            tags={(form.tags || []) as string[]}
+            weight={form.weight ?? 50}
+            onTags={(t) => setForm({ ...form, tags: t })}
+            onWeight={(w) => setForm({ ...form, weight: w })}
+          />
 
           <div className="border border-border rounded-xl p-3 space-y-3">
             <div className="flex items-center justify-between">

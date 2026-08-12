@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TagWeightFields } from "@/components/ui/tag-weight-fields";
 
 interface InstanceEditorViewProps {
   instanceId: number;
@@ -164,6 +165,13 @@ export function InstanceEditorView({ instanceId, onBack, onGenerateInstance, gen
             placeholder="排序"
             value={form.order ?? 0}
             onChange={(e) => setForm({ ...form, order: Number(e.target.value) })}
+          />
+
+          <TagWeightFields
+            tags={(form.tags || []) as string[]}
+            weight={form.weight ?? 50}
+            onTags={(t) => setForm({ ...form, tags: t })}
+            onWeight={(w) => setForm({ ...form, weight: w })}
           />
         </CardContent>
       </Card>

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TagWeightFields } from "@/components/ui/tag-weight-fields";
 
 interface MonsterEditorViewProps {
   monsterId: number;
@@ -151,6 +152,13 @@ export function MonsterEditorView({ monsterId, onBack }: MonsterEditorViewProps)
           <Textarea placeholder="行为" value={form.behavior || ""} onChange={(e) => setForm({ ...form, behavior: e.target.value })} />
           <Textarea placeholder="弱点" value={form.weaknesses || ""} onChange={(e) => setForm({ ...form, weaknesses: e.target.value })} />
           <Textarea placeholder="背景传说" value={form.lore || ""} onChange={(e) => setForm({ ...form, lore: e.target.value })} />
+
+          <TagWeightFields
+            tags={(form.tags || []) as string[]}
+            weight={form.weight ?? 50}
+            onTags={(t) => setForm({ ...form, tags: t })}
+            onWeight={(w) => setForm({ ...form, weight: w })}
+          />
 
           <div className="border border-border rounded-xl p-3 space-y-3">
             {store.currentProject && (

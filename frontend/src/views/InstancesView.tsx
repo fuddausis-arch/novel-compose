@@ -107,6 +107,18 @@ export function InstancesView({ project, instances, refresh, setLoading, onSelec
                 {i.difficulty && <Badge variant="default">{i.difficulty}</Badge>}
                 {i.tone && <Badge variant="default">{i.tone}</Badge>}
               </div>
+              {i.tags && i.tags.length > 0 && (
+                <p className="text-xs text-muted">
+                  <span className="text-foreground">标签：</span>
+                  {i.tags.join("、")}
+                </p>
+              )}
+              {i.weight !== undefined && (
+                <p className="text-xs text-muted">
+                  <span className="text-foreground">权重：</span>
+                  {i.weight}
+                </p>
+              )}
             </EntityCard>
           ))}
         </div>

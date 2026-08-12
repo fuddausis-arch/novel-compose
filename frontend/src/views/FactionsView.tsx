@@ -119,6 +119,18 @@ export function FactionsView({ project, factions, refresh, setLoading, onSelectA
                   <Swords className="h-3 w-3" /> 阵营：{f.alignment}
                 </div>
               )}
+              {f.tags && f.tags.length > 0 && (
+                <p className="text-xs text-muted">
+                  <span className="text-foreground">标签：</span>
+                  {f.tags.join("、")}
+                </p>
+              )}
+              {f.weight !== undefined && (
+                <p className="text-xs text-muted">
+                  <span className="text-foreground">权重：</span>
+                  {f.weight}
+                </p>
+              )}
             </EntityCard>
           ))}
         </div>
