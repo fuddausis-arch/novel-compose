@@ -1,4 +1,4 @@
-"""工程师改动深度测试：world_structure district 层级 + 时间线兜底逻辑。"""
+"""工程师改动深度测试：world_structure district 层级 + 时间线兜底逻辑 + P0 系列配置。"""
 from __future__ import annotations
 
 import pytest
@@ -11,6 +11,7 @@ from novel_agent.bible.models import Base
 from novel_agent.bible.world_structure import (
     TIER_PRIORITY, classify_tier, validate_hierarchy,
 )
+from novel_agent.config import Config, load_config, save_config
 
 
 # ── world_structure：district 层级（工程师改动）─────────────
@@ -145,3 +146,38 @@ def test_timeline_emotion_arc_primary_source(db_session, tl_client):
     lane = r.json()["lanes"]["emotions"]
     assert len(lane) == 1 and lane[0]["character"] == "赵六"
     assert lane[0]["chapter"] == 1  # 来自 EmotionArc，不是兜底的 chapter=9
+
+
+# ── P0-3 内容题材红线放开开关（工程师改动）─────────────────
+
+
+def test_content_redline_default_released():
+    """默认放开：content_redline_enabled 默认 True（用户拍板内容题材放开）。"""
+    cfg = Config()
+    assert cfg.content_redline_enabled is True
+
+
+def test_content_redline_load_from_yaml(tmp_path):
+    """load_config 能读 yaml 开关：true 放开 / false 启用拦截 / "false" 字符串按语义解析。"""
+    y = tmp_path / "cfg.yaml"
+    y.write_text("content_redline_enabled: false\n", encoding="utf-8")
+    cfg = load_config(y)
+    assert cfg.content_redline_enabled is False
+
+    y.write_text("content_redline_enabled: \"false\"\n", encoding="utf-8")
+    cfg = load_config(y)
+    assert cfg.content_redline_enabled is False  # 字符串 false 不误判为 True
+
+
+def test_content_redline_save_roundtrip(tmp_path):
+    """save_config 写回开关，再 load 能读回一致值。"""
+    y = tmp_path / "cfg.yaml"
+    cfg = Config()
+    cfg.content_redline_enabled = False
+    save_config(cfg, y)
+    cfg2 = load_config(y)
+    assert cfg2.content_redline_enabled is False
+    cfg2.content_redline_enabled = True
+    save_config(cfg2, y)
+    cfg3 = load_config(y)
+    assert cfg3.content_redline_enabled is True

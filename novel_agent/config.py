@@ -122,6 +122,11 @@ class Config:
     # AI 率达标线（百分数）：AI 率 ≤ 该值视为通过。旧值 20 对真人网文误拦率高，
     # 默认放宽到 30；配合前端"显示概率+可疑段落，人工判断"使用。
     ai_pass_ai_rate: int = 30
+    # 内容题材红线放开开关（用户已拍板：内容题材放开，默认放开=True 不拦截）。
+    # 现状核实：系统本地无硬编码内容题材禁令（RedLine 表=设定遵守红线，注入生成，
+    # 不受本开关影响；去AI味禁用词=质量闸门，永不清零；厂商侧 content_filter
+    # 非本地可控）。本开关为决策记录 + 预留位，将来若引入本地题材拦截器按此开关执行。
+    content_redline_enabled: bool = True
     # 记忆语义检索：写作热路径按需检索相关前文（长篇小说后期一致性关键）。
     # 每章仅检索一次（细纲+故事线为 query，top3+缓存），早期章节默认关闭。
     memory_semantic_retrieve: bool = True
@@ -411,6 +416,9 @@ def load_config(yaml_path: Path | None = None) -> Config:
                 cfg.ai_pass_ai_rate = max(5, min(60, int(data["ai_pass_ai_rate"])))
             except (TypeError, ValueError):
                 pass
+        # 读取内容题材红线放开开关（默认放开）
+        if "content_redline_enabled" in data:
+            cfg.content_redline_enabled = _str2bool(data["content_redline_enabled"])
         # 读取记忆语义检索开关与最小章节
         if "memory_semantic_retrieve" in data:
             cfg.memory_semantic_retrieve = _str2bool(data["memory_semantic_retrieve"])
@@ -505,6 +513,8 @@ def save_config(cfg: Config, yaml_path: Path | None = None) -> Path:
     data["enable_genre_rag"] = cfg.enable_genre_rag
     # 保存章纲扩充开关
     data["allow_auto_expand_chapter"] = cfg.allow_auto_expand_chapter
+    # 保存内容题材红线放开开关
+    data["content_redline_enabled"] = cfg.content_redline_enabled
     # 安全：真实 API Key 只存 .env，config.yaml 回写 ${VAR} 占位符（防分享配置时泄露明文）
     data = _mask_api_keys(data)
     with open(yaml_path, "w", encoding="utf-8") as f:
