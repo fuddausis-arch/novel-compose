@@ -71,6 +71,9 @@ class Character(Base):
     combat_style = Column(Text, default="")          # 战斗风格+战术体系
     growth_curve = Column(Text, default="")          # 成长曲线（阶段/能力/心理变化）
     emotional_anchor = Column(Text, default="")      # 情感锚点（人物/事物/信念）
+    # P0-2 标签+权重双机制：tags=什么时候用（标签命中即注入），weight=排多前/多重要（同标签内降序）
+    tags = Column(JSON, default=list)                 # ["标签", ...] 自由打标
+    weight = Column(Integer, default=50)              # 0-100，默认 50（中）
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -91,6 +94,9 @@ class Faction(Base):
     hierarchy = Column(Text, default="")
     territories = Column(Text, default="")
     resources = Column(Text, default="")
+    # P0-2 标签+权重双机制
+    tags = Column(JSON, default=list)
+    weight = Column(Integer, default=50)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -151,6 +157,9 @@ class Monster(Base):
     weaknesses = Column(Text, default="")
     lore = Column(Text, default="")
     first_appearance = Column(Integer, default=0)
+    # P0-2 标签+权重双机制
+    tags = Column(JSON, default=list)
+    weight = Column(Integer, default=50)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -175,6 +184,9 @@ class Instance(Base):
     cost = Column(Text, default="")                    # 代价/消耗
     description = Column(Text, default="")             # 详细描述
     order = Column(Integer, default=0)                 # 排序
+    # P0-2 标签+权重双机制
+    tags = Column(JSON, default=list)
+    weight = Column(Integer, default=50)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -208,6 +220,9 @@ class WorldSetting(Base):
     title = Column(String(200), default="")
     content = Column(Text, default="")
     order = Column(Integer, default=0)
+    # P0-2 标签+权重双机制
+    tags = Column(JSON, default=list)
+    weight = Column(Integer, default=50)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -254,6 +269,9 @@ class Foreshadow(Base):
     depends_on = Column(Text, default="")          # 依赖的其他伏笔 id
     status = Column(String(20), default="pending", index=True)  # pending/planted/developing/resolved/abandoned
     planned_resolve_chapter = Column(Integer, default=0, index=True)
+    # P0-2 标签+权重双机制（伏笔 P0 永久高权重玩法：给关键伏笔打高 weight）
+    tags = Column(JSON, default=list)
+    weight = Column(Integer, default=50)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -713,6 +731,9 @@ class Location(Base):
     ruler = Column(String(200), default="")              # 城主/掌管者（角色名，多个用顿号分隔）
     plot_role = Column(Text, default="")                 # 剧情作用：该地点在剧情中的定位（如"主角重生点/最终决战地"）
     unlocked_chapter = Column(Integer, default=0)        # 剧情解锁章节：0=未解锁，>0=第 N 章起已解锁
+    # P0-2 标签+权重双机制
+    tags = Column(JSON, default=list)
+    weight = Column(Integer, default=50)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

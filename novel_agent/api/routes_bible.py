@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from fastapi import APIRouter, HTTPException, UploadFile, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from novel_agent.bible.database import SessionLocal, set_config
 from novel_agent.bible.models import Base, Foreshadow, Character
@@ -80,7 +80,9 @@ def get_repo(project_id: int, db: Session = Depends(get_db)) -> BibleRepository:
 @router.get("/{project_id}/world-settings")
 def list_world_settings(project_id: int, repo: BibleRepository = Depends(get_repo)):
     return [{"id": w.id, "project_id": w.project_id, "category": w.category, "title": w.title,
-             "content": w.content, "order": w.order}
+             "content": w.content, "order": w.order,
+             "tags": getattr(w, "tags", None) or [],
+             "weight": getattr(w, "weight", 50)}
             for w in repo.list_world_settings()]
 
 
@@ -89,6 +91,8 @@ class WorldSettingInput(BaseModel):
     title: str = ""
     content: str = ""
     order: int = 0
+    tags: list[str] = Field(default_factory=list)   # P0-2 标签（什么时候用）
+    weight: int = 50                                # P0-2 权重 0-100（排多前/多重要）
 
 
 class FactionInput(BaseModel):
@@ -103,6 +107,8 @@ class FactionInput(BaseModel):
     hierarchy: str = ""
     territories: str = ""
     resources: str = ""
+    tags: list[str] = Field(default_factory=list)   # P0-2 标签
+    weight: int = 50                                # P0-2 权重
 
 
 class FactionRelationshipInput(BaseModel):
@@ -141,6 +147,8 @@ class MonsterInput(BaseModel):
     weaknesses: str = ""
     lore: str = ""
     first_appearance: int = 0
+    tags: list[str] = Field(default_factory=list)   # P0-2 标签
+    weight: int = 50                                # P0-2 权重
 
 
 class InstanceInput(BaseModel):
@@ -156,13 +164,16 @@ class InstanceInput(BaseModel):
     cost: str = ""
     description: str = ""
     order: int = 0
+    tags: list[str] = Field(default_factory=list)   # P0-2 标签
+    weight: int = 50                                # P0-2 权重
 
 
 @router.post("/{project_id}/world-settings")
 def create_world_setting(project_id: int, data: WorldSettingInput, repo: BibleRepository = Depends(get_repo)):
     w = repo.create_world_setting(**data.model_dump())
     return {"id": w.id, "project_id": w.project_id, "category": w.category, "title": w.title,
-            "content": w.content, "order": w.order}
+            "content": w.content, "order": w.order,
+            "tags": getattr(w, "tags", None) or [], "weight": getattr(w, "weight", 50)}
 
 
 @router.put("/{project_id}/world-settings/{setting_id}")
@@ -178,7 +189,8 @@ def update_world_setting(project_id: int, setting_id: int, data: WorldSettingInp
         setattr(w, k, v)
     db.commit(); db.refresh(w)
     return {"id": w.id, "category": w.category, "title": w.title,
-            "content": w.content, "order": w.order, "project_id": w.project_id}
+            "content": w.content, "order": w.order, "project_id": w.project_id,
+            "tags": getattr(w, "tags", None) or [], "weight": getattr(w, "weight", 50)}
 
 
 @router.delete("/{project_id}/world-settings/{setting_id}")
@@ -213,7 +225,9 @@ def _char_dict(c):
             "language_style": getattr(c, "language_style", ""),
             "combat_style": getattr(c, "combat_style", ""),
             "growth_curve": getattr(c, "growth_curve", ""),
-            "emotional_anchor": getattr(c, "emotional_anchor", "")}
+            "emotional_anchor": getattr(c, "emotional_anchor", ""),
+            "tags": getattr(c, "tags", None) or [],
+            "weight": getattr(c, "weight", 50)}
 
 
 class CharacterInput(BaseModel):
@@ -239,6 +253,8 @@ class CharacterInput(BaseModel):
     combat_style: str = ""
     growth_curve: str = ""
     emotional_anchor: str = ""
+    tags: list[str] = Field(default_factory=list)   # P0-2 标签
+    weight: int = 50                                # P0-2 权重
 
 
 @router.post("/{project_id}/characters")
@@ -286,6 +302,8 @@ class ForeshadowInput(BaseModel):
     planned_resolve_chapter: int = 0
     status: str = "pending"
     depends_on: str = ""
+    tags: list[str] = Field(default_factory=list)   # P0-2 标签
+    weight: int = 50                                # P0-2 权重（P0 伏笔可打高权重常驻）
 
 
 @router.post("/{project_id}/foreshadows")
@@ -511,6 +529,8 @@ def _faction_dict(f):
             "tier": f.tier, "alignment": f.alignment, "description": f.description,
             "history": f.history, "goals": f.goals, "hierarchy": f.hierarchy,
             "territories": f.territories, "resources": f.resources,
+            "tags": getattr(f, "tags", None) or [],
+            "weight": getattr(f, "weight", 50),
             "created_at": f.created_at.isoformat() if f.created_at else None,
             "updated_at": f.updated_at.isoformat() if f.updated_at else None}
 
@@ -647,7 +667,9 @@ def _monster_dict(m):
             "rank": m.rank, "tier": m.tier, "attributes": m.attributes, "skills": m.skills,
             "drops": m.drops, "habitats": m.habitats, "behavior": m.behavior,
             "weaknesses": m.weaknesses, "lore": m.lore,
-            "first_appearance": m.first_appearance}
+            "first_appearance": m.first_appearance,
+            "tags": getattr(m, "tags", None) or [],
+            "weight": getattr(m, "weight", 50)}
 
 
 @router.get("/{project_id}/monsters")
@@ -692,7 +714,9 @@ def _instance_dict(i):
             "chapter_range": i.chapter_range, "objective": i.objective,
             "mechanism": i.mechanism, "tone": i.tone, "difficulty": i.difficulty,
             "rewards": i.rewards, "cost": i.cost, "description": i.description,
-            "order": i.order}
+            "order": i.order,
+            "tags": getattr(i, "tags", None) or [],
+            "weight": getattr(i, "weight", 50)}
 
 
 @router.get("/{project_id}/instances")
@@ -2241,6 +2265,8 @@ def _foreshadow_dict(f):
         "plant_chapter": f.plant_chapter,
         "planned_resolve_chapter": f.planned_resolve_chapter,
         "depends_on": f.depends_on,
+        "tags": getattr(f, "tags", None) or [],
+        "weight": getattr(f, "weight", 50),
         "created_at": f.created_at.isoformat() if f.created_at else None,
         "updated_at": f.updated_at.isoformat() if f.updated_at else None,
     }

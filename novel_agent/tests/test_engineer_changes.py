@@ -181,3 +181,115 @@ def test_content_redline_save_roundtrip(tmp_path):
     save_config(cfg2, y)
     cfg3 = load_config(y)
     assert cfg3.content_redline_enabled is True
+
+
+# ── P0-2 标签+权重双机制（工程师改动）─────────────────────
+
+from novel_agent.memory.core import CoreMemoryAssembler, sort_assets_by_tag_weight
+
+
+class _Asset:
+    """轻量资产桩：模拟 ORM 对象（name/tags/weight + 扩展属性）。"""
+
+    def __init__(self, name="", tags=None, weight=50, **kw):
+        self.name = name
+        self.tags = tags or []
+        self.weight = weight
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+def test_sort_tag_weight_hit_first_desc():
+    """命中（标签出现在上下文）的在前，同标签内 weight 降序，未命中的垫底。"""
+    items = [
+        _Asset(name="张三", tags=["宗门"], weight=30),
+        _Asset(name="李四", tags=["宗门"], weight=90),
+        _Asset(name="王五", tags=["散修"], weight=80),
+    ]
+    sorted_items, hits = sort_assets_by_tag_weight(items, "本章细纲：宗门大会")
+    names = [x.name for x in sorted_items]
+    assert names.index("李四") < names.index("张三") < names.index("王五")
+    assert {x.name for x in hits} == {"李四", "张三"}
+
+
+def test_sort_tag_weight_name_hit_strong():
+    """名称命中=强命中，即使未打标签也排前。"""
+    items = [_Asset(name="魔渊"), _Asset(name="青云宗")]
+    sorted_items, hits = sort_assets_by_tag_weight(items, "第5章 勇闯魔渊")
+    assert sorted_items[0].name == "魔渊"
+    assert [x.name for x in hits] == ["魔渊"]
+
+
+def test_sort_tag_weight_dict_compat():
+    """活跃实体是 dict 列表，排序函数需兼容 dict 输入。"""
+    items = [{"name": "火系", "tags": ["火"], "weight": 10},
+             {"name": "冰系", "tags": ["冰"], "weight": 80}]
+    sorted_items, hits = sort_assets_by_tag_weight(items, "本章：烈火焚城")
+    assert sorted_items[0]["name"] == "火系"
+    assert [x["name"] for x in hits] == ["火系"]
+
+
+@pytest.fixture()
+def repo_session(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path}/p02.db")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    yield s
+    s.close()
+
+
+def _make_repo(s, project_id=99):
+    from novel_agent.bible.repository import BibleRepository
+    s.add(m.Project(id=project_id, title="测试书"))
+    s.commit()
+    return BibleRepository(db=s, project_id=project_id)
+
+
+def test_p02_repo_readwrite_tags_weight(repo_session):
+    """repository 读写 tags/weight：create/update 透传生效。"""
+    repo = _make_repo(repo_session)
+    c = repo.create_character(name="沈青", role="主角", tags=["宗门"], weight=95)
+    repo_session.commit()
+    got = repo.get_character("沈青")
+    assert got.tags == ["宗门"]
+    assert got.weight == 95
+    repo.update_character("沈青", weight=60)
+    assert repo.get_character("沈青").weight == 60
+
+
+def test_p02_assemble_tagged_assets_injection(repo_session):
+    """标签命中补充段：本章细纲命中副本/地点标签或名称 → 注入，且高权重排前。"""
+    repo = _make_repo(repo_session)
+    repo_session.add(m.Outline(
+        project_id=99, level="chapter", order=1, title="第1章",
+        summary="本章：攻打青云宗，主角进入魔渊副本"))
+    repo_session.add(m.Instance(project_id=99, name="魔渊试炼", tags=["副本", "魔渊"],
+                                weight=90, description="魔渊深处的试炼"))
+    repo_session.add(m.Instance(project_id=99, name="灵田", tags=["日常"], weight=10,
+                                description="种田日常副本"))
+    repo_session.add(m.Location(project_id=99, name="青云宗", tags=["宗门"], weight=80,
+                                description="正道第一宗门"))
+    repo_session.commit()
+    asm = CoreMemoryAssembler(repo)
+    text = asm.assemble(chapter=1, max_chars=4000)
+    assert "【标签命中设定】" in text
+    seg = text[text.index("【标签命中设定】"):]
+    assert "魔渊试炼" in seg
+    assert "青云宗" in seg
+    assert "灵田" not in seg           # 未命中标签的副本不注入
+    assert seg.index("魔渊试炼") < seg.index("青云宗")  # weight 90 排在 80 前
+
+
+def test_p02_world_settings_sorted_by_tag_weight(repo_session):
+    """世界观设定按标签命中+权重排序：命中标签的高权重条目排前。"""
+    repo = _make_repo(repo_session)
+    repo_session.add(m.WorldSetting(project_id=99, category="规则", title="灵气复苏",
+                                    content="灵气浓度每十年翻倍", tags=["灵气"], weight=40))
+    repo_session.add(m.WorldSetting(project_id=99, category="规则", title="宗门大战",
+                                    content="宗门恩怨不可化解", tags=["宗门"], weight=90))
+    repo_session.commit()
+    asm = CoreMemoryAssembler(repo)
+    text = asm.assemble(chapter=1, max_chars=4000)
+    assert "宗门大战" in text and "灵气复苏" in text
+    assert text.index("宗门大战") < text.index("灵气复苏")

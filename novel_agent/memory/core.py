@@ -83,6 +83,45 @@ def format_active_storylines(repo, chapter: int, max_lines: int = 6) -> str:
     return "\n".join(out)
 
 
+def sort_assets_by_tag_weight(items, ctx_text: str,
+                              name_attrs: tuple = ("name", "title", "alias")) -> tuple:
+    """P0-2 标签+权重排序：命中（标签/名称出现在本章上下文）的在前，组内按 weight 降序。
+
+    标签=什么时候用（上下文命中标签即注入），权重=排多前/多重要（同组降序，
+    高权重靠前占更大篇幅；预算不足时低权重先被裁掉）。
+
+    Returns:
+        (sorted_items, hit_items): 排序后的资产列表 + 命中的资产子集
+    """
+    scored = []
+    for it in items:
+        if isinstance(it, dict):
+            weight = it.get("weight", 50)
+            tags = it.get("tags", None) or []
+            name_parts = [str(it.get(a, "") or "") for a in name_attrs]
+        else:
+            weight = getattr(it, "weight", 50)
+            if weight is None:
+                weight = 50
+            tags = getattr(it, "tags", None) or []
+            name_parts = [str(getattr(it, a, "") or "") for a in name_attrs]
+        name_text = " ".join(p for p in name_parts if p)
+        hit = False
+        if name_text and ctx_text and name_text in ctx_text:
+            hit = True
+            weight = max(weight, 60)  # 名称命中=强命中，至少 60 保证排前
+        elif ctx_text:
+            for t in tags:
+                if t and str(t) in ctx_text:
+                    hit = True
+                    break
+        scored.append((hit, weight, it))
+    scored.sort(key=lambda x: (not x[0], -x[1]))
+    sorted_items = [it for _, _, it in scored]
+    hit_items = [it for h, _, it in scored if h]
+    return sorted_items, hit_items
+
+
 class CoreMemoryAssembler:
     """装配某章生成时的常驻上下文。"""
 
@@ -129,6 +168,12 @@ class CoreMemoryAssembler:
         # 预先计算各段文本
         # 1. 高优先级（必须完整）：本章细纲
         chapter_outline = self._chapter_outline_summary(chapter)
+        # P0-2 标签+权重注入的关键词源：本章细纲 + 当前故事线
+        ctx_text = chapter_outline
+        try:
+            ctx_text += " " + self._format_active_storylines(chapter)
+        except Exception:
+            pass
         # 2. 高优先级：前文摘要（长篇关键）
         prev_summary = ""
         if chapter > 1:
@@ -136,9 +181,9 @@ class CoreMemoryAssembler:
         # 3. 中优先级：项目信息
         project = self._cached("project", self.repo.get_project)
         project_text = self._format_project(project) if project else ""
-        # 3.5 中优先级：世界观设定（写章节时必须知道的世界规则）
+        # 3.5 中优先级：世界观设定（写章节时必须知道的世界规则；P0-2 标签命中+权重排序）
         world_settings = self._cached("world_settings", self.repo.list_world_settings)
-        world_text = self._format_world_settings(world_settings) if world_settings else ""
+        world_text = self._format_world_settings(world_settings, ctx_text) if world_settings else ""
         # 4. 中优先级：角色（可裁剪）- 优先读状态快照
         snapshot_text = self._format_snapshot(chapter)
         if snapshot_text:
@@ -149,7 +194,7 @@ class CoreMemoryAssembler:
         else:
             all_chars = self._cached("characters", self.repo.list_characters)
             chars = self._filter_characters_for_chapter(chapter, all_chars)
-            chars_text = self._format_characters(chars) if chars else ""
+            chars_text = self._format_characters(chars, ctx_text) if chars else ""
         # 5. 中优先级：伏笔（硬约束，置于角色之前）
         to_plant = self.repo.get_foreshadows_to_plant(chapter)
         plant_text = self._format_to_plant(to_plant) if to_plant else ""
@@ -248,9 +293,9 @@ class CoreMemoryAssembler:
                     sections.append(compressed)
                     remaining -= len(compressed) + 2
 
-        # 6. 活跃实体（势力/怪物）—迁移自 MemoryPackBuilder working memory
+        # 6. 活跃实体（势力/怪物）—迁移自 MemoryPackBuilder working memory；P0-2 标签+权重排序
         if remaining > 200:
-            active_entities = self._format_active_entities(chapter)
+            active_entities = self._format_active_entities(chapter, ctx_text)
             if active_entities:
                 if len(active_entities) + 2 <= remaining:
                     sections.append(active_entities)
@@ -297,6 +342,21 @@ class CoreMemoryAssembler:
             except Exception as e:
                 logger.debug("archival 热路径检索失败: %s", e)
 
+        # 8.5 P0-2 标签命中补充段（最低优先级）：覆盖常规注入段未覆盖的资产
+        # （副本/地点），本章上下文命中其标签或名称 → 按 weight 降序注入
+        if remaining > 200:
+            try:
+                tagged_text = self._cached(
+                    "tagged_assets", lambda: self._format_tagged_assets(chapter, ctx_text))
+                if tagged_text:
+                    if len(tagged_text) + 2 <= remaining:
+                        sections.append(tagged_text)
+                        remaining -= len(tagged_text) + 2
+                    elif remaining > 150:
+                        sections.append(tagged_text[:remaining])
+            except Exception as e:
+                logger.debug("标签命中补充段注入失败: %s", e)
+
         return "\n\n".join(sections)
 
     def _get_phase(self, chapter: int) -> str:
@@ -330,11 +390,15 @@ class CoreMemoryAssembler:
             if c.role in ("主角", "反派") and len(selected) < role_quota:
                 selected.append(c)
 
-        # 2. 本章大纲中提到的角色
+        # 2. 本章大纲中提到的角色（P0-2：含标签命中——细纲出现角色标签也算相关）
         outline = self._chapter_outline_summary(chapter)
         if outline:
             for c in all_chars:
-                if c not in selected and c.name and c.name in outline:
+                if c in selected:
+                    continue
+                tags = getattr(c, "tags", None) or []
+                tag_hit = any(t and str(t) in outline for t in tags)
+                if c.name and (c.name in outline or tag_hit):
                     selected.append(c)
                     if len(selected) >= max_chars:
                         break
@@ -397,17 +461,21 @@ class CoreMemoryAssembler:
                 parts.append(f"【全书立意】\n{project.central_concept}")
         return "\n".join(parts)
 
-    def _format_world_settings(self, world_settings) -> str:
-        """格式化世界观设定，完整注入不截断。"""
+    def _format_world_settings(self, world_settings, ctx_text: str = "") -> str:
+        """格式化世界观设定，完整注入不截断；按标签命中+权重降序排列（P0-2）。"""
+        sorted_ws, _ = sort_assets_by_tag_weight(world_settings, ctx_text,
+                                                 name_attrs=("title", "name"))
         lines = ["【世界观设定】"]
-        for w in world_settings:
+        for w in sorted_ws:
             content = (w.content or "")
             lines.append(f"- [{w.category}] {w.title}：{content}")
         return "\n".join(lines)
 
-    def _format_characters(self, chars) -> str:
+    def _format_characters(self, chars, ctx_text: str = "") -> str:
+        """格式化角色状态（标签命中+权重排序，P0-2：命中本章上下文的角色排前，组内高权重靠前）。"""
+        sorted_chars, _ = sort_assets_by_tag_weight(chars, ctx_text)
         lines = ["【当前角色状态】"]
-        for c in chars:
+        for c in sorted_chars:
             info = f"- {c.name}（{c.role or '角色'}）"
             if c.current_location:
                 info += f" | 位置：{c.current_location}"
@@ -586,25 +654,76 @@ class CoreMemoryAssembler:
             lines.append(f"故事线：{match.strand}")
         return "\n".join(lines)
 
-    def _format_active_entities(self, chapter: int) -> str:
-        """格式化本章活跃实体（势力/怪物）—迁移自 MemoryPackBuilder。"""
+    def _format_active_entities(self, chapter: int, ctx_text: str = "") -> str:
+        """格式化本章活跃实体（势力/怪物）—迁移自 MemoryPackBuilder；P0-2 标签命中+权重排序。"""
         try:
             active = self.repo.get_active_entities_for_chapter(chapter, window=3)
         except Exception:
             return ""
         lines = []
         if active.get("factions"):
+            sorted_f, _ = sort_assets_by_tag_weight(
+                active["factions"], ctx_text, name_attrs=("name", "alias"))
             lines.append("【近期活跃势力】")
-            for f in active["factions"]:
+            for f in sorted_f:
                 line = f"- {f['name']}（层级：{f.get('tier','未标')} / 阵营：{f.get('alignment','未标')}）"
                 lines.append(line)
         if active.get("monsters"):
+            sorted_m, _ = sort_assets_by_tag_weight(
+                active["monsters"], ctx_text, name_attrs=("name", "alias"))
             lines.append("【近期活跃怪物/神明】")
-            for m in active["monsters"]:
+            for m in sorted_m:
                 lines.append(
                     f"- {m['name']}（层级：{m.get('tier','未标')} / 物种：{m.get('species','未标')}）"
                 )
         return "\n".join(lines) if lines else ""
+
+    def _format_tagged_assets(self, chapter: int, ctx_text: str = "") -> str:
+        """P0-2 标签命中补充段：本章上下文命中副本/地点的标签或名称 → 按 weight 降序注入。
+
+        覆盖常规注入段未覆盖的资产类型（副本/地点）；角色/势力/怪物/世界观
+        已由各自注入段按标签+权重排序，不重复注入。
+        """
+        ctx_text = ctx_text or ""
+        hits: list = []
+        # 副本（Instance）
+        try:
+            from novel_agent.bible.models import Instance
+            insts = self.repo.db.query(Instance).filter(
+                Instance.project_id == self.repo.project_id
+            ).all()
+            sorted_insts, hit_insts = sort_assets_by_tag_weight(insts, ctx_text)
+            for inst in hit_insts:
+                desc = (inst.description or "").strip().replace("\n", " ")
+                if len(desc) > 120:
+                    desc = desc[:120] + "…"
+                hits.append((getattr(inst, "weight", 50) or 50,
+                             f"- [副本] {inst.name}：{desc}"))
+        except Exception as e:
+            logger.debug("标签命中补充段：副本读取失败: %s", e)
+        # 地点（Location）
+        try:
+            from novel_agent.bible.models import Location
+            locs = self.repo.db.query(Location).filter(
+                Location.project_id == self.repo.project_id
+            ).all()
+            sorted_locs, hit_locs = sort_assets_by_tag_weight(locs, ctx_text)
+            for loc in hit_locs:
+                desc = (loc.description or "").strip().replace("\n", " ")
+                if len(desc) > 120:
+                    desc = desc[:120] + "…"
+                hits.append((getattr(loc, "weight", 50) or 50,
+                             f"- [地点] {loc.name}：{desc}"))
+        except Exception as e:
+            logger.debug("标签命中补充段：地点读取失败: %s", e)
+        if not hits:
+            return ""
+        hits.sort(key=lambda x: -x[0])
+        out = ["【标签命中设定】以下设定与本章剧情相关（按重要度排序，写作时遵守设定，不得违背）："]
+        for _, line in hits[:12]:
+            out.append(line)
+        logger.info("标签命中补充段：注入 %d 条（副本+地点）", len(hits))
+        return "\n".join(out)
 
     def _format_recent_state_changes(self, chapter: int) -> str:
         """格式化近期状态变更—迁移自 MemoryPackBuilder episodic memory。"""
