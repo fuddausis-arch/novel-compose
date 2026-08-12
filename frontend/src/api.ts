@@ -1,4 +1,4 @@
-import type { Project, Character, Foreshadow, Outline, WorldSetting, ChapterListItem, ChapterText, ReviewResult, ChapterBrief, Summary, GenreContext, PlanningResult, PlanningIssue, Faction, FactionRelationship, CharacterRelationship, Monster, Instance, ImportPreviewData, ImportCounts, EntityAppearance, EntityType, LLMConfig, AgentLLMConfig, EmbeddingConfig, SuggestionItem, StateChange, TruthEvent, ChapterCommitResult, ChatHistoryMsg, InteractiveChatResponse, RedLine, Gag, ImportedChapter, ImportedChapterDetail, PlotDebt, RelationshipChange, AiStyleReport, AiStyleRepairResult, DeepAiStyleReport, AiModelStatus, Storyline, StorylineMeta, StorylineDetail, StorylineNode, StorylineRelation, ScanAlert } from "./types";
+import type { Project, Character, Foreshadow, Outline, WorldSetting, ChapterListItem, ChapterText, ReviewResult, ChapterBrief, Summary, GenreContext, PlanningResult, PlanningIssue, Faction, FactionRelationship, CharacterRelationship, Monster, Instance, ImportPreviewData, ImportCounts, EntityAppearance, EntityType, LLMConfig, AgentLLMConfig, EmbeddingConfig, SuggestionItem, StateChange, TruthEvent, ChapterCommitResult, ChatHistoryMsg, InteractiveChatResponse, RedLine, Gag, ImportedChapter, ImportedChapterDetail, PlotDebt, RelationshipChange, AiStyleReport, AiStyleRepairResult, DeepAiStyleReport, AiModelStatus, Storyline, StorylineMeta, StorylineDetail, StorylineNode, StorylineRelation, ScanAlert, EmotionArc, PleasureBeat, MemoryRefinement, NameOverride, Location } from "./types";
 import type { ChatSession, ChatMessageItem, ChatSendPayload, ChatChunkEvent, ChatActionEvent } from "./types/chat";
 
 // 后端 API 地址。默认同源（浏览器走 vite 代理 / 后端静态托管）。
@@ -150,6 +150,13 @@ export const api = {
   // State changes & events
   listStates: (projectId: number) => request<StateChange[]>(`/api/bible/${projectId}/states`),
   listEvents: (projectId: number) => request<TruthEvent[]>(`/api/bible/${projectId}/events`),
+
+  // P0-4 资产页扩充：情感弧线 / 爽点 / 记忆精炼 / 命名覆盖 / 地点
+  listEmotionArcs: (projectId: number) => request<EmotionArc[]>(`/api/bible/${projectId}/emotion-arcs`),
+  listPleasureBeats: (projectId: number) => request<PleasureBeat[]>(`/api/bible/${projectId}/pleasure-beats`),
+  listMemoryRefinements: (projectId: number) => request<{ items: MemoryRefinement[] }>(`/api/bible/${projectId}/memory-refinements`),
+  listNameOverrides: (projectId: number) => request<NameOverride[]>(`/api/bible/${projectId}/name-overrides`),
+  listLocations: (projectId: number) => request<Location[]>(`/api/graphs/${projectId}/locations`),
 
   // Bible: plot debts（剧情债）
   listPlotDebts: (projectId: number, status?: string) => {

@@ -230,6 +230,68 @@ export interface TruthEvent {
   timestamp: string;
 }
 
+// P0-4 资产页扩充：情感弧线 / 爽点 / 记忆精炼 / 命名覆盖 / 地点
+export interface EmotionArc {
+  id: number;
+  project_id: number;
+  character_name: string;
+  chapter: number;
+  event: string;
+  emotion_before: string;
+  emotion_after: string;
+  growth: string;
+}
+
+export interface PleasureBeat {
+  id: number;
+  project_id: number;
+  chapter: number;
+  tier: string;
+  beat_type: string;
+  intensity: number;
+  phase: string;
+  delivered: boolean;
+  delivered_intensity: number;
+}
+
+export interface MemoryRefinement {
+  id: number;
+  chapter: number;
+  entity_type: string;
+  entity_id: string;
+  field: string;
+  new_value: string;
+  source_preview: string;
+  method: string;
+  created_at: string;
+}
+
+export interface NameOverride {
+  id: number;
+  project_id: number;
+  entity_type: string;
+  canonical_name: string;
+  alias: string;
+  created_at: string;
+}
+
+export interface Location {
+  id: number;
+  project_id: number;
+  name: string;
+  type: string;
+  description: string;
+  parent_name: string;
+  coord_x: number;
+  coord_y: number;
+  importance: string;
+  tier: string;
+  layer: string;
+  ruler: string;
+  plot_role: string;
+  unlocked_chapter: number;
+}
+
 export interface RelationshipChange {
   id: number;
   project_id: number;

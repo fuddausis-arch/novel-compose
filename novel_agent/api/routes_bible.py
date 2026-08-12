@@ -2284,6 +2284,44 @@ def list_events(project_id: int, repo: BibleRepository = Depends(get_repo)):
     return [_event_dict(e) for e in repo.list_events()]
 
 
+# ===== 情感弧线（EmotionArc）— P0-4 资产页只读列表 =====
+@router.get("/{project_id}/emotion-arcs")
+def list_emotion_arcs(project_id: int, character_name: str = "",
+                      db: Session = Depends(get_db)):
+    from novel_agent.bible.models import EmotionArc
+    q = db.query(EmotionArc).filter(EmotionArc.project_id == project_id)
+    if character_name:
+        q = q.filter(EmotionArc.character_name == character_name)
+    items = q.order_by(EmotionArc.chapter.asc()).all()
+    return [
+        {
+            "id": e.id, "project_id": e.project_id,
+            "character_name": e.character_name, "chapter": e.chapter,
+            "event": e.event, "emotion_before": e.emotion_before,
+            "emotion_after": e.emotion_after, "growth": e.growth,
+        }
+        for e in items
+    ]
+
+
+# ===== 爽点（PleasureBeat）— P0-4 资产页只读列表 =====
+@router.get("/{project_id}/pleasure-beats")
+def list_pleasure_beats(project_id: int, db: Session = Depends(get_db)):
+    from novel_agent.bible.models import PleasureBeat
+    items = db.query(PleasureBeat).filter(
+        PleasureBeat.project_id == project_id
+    ).order_by(PleasureBeat.chapter.asc()).all()
+    return [
+        {
+            "id": p.id, "project_id": p.project_id, "chapter": p.chapter,
+            "tier": p.tier, "beat_type": p.beat_type, "intensity": p.intensity,
+            "phase": p.phase, "delivered": p.delivered,
+            "delivered_intensity": p.delivered_intensity,
+        }
+        for p in items
+    ]
+
+
 # ---- 项目级 Bible 导出 ----
 @router.get("/{project_id}/export")
 def export_bible(project_id: int, repo: BibleRepository = Depends(get_repo)):

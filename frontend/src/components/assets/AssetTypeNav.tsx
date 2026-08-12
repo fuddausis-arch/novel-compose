@@ -9,7 +9,14 @@ export type AssetNavType =
   | "instances"
   | "redLines"
   | "gags"
-  | "importFolder";
+  | "importFolder"
+  // P0-4 资产页扩充：只读列表 tab
+  | "locations"
+  | "emotionArcs"
+  | "pleasureBeats"
+  | "memoryRefinements"
+  | "nameOverrides"
+  | "events";
 
 export const ASSET_TYPES: { key: AssetNavType; label: string; icon: string }[] = [
   { key: "characters", label: "角色", icon: "👤" },
@@ -21,6 +28,13 @@ export const ASSET_TYPES: { key: AssetNavType; label: string; icon: string }[] =
   { key: "redLines", label: "红线", icon: "🚫" },
   { key: "gags", label: "梗管理", icon: "🎭" },
   { key: "importFolder", label: "导入文件夹", icon: "📁" },
+  // P0-4 扩充
+  { key: "locations", label: "地点", icon: "📍" },
+  { key: "emotionArcs", label: "情感弧线", icon: "💗" },
+  { key: "pleasureBeats", label: "爽点", icon: "⚡" },
+  { key: "memoryRefinements", label: "记忆精炼", icon: "🧠" },
+  { key: "nameOverrides", label: "命名覆盖", icon: "✏️" },
+  { key: "events", label: "事件流", icon: "📜" },
 ];
 
 export interface AssetTypeNavProps {

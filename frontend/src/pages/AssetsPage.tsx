@@ -183,7 +183,7 @@ export default function AssetsPage() {
           ) : type === "importFolder" ? (
             <ImportFolderView />
           ) : (
-            <AssetCards type={type} />
+            <AssetCards type={type} projectId={project?.id ?? 0} />
           )}
         </div>
       </div>
