@@ -440,3 +440,104 @@ def test_truth_event_causal_fields(repo_session):
         TruthEvent.project_id == 99).first()
     assert got.cause_of == ["#1"]
     assert got.resolved_by == ["#2"]
+
+
+# ── P1-6 提交后闭环（工程师改动）────────────────────────────
+
+from novel_agent.orchestrator.post_commit import (
+    normalize_names, persist_roundtable_conclusions,
+    suggest_foreshadow_plants, check_redline_violations,
+    writeback_audit_fixes,
+)
+
+
+class _FakeLLM:
+    """返回预设 JSON 字符串的假 LLM（避免真实调用）。"""
+
+    def __init__(self, reply: str):
+        self.reply = reply
+
+    async def generate(self, prompt, system=None, **kw):
+        return self.reply
+
+
+def test_normalize_names_replaces_alias(repo_session):
+    """命名归一化：正文中的别名替换为正名；别名是正名子串时跳过（保护正名）。"""
+    repo = _make_repo(repo_session)
+    repo.create_name_override(entity_type="character", canonical_name="陈默", alias="沉默哥")
+    repo.create_name_override(entity_type="character", canonical_name="陈默", alias="陈")  # 子串，保护跳过
+    repo_session.commit()
+    text = "沉默哥推开门，陈默站在门口。"
+    normalized, cnt = normalize_names(text, repo)
+    assert normalized == "陈默推开门，陈默站在门口。"
+    assert cnt == 1  # 仅"沉默哥"被替换；"陈"是正名子串跳过
+    assert "沉默哥" not in normalized
+
+
+def test_suggest_foreshadow_plants_lands_pending(repo_session):
+    """伏笔自动埋设：LLM 建议 → 落库 pending，已存在 id 跳过。"""
+    repo = _make_repo(repo_session)
+    from novel_agent.bible.models import Foreshadow
+    repo.create_foreshadow(foreshadow_id="S-001", tier="short", description="已存在伏笔")
+    llm = _FakeLLM(json.dumps({
+        "foreshadows": [
+            {"foreshadow_id": "S-001", "tier": "short", "description": "重复", "planned_resolve_chapter": 10},
+            {"foreshadow_id": "M-002", "tier": "medium", "description": "窗台上的刻痕与某个大人物有关",
+             "planned_resolve_chapter": 30},
+        ]
+    }))
+    import asyncio
+    suggestions = asyncio.get_event_loop().run_until_complete(
+        suggest_foreshadow_plants("正文", repo, 3, llm))
+    assert [s["foreshadow_id"] for s in suggestions] == ["M-002"]
+    f = repo.get_foreshadow("M-002")
+    assert f is not None
+    assert f.status == "pending"
+    assert f.plant_chapter == 3
+
+
+def test_check_redline_violations_returns(repo_session):
+    """红线检测：LLM 返回违规清单 → 透出。"""
+    repo = _make_repo(repo_session)
+    from novel_agent.bible.models import RedLine
+    repo.create_red_line(content="主角不得死亡", severity="hard", scope="project")
+    llm = _FakeLLM(json.dumps({
+        "violations": [{"redline": "主角不得死亡", "evidence": "主角被一剑穿心", "severity": "hard"}]
+    }))
+    import asyncio
+    violations = asyncio.get_event_loop().run_until_complete(
+        check_redline_violations("正文", repo, 3, llm))
+    assert len(violations) == 1
+    assert violations[0]["severity"] == "hard"
+
+
+def test_writeback_audit_fixes_updates_character(repo_session):
+    """审校回写：LLM 提取的字段修正应用到角色卡。"""
+    repo = _make_repo(repo_session)
+    repo.create_character(name="沈青", role="主角", personality="温吞")
+    llm = _FakeLLM(json.dumps({
+        "fixes": [{"name": "沈青", "field": "personality", "value": "外冷内热"},
+                  {"name": "沈青", "field": "invalid_field", "value": "x"},
+                  {"name": "不存在的人", "field": "appearance", "value": "x"}]
+    }))
+    import asyncio
+    applied = asyncio.get_event_loop().run_until_complete(
+        writeback_audit_fixes({"summary": "审校发现性格描述矛盾"}, repo, 3, llm))
+    assert applied == [{"name": "沈青", "field": "personality"}]
+    assert repo.get_character("沈青").personality == "外冷内热"
+
+
+def test_persist_roundtable_conclusions(repo_session):
+    """圆桌落库：结构化结论写入角色卡与世界观设定。"""
+    repo = _make_repo(repo_session)
+    repo.create_character(name="林渊", role="主角", secrets="")
+    n = persist_roundtable_conclusions(repo, {
+        "characters": [{"name": "林渊", "field": "secrets", "value": "会梦见未来"}],
+        "world_settings": [{"category": "规则", "title": "灵气规则", "content": "灵气只存在于地表百米内"}],
+    })
+    assert n == 2
+    assert repo.get_character("林渊").secrets == "会梦见未来"
+    from novel_agent.bible.models import WorldSetting
+    ws = repo_session.query(WorldSetting).filter(
+        WorldSetting.project_id == 99, WorldSetting.title == "灵气规则").first()
+    assert ws is not None

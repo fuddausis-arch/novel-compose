@@ -2038,6 +2038,24 @@ async def summarize_chapter(state: ChapterGenState, llm_client: LLMClient,
     # 正文已落盘成功，消费用户反馈（C2：失败不消费，反馈可重跑复用）
     _mark_feedbacks_applied(state, repo)
 
+    # P1-6 提交后闭环：伏笔自动埋设 / 红线检测 / 命名归一化 / 审校回写。
+    # 各自容错，失败不阻塞主流程。
+    if repo:
+        try:
+            from novel_agent.orchestrator.post_commit import run_post_commit_closures
+            closures = await run_post_commit_closures(content, repo, chapter, llm_client, state)
+            if closures.get("redline_violations") or closures.get("normalized_names"):
+                logger.info(
+                    "ch%d 提交后闭环：命名归一化 %d 处，红线违规 %d 处，伏笔建议 %d 条，审校回写 %d 处",
+                    chapter,
+                    closures.get("normalized_names", 0),
+                    len(closures.get("redline_violations") or []),
+                    len(closures.get("foreshadows_suggested") or []),
+                    len(closures.get("audit_fixes") or []),
+                )
+        except Exception as e:
+            logger.warning("ch%d 提交后闭环失败（不阻塞）: %s", chapter, e)
+
     # P1-5 事实级校验：写完每章对账正文事实与事件流/设定（规则层必跑 + LLM 层尽力）。
     # 失败不阻塞主流程；矛盾清单落 PostHocResult.fact_conflicts。
     if repo:
