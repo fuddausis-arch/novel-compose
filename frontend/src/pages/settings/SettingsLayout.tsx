@@ -32,7 +32,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { label: "概览", icon: LayoutDashboard, path: "/settings" },
   { label: "模型管理", icon: Cpu, path: "/settings/models" },
-  { label: "Agent 定义", icon: Bot, path: "/settings/orchestration" },
+  { label: "Agent 定义", icon: Bot, path: "/settings/agents" },
   { label: "Prompt 编排", icon: FileCode, path: "/settings/orchestration" },
   { label: "Skills 管理", icon: BookOpen, path: "/settings/skills" },
   { label: "Rules 管理", icon: ScrollText, path: "/settings/rules" },

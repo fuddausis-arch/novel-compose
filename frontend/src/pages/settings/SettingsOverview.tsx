@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   Archive,
   BookOpen,
+  Bot,
   Boxes,
   Clock,
   Cpu,
@@ -24,7 +25,7 @@ interface OverviewCard {
 
 const CARDS: OverviewCard[] = [
   { title: "模型管理", description: "配置 LLM 供应商、API 密钥与模型优先级", icon: Cpu, path: "/settings/models" },
-  { title: "Agent 定义", description: "管理各 Agent 类型的参数与默认行为", icon: FileCode, path: "/settings/orchestration" },
+  { title: "Agent 定义", description: "管理各 Agent 类型的参数与默认行为", icon: Bot, path: "/settings/agents" },
   { title: "Prompt 编排", description: "编排提示词 Sections、工具与用户注入", icon: FileCode, path: "/settings/orchestration" },
   { title: "Skills 管理", description: "管理可复用的知识与行为模块", icon: BookOpen, path: "/settings/skills" },
   { title: "Rules 管理", description: "管理注入 system prompt 的创作规则", icon: ScrollText, path: "/settings/rules" },

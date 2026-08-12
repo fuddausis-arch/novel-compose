@@ -131,6 +131,7 @@ const keepAliveRoutes: KeepAliveRoute[] = [
   { path: '/settings/skills', render: () => <SettingsLayout><SkillsPage /></SettingsLayout> },
   { path: '/settings/rules', render: () => <SettingsLayout><RulesPage /></SettingsLayout> },
   { path: '/settings/orchestration', render: () => <SettingsLayout><OrchestrationPage /></SettingsLayout> },
+  { path: '/settings/agents', render: () => <SettingsLayout><OrchestrationPage initialTab="agents" /></SettingsLayout> },
   { path: '/settings/models', render: () => <SettingsLayout><ModelsPage /></SettingsLayout> },
   { path: '/settings/plugins', render: () => <SettingsLayout><PluginsPage /></SettingsLayout> },
   { path: '/settings/cron', render: () => <SettingsLayout><CronPage /></SettingsLayout> },

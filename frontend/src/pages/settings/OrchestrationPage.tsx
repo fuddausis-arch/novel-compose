@@ -951,7 +951,9 @@ const TABS = [
   { key: "injection", label: "用户注入", icon: UserRound },
 ] as const;
 
-export default function OrchestrationPage() {
+export default function OrchestrationPage({ initialTab }: { initialTab?: string }) {
+  // P1-4：支持外部锚定 tab（设置菜单"Agent 定义"→ /settings/agents 直达 agents tab）
+  const activeTab = TABS.some((t) => t.key === initialTab) ? initialTab! : "sections";
   return (
     <div className="flex h-full flex-col overflow-y-auto lg:overflow-hidden">
       <div className="mx-auto w-full max-w-6xl space-y-6 p-6 lg:pb-3">
@@ -967,7 +969,7 @@ export default function OrchestrationPage() {
       </div>
 
       <div className="mx-auto flex w-full max-w-6xl min-h-0 flex-1 flex-col px-6 pb-6">
-        <Tabs defaultValue="sections" className="flex min-h-0 flex-1 flex-col">
+        <Tabs defaultValue={activeTab} className="flex min-h-0 flex-1 flex-col">
           <TabsList aria-label="编排子页面" className="shrink-0">
             {TABS.map(({ key, label, icon: Icon }) => (
               <TabsTrigger key={key} value={key} className="cursor-pointer gap-1.5">
