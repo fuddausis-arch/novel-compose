@@ -1,6 +1,8 @@
 """工程师改动深度测试：world_structure district 层级 + 时间线兜底逻辑 + P0 系列配置。"""
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -293,3 +295,36 @@ def test_p02_world_settings_sorted_by_tag_weight(repo_session):
     text = asm.assemble(chapter=1, max_chars=4000)
     assert "宗门大战" in text and "灵气复苏" in text
     assert text.index("宗门大战") < text.index("灵气复苏")
+
+
+# ── P1-1 过渡写手空转修复（工程师改动）─────────────────────
+
+from novel_agent.workflows.loader import _has_transition_slots
+
+
+def test_transition_slots_text_marker():
+    """骨架文本含 [SLOT_TRANSITION_ 标记 → 有过渡槽。"""
+    raw = '{"skeleton": "他没有回头。[SLOT_TRANSITION_场景切换]", "slots": {}}'
+    assert _has_transition_slots(raw) is True
+
+
+def test_transition_slots_in_slots_field():
+    """骨架 slots.TRANSITION 非空（文本无标记）→ 有过渡槽。"""
+    raw = '{"skeleton": "无标记文本", "slots": {"TRANSITION": ["场景切换"]}}'
+    assert _has_transition_slots(raw) is True
+
+
+def test_transition_slots_absent():
+    """骨架无任何过渡槽（历史实测：slots 只有 DIALOGUE/ACTION 等）→ 无过渡槽。"""
+    raw = json.dumps({
+        "skeleton": "他推开门。[SLOT_DIALOGUE_质问]",
+        "slots": {"DIALOGUE": ["质问"], "ACTION": ["推门"]},
+    })
+    assert _has_transition_slots(raw) is False
+
+
+def test_transition_slots_empty_or_bad():
+    """空串/空 JSON/非法 JSON → 无过渡槽（安全兜底，不抛异常）。"""
+    assert _has_transition_slots("") is False
+    assert _has_transition_slots("{}") is False
+    assert _has_transition_slots("not-json") is False

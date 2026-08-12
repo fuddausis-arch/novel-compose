@@ -330,6 +330,22 @@ def _parse_wf_vars(stdout: str) -> dict[str, Any]:
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+def _has_transition_slots(skeleton_raw: str) -> bool:
+    """P1-1：判断骨架 JSON 是否含过渡槽（[SLOT_TRANSITION_ 文本标记 或 slots.TRANSITION 非空）。
+
+    过渡写手只填骨架中的过渡槽；骨架无槽时跳过 LLM 调用（杜绝空转浪费 token）。
+    """
+    raw = skeleton_raw or ""
+    if "[SLOT_TRANSITION_" in raw:
+        return True
+    try:
+        data = json.loads(raw)
+        slots = (data or {}).get("slots", {}) if isinstance(data, dict) else {}
+        return bool(isinstance(slots, dict) and slots.get("TRANSITION"))
+    except Exception:
+        return False
+
+
 class WorkflowRunner:
     """单条工作流定义的执行器。
 
@@ -630,6 +646,26 @@ class WorkflowRunner:
         first_tpl = node.get("first_message", "")
         self._refresh_file_variables(
             self.res.system_prompt(agent_type), node_sys_tpl, first_tpl)
+
+        # P1-1：过渡写手无过渡槽时跳过 LLM 调用（杜绝空转浪费 token）。
+        # 骨架 JSON 的 slots.TRANSITION 为空且 skeleton 文本无 [SLOT_TRANSITION_
+        # 标记时，过渡写手无槽可填（历史实测产出空 {} 全靠整合器兜底），
+        # 直接落盘空 {} 并跳过 LLM 调用。
+        if agent_type == "novel-transition-writer":
+            try:
+                skeleton_raw = self.variables.get("framework_writer_cache", "") or ""
+                if not _has_transition_slots(skeleton_raw):
+                    logger.info(
+                        "过渡写手（%s）：骨架无 TRANSITION 槽，跳过 LLM 调用，产物为空 {}",
+                        node_id)
+                    if node.get("save_output_to_file") and node.get("output_file_path"):
+                        rel = render_template(node["output_file_path"], self.variables)
+                        path = self._safe_path(rel)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text("{}", encoding="utf-8")
+                    return "{}"
+            except Exception as e:
+                logger.warning("过渡写手槽检查失败（仍走 LLM）: %s", e)
 
         # system prompt 也需要模板渲染（{{session_meta}}/{{genre}} 等占位符）
         system = render_template(self.res.system_prompt(agent_type), self.variables)
