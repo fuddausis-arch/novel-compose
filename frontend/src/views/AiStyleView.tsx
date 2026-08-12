@@ -542,6 +542,16 @@ export default function AiStyleView() {
                       <Badge>{report.ai_level}</Badge>
                       <Badge variant="default">规则 {report.rule_score}</Badge>
                       <Badge variant="default">统计 {report.stat_score}</Badge>
+                      {report.deep_available && (
+                        <>
+                          <Badge variant={report.deep_verdict === "AI" ? "danger" : report.deep_verdict === "Mixed" ? "warning" : "success"}>
+                            深度判定 {report.deep_verdict === "AI" ? "AI" : report.deep_verdict === "Mixed" ? "疑似" : "人类"}
+                          </Badge>
+                          {report.deep_ai_probability != null && (
+                            <Badge variant="default">AI 概率 {(report.deep_ai_probability * 100).toFixed(0)}%</Badge>
+                          )}
+                        </>
+                      )}
                       <Badge variant="default">{report.chars} 字</Badge>
                       <Badge variant="warning">{report.total_hits} 处命中</Badge>
                     </div>

@@ -454,6 +454,10 @@ export interface AiStyleReport {
   suggestions: string[];
   chars: number;
   summary: string;
+  // 补充2：三层融合报告附带的本地深度模型判定（模型未就绪时缺省/False）
+  deep_available?: boolean;           // 深度模型是否参与评分
+  deep_verdict?: "AI" | "Mixed" | "Human" | "unavailable";
+  deep_ai_probability?: number | null; // 深度模型 AI 概率 0-1
 }
 
 export interface AiStyleRepairResult {

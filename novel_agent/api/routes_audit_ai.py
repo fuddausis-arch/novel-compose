@@ -6,7 +6,8 @@
 - POST /ai-style/repair         LLM 报告驱动重写 + 复检闭环（最多 2 轮，达标放行）
 - POST /ai-style/check-chapter  按章节号读取正文并检测（配合前端"选章节→看报告"）
 
-达标线：AI 率 ≤20%（80% 人工率），由 ai_detect.run 的 passed 字段判定。
+# 达标线：AI 率 ≤ ai_pass_ai_rate（config 默认 30%，可在配置/前端修改），
+# 由 ai_detect.run 的 passed 字段判定（三层融合：规则30% + 统计20% + 深度50%）。
 """
 from __future__ import annotations
 
