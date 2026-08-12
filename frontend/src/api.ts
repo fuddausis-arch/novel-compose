@@ -156,7 +156,7 @@ export const api = {
   listPleasureBeats: (projectId: number) => request<PleasureBeat[]>(`/api/bible/${projectId}/pleasure-beats`),
   listMemoryRefinements: (projectId: number) => request<{ items: MemoryRefinement[] }>(`/api/bible/${projectId}/memory-refinements`),
   listNameOverrides: (projectId: number) => request<NameOverride[]>(`/api/bible/${projectId}/name-overrides`),
-  listLocations: (projectId: number) => request<Location[]>(`/api/graphs/${projectId}/locations`),
+  listLocations: (projectId: number) => request<Location[]>(`/api/bible/${projectId}/locations`),
 
   // Bible: plot debts（剧情债）
   listPlotDebts: (projectId: number, status?: string) => {

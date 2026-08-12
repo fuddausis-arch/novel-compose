@@ -10,6 +10,10 @@ import type { Character, Faction, Foreshadow, Monster, WorldSetting } from "@/ty
 
 type AssetItem = Character | WorldSetting | Foreshadow | Faction | Monster;
 
+// 模块级稳定引用：避免 default 分支每次渲染新建空数组，
+// 导致 zustand useSyncExternalStore 判定快照恒变 → 无限重渲染崩溃
+const EMPTY_ITEMS: AssetItem[] = [];
+
 const TYPE_META: Record<AssetNavType, { label: string }> = {
   characters: { label: "角色" },
   world: { label: "世界设定" },
@@ -91,7 +95,7 @@ export function AssetCards({ type, projectId }: AssetCardsProps) {
       case "monsters":
         return s.monsters;
       default:
-        return [] as AssetItem[];
+        return EMPTY_ITEMS;
     }
   });
 
